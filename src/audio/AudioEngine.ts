@@ -1,10 +1,46 @@
+import { initSynth, playKick, playBass, playChord, playMelody, playPluck, playTap } from './MusicSynth.ts'
+import { initDrone, startDrone } from './MusicDrone.ts'
+import { generateWaveMusic, pickMelodyNote, pickChordNotes } from './MusicScale.ts'
+import type { WaveMusic } from './MusicScale.ts'
+
 let ctx: AudioContext | null = null
 let master: GainNode
 let compressor: DynamicsCompressorNode
+let reverbInput: GainNode
+let reverbWet: GainNode
 
-// Limit simultaneous enemy sounds
 let lastEnemyTickTime = 0
-const ENEMY_TICK_MIN_INTERVAL = 0.05 // max ~20 enemy ticks per second
+const ENEMY_TICK_MIN_INTERVAL = 0.05
+
+let currentMusic: WaveMusic | null = null
+
+function createReverb(audioCtx: AudioContext): { input: GainNode; output: GainNode } {
+  const input = audioCtx.createGain()
+  const wet = audioCtx.createGain()
+  wet.gain.value = 0.2
+
+  // Simple delay-based reverb
+  const delays = [0.037, 0.053, 0.079]
+  const feedbacks = [0.4, 0.35, 0.3]
+
+  for (let i = 0; i < delays.length; i++) {
+    const delay = audioCtx.createDelay()
+    delay.delayTime.value = delays[i]!
+    const fb = audioCtx.createGain()
+    fb.gain.value = feedbacks[i]!
+    const filter = audioCtx.createBiquadFilter()
+    filter.type = 'lowpass'
+    filter.frequency.value = 3000
+
+    input.connect(delay)
+    delay.connect(filter)
+    filter.connect(fb)
+    fb.connect(delay) // feedback loop
+    filter.connect(wet)
+  }
+
+  return { input, output: wet }
+}
 
 function ensureContext(): AudioContext {
   if (!ctx) {
@@ -16,9 +52,25 @@ function ensureContext(): AudioContext {
     compressor.attack.value = 0.003
     compressor.release.value = 0.1
     compressor.connect(ctx.destination)
+
     master = ctx.createGain()
     master.gain.value = 0.8
     master.connect(compressor)
+
+    // Reverb
+    const reverb = createReverb(ctx)
+    reverbInput = reverb.input
+    reverbWet = reverb.output
+    reverbInput.connect(master) // dry signal
+    reverbWet.connect(master)   // wet signal
+
+    // Init subsystems
+    initSynth(ctx, reverbInput)
+    initDrone(ctx, reverbInput)
+
+    // Start with wave 1 music
+    currentMusic = generateWaveMusic(1)
+    startDrone(currentMusic.droneRoot, currentMusic.droneFifth)
   }
   if (ctx.state === 'suspended') {
     ctx.resume()
@@ -26,7 +78,6 @@ function ensureContext(): AudioContext {
   return ctx
 }
 
-// Resume on first user gesture
 export function init(): void {
   const resume = () => {
     ensureContext()
@@ -37,43 +88,66 @@ export function init(): void {
   window.addEventListener('keydown', resume)
 }
 
-/** Player ring misses — hollow thud */
-export function playMiss(): void {
-  const c = ensureContext()
-  const osc = c.createOscillator()
-  const noise = c.createOscillator()
-  const gain = c.createGain()
-  osc.type = 'triangle'
-  osc.frequency.setValueAtTime(200, c.currentTime)
-  osc.frequency.exponentialRampToValueAtTime(50, c.currentTime + 0.2)
-  noise.type = 'sawtooth'
-  noise.frequency.value = 80
-  gain.gain.setValueAtTime(0.7, c.currentTime)
-  gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.2)
-  osc.connect(gain)
-  noise.connect(gain)
-  gain.connect(master)
-  osc.start(c.currentTime)
-  noise.start(c.currentTime)
-  osc.stop(c.currentTime + 0.2)
-  noise.stop(c.currentTime + 0.2)
+export function getCurrentMusic(): WaveMusic | null {
+  return currentMusic
 }
 
-/** Player ring hits enemy — crunchy impact */
+export function setWaveMusic(waveNum: number): void {
+  ensureContext()
+  currentMusic = generateWaveMusic(waveNum)
+}
+
+// ── Player sounds ──
+
+export function playMiss(): void {
+  ensureContext()
+  // Punchy kick-like thud so it still keeps the beat, but lower/duller than hit
+  const c = ctx!
+  const t = c.currentTime
+
+  // Hard snare-like crack
+  const osc = c.createOscillator()
+  osc.type = 'triangle'
+  osc.frequency.setValueAtTime(180, t)
+  osc.frequency.exponentialRampToValueAtTime(60, t + 0.1)
+
+  const snap = c.createOscillator()
+  snap.type = 'sawtooth'
+  snap.frequency.value = 400
+
+  const body = c.createOscillator()
+  body.type = 'square'
+  body.frequency.setValueAtTime(120, t)
+  body.frequency.exponentialRampToValueAtTime(50, t + 0.08)
+
+  const gain = c.createGain()
+  gain.gain.setValueAtTime(1.0, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
+
+  osc.connect(gain)
+  snap.connect(gain)
+  body.connect(gain)
+  gain.connect(master)
+  osc.start(t)
+  snap.start(t)
+  body.start(t)
+  osc.stop(t + 0.15)
+  snap.stop(t + 0.03)
+  body.stop(t + 0.15)
+}
+
 export function playHit(): void {
-  const c = ensureContext()
+  ensureContext()
+  const c = ctx!
   const osc1 = c.createOscillator()
   const osc2 = c.createOscillator()
   const osc3 = c.createOscillator()
   const gain = c.createGain()
-  // Sharp attack
   osc1.type = 'square'
   osc1.frequency.setValueAtTime(600, c.currentTime)
   osc1.frequency.exponentialRampToValueAtTime(200, c.currentTime + 0.05)
-  // Body
   osc2.type = 'sine'
   osc2.frequency.value = 440
-  // Sub punch
   osc3.type = 'triangle'
   osc3.frequency.setValueAtTime(120, c.currentTime)
   osc3.frequency.exponentialRampToValueAtTime(60, c.currentTime + 0.1)
@@ -91,9 +165,9 @@ export function playHit(): void {
   osc3.stop(c.currentTime + 0.2)
 }
 
-/** Enemy killed — rising pitch burst */
 export function playKill(): void {
-  const c = ensureContext()
+  ensureContext()
+  const c = ctx!
   const osc = c.createOscillator()
   const gain = c.createGain()
   osc.type = 'sine'
@@ -102,15 +176,14 @@ export function playKill(): void {
   gain.gain.setValueAtTime(0.8, c.currentTime)
   gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.3)
   osc.connect(gain)
-  gain.connect(master)
+  gain.connect(reverbInput)
   osc.start(c.currentTime)
   osc.stop(c.currentTime + 0.3)
 }
 
-/** Player takes damage — loud low thud */
 export function playPlayerHit(): void {
-  const c = ensureContext()
-  // Layer two oscillators for a heavier impact
+  ensureContext()
+  const c = ctx!
   const osc1 = c.createOscillator()
   const osc2 = c.createOscillator()
   const gain = c.createGain()
@@ -129,32 +202,14 @@ export function playPlayerHit(): void {
   osc2.stop(c.currentTime + 0.35)
 }
 
-/** Player ring beat pulse — always audible snap */
 export function playBeatTick(): void {
-  const c = ensureContext()
-  const osc1 = c.createOscillator()
-  const osc2 = c.createOscillator()
-  const gain = c.createGain()
-  osc1.type = 'square'
-  osc1.frequency.value = 180
-  osc2.type = 'sine'
-  osc2.frequency.setValueAtTime(400, c.currentTime)
-  osc2.frequency.exponentialRampToValueAtTime(120, c.currentTime + 0.12)
-  gain.gain.setValueAtTime(0.9, c.currentTime)
-  gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.18)
-  osc1.connect(gain)
-  osc2.connect(gain)
-  gain.connect(master)
-  osc1.start(c.currentTime)
-  osc2.start(c.currentTime)
-  osc1.stop(c.currentTime + 0.18)
-  osc2.stop(c.currentTime + 0.18)
+  ensureContext()
+  playKick()
 }
 
-/** Dash — quick airy whoosh */
 export function playDash(): void {
-  const c = ensureContext()
-  // White noise burst via detuned oscillators
+  ensureContext()
+  const c = ctx!
   const osc1 = c.createOscillator()
   const osc2 = c.createOscillator()
   const osc3 = c.createOscillator()
@@ -182,20 +237,33 @@ export function playDash(): void {
   osc3.stop(c.currentTime + 0.2)
 }
 
-/** Enemy ring beat pulse — distinct tone per enemy, throttled */
-export function playEnemyBeatTick(frequency = 110): void {
-  const c = ensureContext()
-  // Skip if another enemy tick just played
+// ── Enemy sounds — now musical ──
+
+export function playEnemyBeatTick(enemyType: string): void {
+  ensureContext()
+  const c = ctx!
   if (c.currentTime - lastEnemyTickTime < ENEMY_TICK_MIN_INTERVAL) return
   lastEnemyTickTime = c.currentTime
-  const osc = c.createOscillator()
-  const gain = c.createGain()
-  osc.type = 'square'
-  osc.frequency.value = frequency
-  gain.gain.setValueAtTime(0.55, c.currentTime)
-  gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.15)
-  osc.connect(gain)
-  gain.connect(master)
-  osc.start(c.currentTime)
-  osc.stop(c.currentTime + 0.15)
+
+  if (!currentMusic) return
+
+  switch (enemyType) {
+    case 'Whole':
+      playBass(currentMusic.bassNote)
+      break
+    case 'Half':
+      playChord(pickChordNotes(currentMusic))
+      break
+    case 'Quarter':
+      playMelody(pickMelodyNote(currentMusic))
+      break
+    case 'Eighth':
+      playPluck(pickMelodyNote(currentMusic))
+      break
+    case 'Sixteenth':
+      playTap(pickMelodyNote(currentMusic))
+      break
+    default:
+      playMelody(pickMelodyNote(currentMusic))
+  }
 }

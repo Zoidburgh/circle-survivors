@@ -392,19 +392,15 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   const hb = parseInt(enemy.color.slice(5, 7), 16)
 
   // Pick fill/stroke: red flash > yellow tint > normal
-  let fillColor = `rgba(${hr}, ${hg}, ${hb}, 0.12)`
-  let strokeColor = enemy.color
-  if (enemy.hitFlash > 0) {
-    fillColor = `rgba(255, 50, 50, ${0.5 * (enemy.hitFlash / 0.15)})`
-    strokeColor = '#FF3333'
-  } else if (ringOverEnemy) {
-    fillColor = `rgba(255, 230, 100, 0.2)`
-    strokeColor = '#FFE664'
-  }
+  const fillColor = `rgba(${hr}, ${hg}, ${hb}, 0.4)`
+  const strokeColor = enemy.color
 
   const hpFraction = enemy.displayHp / enemy.maxHp
+  const damageFraction = player.damage / enemy.maxHp
+  const afterHitFraction = Math.max(0, hpFraction - damageFraction)
   const startAngle = -Math.PI / 2
   const endAngle = startAngle + hpFraction * Math.PI * 2
+  const afterHitEnd = startAngle + afterHitFraction * Math.PI * 2
 
   // Dark background circle (missing HP)
   ctx.beginPath()
@@ -422,10 +418,34 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     ctx.fill()
   }
 
+  // Damage preview — section flickers between fill color and transparent
+  if (ringOverEnemy && afterHitFraction < hpFraction) {
+    if (afterHitFraction <= 0) {
+      // Killing blow — entire remaining HP pulses
+      const t = (performance.now() % 180) / 180
+      const pulse = t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t)
+      // Pulse between full color and dimmed
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.arc(sx, sy, r, startAngle, endAngle)
+      ctx.closePath()
+      ctx.fillStyle = `rgba(0, 0, 0, ${0.5 * pulse})`
+      ctx.fill()
+    } else {
+      // Partial damage — dim the section that will drain
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.arc(sx, sy, r, afterHitEnd, endAngle)
+      ctx.closePath()
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.19)'
+      ctx.fill()
+    }
+  }
+
   // Outline
   ctx.beginPath()
   ctx.arc(sx, sy, r, 0, Math.PI * 2)
-  ctx.strokeStyle = strokeColor
+  ctx.strokeStyle = ringOverEnemy ? '#FFFFFF' : strokeColor
   ctx.lineWidth = 2.5
   ctx.stroke()
 

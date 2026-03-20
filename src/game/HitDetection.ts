@@ -34,7 +34,7 @@ export function initHitDetection(): void {
   on('enemy:beat', (enemy) => {
     const player = getPlayer()
     if (!enemy.alive) return
-    Audio.playEnemyBeatTick(enemy.audioFreq)
+    Audio.playEnemyBeatTick(enemy.typeName)
 
     const ringRadius = enemy.ring.radius * getRingExpansion(enemy.attackTimer)
     const dist = distance(
