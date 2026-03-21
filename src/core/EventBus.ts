@@ -4,7 +4,7 @@ import type { Enemy } from '../entities/Enemy.ts'
 // ── Event map: every event name → its payload tuple ──
 export interface GameEventMap {
   'player:beat': [player: Player]
-  'enemy:beat': [enemy: Enemy]
+  'enemy:beat': [enemy: Enemy, ringIndex: number]
   'enemy:killed': [enemy: Enemy]
 }
 

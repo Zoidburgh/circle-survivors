@@ -1,4 +1,4 @@
-# Circle Survivors — Game Design Document v0.4
+# Circle Survivors — Game Design Document v0.5
 
 *Living document. Updated to reflect current prototype state.*
 
@@ -27,10 +27,10 @@ The player emits a circular ring that expands outward on a fixed tempo synced to
 
 | Property | Current Value |
 |---|---|
-| Tempo | 1 beat (BEAT_SEC, derived from MASTER_BPM=30) |
+| Tempo | 1 beat (BEAT_SEC, derived from MASTER_BPM=60) |
 | Expand duration | 1.0 seconds |
 | Damage moment | At peak expansion (ATTACK_EXPAND_TIME) |
-| Hitbox | Ring edge ± enemy body radius |
+| Hitbox | Ring edge +/- enemy body radius |
 | Max radius | 180 world units |
 
 The player does NOT press a button to attack. The ring pulses automatically. The skill is positioning.
@@ -60,19 +60,19 @@ WASD, 280 units/sec. Subtle cyan afterimage trail while moving.
 
 ### 3.1 Global BPM
 
-All timing derives from `MASTER_BPM` (currently 30). One constant controls the speed of the entire game.
+All timing derives from `MASTER_BPM` (currently 60). One constant controls the speed of the entire game.
 
 - `BEAT_SEC = 60 / MASTER_BPM` = seconds per beat
-- Player tempo = `BEAT_SEC * 1` (quarter note)
-- Enemy tempos = multiples of BEAT_SEC (whole, half, quarter, eighth, sixteenth)
 
-### 3.2 Rhythm Clock
+### 3.2 Pattern-Driven Beat System
 
-A global `RhythmClock` tracks elapsed time. All entities sync their phase to it via `getPhaseForTempo(tempo)`. This means:
+A `PatternClock` advances through a `SongPattern` that defines when each entity type fires. Patterns are arrays of beat positions within a loop (default 8 beats). All entities of the same type fire simultaneously when their beat position is reached.
 
-- All enemies of the same type pulse in perfect sync regardless of spawn time
-- Player and enemies are always in musical time with each other
-- Spawning a mix of types creates genuine polyrhythm
+- `SongPatterns.ts` defines available patterns (default: Player on every beat, Offbeat between beats)
+- `PatternClock.ts` tracks loop position and determines which types should fire each tick
+- `shouldFire(typeName)` returns true for all entities of that type simultaneously
+
+This replaces per-entity tempo with a centralized, musical pattern system.
 
 ### 3.3 Attack Animation
 
@@ -82,34 +82,53 @@ All rings (player and enemy) use identical animation timing:
 - Particle burst at peak
 - Instant reset
 
-This is consistent across all entity types — a Whole note enemy and a Sixteenth note enemy have the same visual attack. Only the interval between attacks differs.
+This is consistent across all entity types. Only the interval between attacks differs (determined by the pattern).
 
 ---
 
 ## 4. Enemy Types
 
-All enemies are circles. Each type has a distinct color, size, speed, tempo, and audio frequency.
+Enemy types are user-designed via the **Enemy Designer** (Tab to toggle). The default type is "Offbeat".
 
-| Type | Key | Tempo | Color | Radius | Speed | HP | Ring | Audio |
+### 4.1 Enemy Designer
+
+- In-game panel for creating custom enemy types
+- Configure: name, color, sound, HP, speed, body size, ring range, spawn key, rhythm pattern
+- Rhythm presets: offbeat, on-beat, half time, double time, backbeat, syncopated, triplet, sparse, gallop, custom
+- Live preview orbits the player showing attack animation
+- **Persistence:** designs auto-save to localStorage, can export/import as JSON files
+- Saved enemies are restored on page load
+
+### 4.2 Default Enemy Type
+
+| Type | Key | Pattern | Color | Radius | Speed | HP | Ring | Sound |
 |---|---|---|---|---|---|---|---|---|
-| Whole | 1 | 4 beats | Red #EF5350 | 64 | 20 | 5 | 220 | 80hz |
-| Half | 2 | 2 beats | Orange #FF9800 | 52 | 40 | 3 | 160 | 130hz |
-| Quarter | 3 | 1 beat | Yellow #FFEB3B | 44 | 70 | 2 | 110 | 220hz |
-| Eighth | 4 | 0.5 beats | Green #66BB6A | 36 | 120 | 1 | 70 | 370hz |
-| Sixteenth | 5 | 0.25 beats | Purple #AB47BC | 28 | 180 | 1 | 45 | 520hz |
+| Offbeat | 1 | Between every player beat | Orange #FF9800 | 44 | 40 | 3 | 140 | rim |
 
-Design pattern: slow enemies are big, tanky, with huge attack range. Fast enemies are small, fragile, with short range but get in your face.
-
-### 4.1 Enemy Behavior
+### 4.3 Enemy Behavior
 
 - Move toward player, stop at ring attack sweet spot (85% of ring radius)
-- Hard collision with other enemies (no overlap, edges touch)
+- Hard collision with other enemies (no overlap, uses SpatialGrid)
 - Hard collision with player body
-- Sync beat to global rhythm clock
+- Pattern-driven beat firing (all enemies of same type fire together)
 
 ---
 
-## 5. Player
+## 5. Arena System
+
+| Property | Value |
+|---|---|
+| Size | 2000 x 1200 world units |
+| Buffer zone | 80 units outside arena border (visible spawn area) |
+| Camera | Brotato-style: smooth follow with movement lead (80 units ahead) |
+| Camera smoothing | Exponential, frame-rate independent (factor * dt) |
+| Border | Layered glow effect (cyan) with dashed outer buffer line |
+
+Players are clamped inside the arena. Camera is clamped to show up to the buffer zone but not beyond.
+
+---
+
+## 6. Player
 
 | Property | Value |
 |---|---|
@@ -122,77 +141,94 @@ Design pattern: slow enemies are big, tanky, with huge attack range. Fast enemie
 
 ---
 
-## 6. Visual Design
+## 7. Visual Design
 
 - Dark void background (#0D0A1A) with subtle grid
 - All entities are filled circles with colored outlines
 - Rings expand outward, particle trail during expansion, burst at peak
 - Red flash ring at damage moment (hitbox visualization)
-- Yellow tint on enemies when player ring passes over them
+- Damage preview on enemies when player ring passes over them
 - Red flash on entities when damaged
 - Enemy HP shown as pie chart on body (smooth drain)
 - Player dash: afterimage trail + orbiting charge dots (green = ready)
 - Death animation: dissolve into scattered particles
 
-### 6.1 Color Language
+### 7.1 Color Language
 
 | Element | Color | Meaning |
 |---|---|---|
 | Player | Cyan #4FC3F7 | Always you |
 | Dash charges | Green #64FF78 | Ready to use |
 | Enemy hit flash | Red #FF3333 | Damage taken |
-| Yellow tint | #FFE664 | Ring passing over (about to hit) |
 
 ---
 
-## 7. Audio Design
+## 8. Audio Design
 
 Audio is mechanical feedback, not cosmetic. Each game event has a distinct sound.
 
 | Event | Sound | Purpose |
 |---|---|---|
-| Player hit (connected) | 3-osc impact (square snap + sine + sub) | Satisfying crunch |
-| Player miss | Hollow descending thud | "You whiffed" |
-| Enemy killed | Rising pitch 440→880hz | Reward |
+| Player beat | Kick drum | Rhythmic anchor |
+| Player hit (connected) | Rising tone (330-500hz) | Satisfying feedback |
+| Enemy killed | Rising pitch 440-880hz | Reward |
 | Player damaged | Heavy low thud (triangle 65 + saw 90) | Danger |
-| Enemy beat tick | Square wave at enemy's frequency | Hear the rhythm |
-| Dash | Airy whoosh (detuned sawtooths sweeping down) | Speed |
+| Enemy beat tick | Configurable per type (16 sound options) | Hear the rhythm |
+| Dash | Airy whoosh (detuned sines sweeping down) | Speed |
+| Attack windup | Quiet rising tone | Telegraph incoming |
 
-Audio compressor on master output prevents clipping. Enemy ticks throttled to max ~20/sec.
+### 8.1 Music System
+
+- **MusicScale:** generates wave-specific music (root, mode, scale notes) from pentatonic scales
+- **MusicDrone:** sustained root + fifth background drone with LFO breathing
+- **MusicSynth:** kick, bass, chord, melody, pluck instruments
+- Audio compressor on master output prevents clipping
+- Enemy ticks throttled (0.04s min interval per type)
+- Delay-based reverb on most sounds
 
 ---
 
-## 8. Architecture
+## 9. Architecture
 
-### 8.1 File Structure
+### 9.1 File Structure
 ```
 src/
   core/
     GameLoop.ts        — Fixed 120hz timestep
+    GameManager.ts     — Update + render orchestration
+    GameState.ts       — Global state (player, enemies, grid, camera)
     PhaseSystem.ts     — Beat detection, ring expansion curves
     RhythmClock.ts     — Global phase sync for all entities
-    SpatialGrid.ts     — Broadphase for enemy separation (O(n log n))
+    SpatialGrid.ts     — Broadphase for neighbor queries
     EventBus.ts        — Simple pub/sub
   entities/
     Player.ts          — Movement, dash, attack timer
     Enemy.ts           — AI, separation, attack timer, death
-    EnemyTypes.ts      — Type definitions
+    EnemyTypes.ts      — Type definitions (user-designed)
     Ring.ts            — Pure data: phase, radius, tempo, color
   render/
     Renderer.ts        — Canvas2D, particles, all drawing
   audio/
     AudioEngine.ts     — Web Audio API, all sounds
+    MusicSynth.ts      — Synthesizer instruments
+    MusicDrone.ts      — Background drone
+    MusicScale.ts      — Scale/key generation
+    PatternClock.ts    — Pattern-driven beat timing
+    SongPatterns.ts    — Pattern definitions
   game/
+    Arena.ts           — Arena bounds, camera, spawning
     InputManager.ts    — Keyboard + mouse
+    HitDetection.ts    — Ring-entity collision (uses SpatialGrid)
+    EnemyDesigner.ts   — In-game enemy type editor with persistence
   utils/
     constants.ts       — All tunable values
     math.ts            — Vec2, distance, hex conversion
   main.ts              — Entry point, event wiring, spawning
 ```
 
-### 8.2 Performance
+### 9.2 Performance
 
-- SpatialGrid for enemy-enemy separation (avoids O(n²))
+- SpatialGrid for enemy-enemy separation and hit detection (avoids O(n^2))
 - Particle pool capped at 2000
 - Enemy audio ticks throttled
 - Audio compressor prevents clipping
@@ -200,15 +236,15 @@ src/
 
 ---
 
-## 9. Roguelike Systems (TODO)
+## 10. Roguelike Systems (TODO)
 
-### 9.1 Wave System
+### 10.1 Wave System
 - Spawn wave of enemies
-- Clear wave → upgrade offer
+- Clear wave -> upgrade offer
 - Next wave harder (more enemies, faster types, mixed types)
 - Endless escalation
 
-### 9.2 Upgrades (Modifiable Properties)
+### 10.2 Upgrades (Modifiable Properties)
 
 | Category | Examples |
 |---|---|
@@ -219,22 +255,12 @@ src/
 | **On-kill** | Chain explosions, heal, speed boost, ring reset |
 | **On-beat** | Projectiles, shield pulse, area slow |
 
-### 9.3 Other TODO
+### 10.3 Other TODO
 - Real HP values + death screen + restart
 - Screen shake on damage
 - Combo/score system
 - Background parallax dots for movement feel
 - Wave progression UI
-
----
-
-## 10. Open Questions
-
-- What's the right BPM for release? 30 feels good for testing but may need to be faster.
-- How many enemy types before cognitive overload?
-- Should dash have i-frames (invincibility during dash)?
-- What's the upgrade offer format? 3 cards? Reroll?
-- How does difficulty scale? More enemies? Faster BPM? New types?
 
 ---
 

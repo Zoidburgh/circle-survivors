@@ -5,16 +5,24 @@ import { shouldFire, getBeatInterval } from '../audio/PatternClock.ts'
 import { playWindup } from '../audio/AudioEngine.ts'
 import { clampToArena } from '../game/Arena.ts'
 import { emit } from '../core/EventBus.ts'
-import { PLAYER_RADIUS } from '../utils/constants.ts'
+import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import type { Player } from './Player.ts'
-import type { EnemyType } from './EnemyTypes.ts'
+import type { EnemyType, MovePattern } from './EnemyTypes.ts'
 import { SpatialGrid } from '../core/SpatialGrid.ts'
+
+export interface RingState {
+  ring: Ring
+  attackTimer: number
+  expandTime: number
+  patternName: string  // key in PatternClock
+  sound: string
+}
 
 export interface Enemy {
   x: number
   y: number
-  ring: Ring
+  rings: RingState[]   // multiple rings
   hp: number
   maxHp: number
   displayHp: number
@@ -25,41 +33,65 @@ export interface Enemy {
   vy: number
   moveSpeed: number
   typeName: string
-  sound: string
   color: string
   hitFlash: number
-  attackTimer: number
-  expandTime: number
   deathTimer: number
   dying: boolean
-  spawnTimer: number    // 0→1 grow-in animation
-  baseRadius: number    // full size — radius scales during spawn
+  spawnTimer: number
+  baseRadius: number
+  blocksRings: boolean
+  movePattern: MovePattern
+  moveTimer: number
+  bounceVx: number
+  bounceVy: number
+  lungeTimer: number   // >0 = lunging, counts down
+  lungeDirX: number
+  lungeDirY: number
 }
 
 export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
+  // Build ring states from type config
+  const ringConfigs = type.rings ?? [
+    { ringRadius: type.ringRadius, sound: type.role, beats: [] }
+  ]
+
+  const rings: RingState[] = ringConfigs.map((rc, i) => ({
+    ring: createRing(rc.ringRadius, 1, hexToRgba(type.color), 'enemy'),
+    attackTimer: -1,
+    expandTime: ATTACK_EXPAND_TIME,
+    patternName: ringConfigs.length > 1 ? `${type.name}_r${i}` : type.name,
+    sound: rc.sound,
+  }))
+
   return {
     x,
     y,
-    ring: createRing(type.ringRadius, 1, hexToRgba(type.color), 'enemy'),
+    rings,
     hp: type.hp,
     maxHp: type.hp,
     displayHp: type.hp,
     damage: 1,
-    radius: 1,  // starts tiny, grows during spawn animation
+    radius: 1,
     alive: true,
     vx: 0,
     vy: 0,
     moveSpeed: type.moveSpeed,
     typeName: type.name,
-    sound: type.role,
     color: type.color,
     hitFlash: 0,
-    attackTimer: -1,
-    expandTime: ATTACK_EXPAND_TIME,
     deathTimer: -1,
     dying: false,
     spawnTimer: 0,
     baseRadius: type.radius,
+    blocksRings: type.blocksRings ?? false,
+    movePattern: type.movePattern ?? 'pursue',
+    moveTimer: Math.random() * Math.PI * 2,
+    // Bounce: random initial direction
+    bounceVx: Math.cos(Math.random() * Math.PI * 2) * type.moveSpeed,
+    bounceVy: Math.sin(Math.random() * Math.PI * 2) * type.moveSpeed,
+    lungeTimer: -1,
+    lungeDirX: 0,
+    lungeDirY: 0,
   }
 }
 
@@ -68,18 +100,17 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
 
   if (enemy.hitFlash > 0) enemy.hitFlash -= dt
 
-  // Spawn grow-in animation (0.4s)
+  // Spawn grow-in
   if (enemy.spawnTimer < 1) {
-    enemy.spawnTimer += dt / 0.4
+    enemy.spawnTimer += dt / SPAWN_ANIM_DURATION
     if (enemy.spawnTimer > 1) enemy.spawnTimer = 1
-    // Ease-out: grows fast then decelerates
     const t = 1 - (1 - enemy.spawnTimer) * (1 - enemy.spawnTimer)
     enemy.radius = enemy.baseRadius * t
   }
 
   // Smooth HP display
   if (enemy.displayHp > enemy.hp) {
-    enemy.displayHp -= (enemy.displayHp - enemy.hp) * 8 * dt
+    enemy.displayHp -= (enemy.displayHp - enemy.hp) * HP_DRAIN_SPEED * dt
     if (enemy.displayHp - enemy.hp < 0.01) enemy.displayHp = enemy.hp
   }
 
@@ -87,20 +118,101 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   const dx = player.x - enemy.x
   const dy = player.y - enemy.y
   const dist = Math.sqrt(dx * dx + dy * dy)
-  const sweetSpot = enemy.ring.radius * 0.85
+  const primaryRingRadius = enemy.rings[0]?.ring.radius ?? 100
+  const sweetSpot = primaryRingRadius
+  const dirX = dist > 1 ? dx / dist : 0
+  const dirY = dist > 1 ? dy / dist : 0
 
   let moveX = 0
   let moveY = 0
 
-  if (dist > sweetSpot + 10) {
-    moveX = (dx / dist) * enemy.moveSpeed
-    moveY = (dy / dist) * enemy.moveSpeed
-  } else if (dist < sweetSpot - 20) {
-    moveX = -(dx / dist) * enemy.moveSpeed * 0.5
-    moveY = -(dy / dist) * enemy.moveSpeed * 0.5
+  enemy.moveTimer += dt
+
+  switch (enemy.movePattern) {
+    case 'pursue':
+      // Move toward player, stop at sweet spot
+      if (dist > sweetSpot + 10) {
+        moveX = dirX * enemy.moveSpeed
+        moveY = dirY * enemy.moveSpeed
+      } else if (dist < sweetSpot - 20) {
+        moveX = -dirX * enemy.moveSpeed * 0.5
+        moveY = -dirY * enemy.moveSpeed * 0.5
+      }
+      break
+
+    case 'orbit':
+      // Move to sweet spot distance, then circle around the player
+      if (dist > sweetSpot + 30) {
+        // Approach
+        moveX = dirX * enemy.moveSpeed
+        moveY = dirY * enemy.moveSpeed
+      } else if (dist < sweetSpot - 30) {
+        // Back off
+        moveX = -dirX * enemy.moveSpeed * 0.5
+        moveY = -dirY * enemy.moveSpeed * 0.5
+      } else {
+        // Orbit — perpendicular to player direction
+        moveX = -dirY * enemy.moveSpeed * 0.7
+        moveY = dirX * enemy.moveSpeed * 0.7
+      }
+      break
+
+    case 'zigzag':
+      // Move toward player but weave side to side
+      if (dist > 1) {
+        const zigPhase = Math.sin(enemy.moveTimer * 4) * 1.2
+        const perpX = -dirY
+        const perpY = dirX
+        if (dist > sweetSpot + 10) {
+          moveX = (dirX + perpX * zigPhase) * enemy.moveSpeed
+          moveY = (dirY + perpY * zigPhase) * enemy.moveSpeed
+        } else if (dist < sweetSpot - 20) {
+          moveX = -dirX * enemy.moveSpeed * 0.5
+          moveY = -dirY * enemy.moveSpeed * 0.5
+        } else {
+          // At sweet spot, still weave
+          moveX = perpX * zigPhase * enemy.moveSpeed * 0.5
+          moveY = perpY * zigPhase * enemy.moveSpeed * 0.5
+        }
+      }
+      break
+
+    case 'lunge': {
+      const lungeDur = 0.3
+      if (enemy.lungeTimer > 0) {
+        enemy.lungeTimer -= dt
+        const lProg = 1 - Math.max(0, enemy.lungeTimer) / lungeDur
+        // Ease-in-out cubic — slow start, smooth peak, gentle stop
+        const t = lProg < 0.5
+          ? 4 * lProg * lProg * lProg
+          : 1 - Math.pow(-2 * lProg + 2, 3) / 2
+        const lSpeed = t * (1 - t) * 4 * enemy.moveSpeed * 2.2
+        if (dist > sweetSpot + 10) {
+          moveX = enemy.lungeDirX * lSpeed
+          moveY = enemy.lungeDirY * lSpeed
+        } else if (dist < sweetSpot - 20) {
+          moveX = -dirX * lSpeed
+          moveY = -dirY * lSpeed
+        }
+      } else if (dist < sweetSpot - 30) {
+        enemy.lungeDirX = -dirX
+        enemy.lungeDirY = -dirY
+        enemy.lungeTimer = lungeDur * 0.7
+      }
+      break
+    }
+
+    case 'bounce':
+      moveX = enemy.bounceVx
+      moveY = enemy.bounceVy
+      break
+
+    case 'stationary':
+      break
   }
 
-  // Separation from nearby enemies
+  // Separation — for bounce enemies, reflect velocity on collision
+  const isBounce = enemy.movePattern === 'bounce'
   const nearby = grid.query(enemy)
   for (const other of nearby) {
     const otherEnemy = other as Enemy
@@ -111,20 +223,39 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     const eDist = Math.sqrt(ex * ex + ey * ey)
     if (eDist < minDist && eDist > 0.1) {
       const overlap = minDist - eDist
-      enemy.x += (ex / eDist) * overlap * 0.5
-      enemy.y += (ey / eDist) * overlap * 0.5
+      const nx = ex / eDist
+      const ny = ey / eDist
+      enemy.x += nx * overlap * 0.5
+      enemy.y += ny * overlap * 0.5
+      if (isBounce) {
+        // Reflect velocity off the collision normal
+        const dot = enemy.bounceVx * nx + enemy.bounceVy * ny
+        if (dot < 0) {
+          enemy.bounceVx -= 2 * dot * nx
+          enemy.bounceVy -= 2 * dot * ny
+        }
+      }
     }
   }
 
-  // Don't overlap player
+  // Don't overlap player — bounce off player too
   const pMinDist = enemy.radius + PLAYER_RADIUS
   const pDx = enemy.x - player.x
   const pDy = enemy.y - player.y
   const pDist = Math.sqrt(pDx * pDx + pDy * pDy)
   if (pDist < pMinDist && pDist > 0.1) {
     const pOverlap = pMinDist - pDist
-    enemy.x += (pDx / pDist) * pOverlap
-    enemy.y += (pDy / pDist) * pOverlap
+    const pnx = pDx / pDist
+    const pny = pDy / pDist
+    enemy.x += pnx * pOverlap
+    enemy.y += pny * pOverlap
+    if (isBounce) {
+      const dot = enemy.bounceVx * pnx + enemy.bounceVy * pny
+      if (dot < 0) {
+        enemy.bounceVx -= 2 * dot * pnx
+        enemy.bounceVy -= 2 * dot * pny
+      }
+    }
   }
 
   enemy.vx = moveX
@@ -132,28 +263,48 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   enemy.x += enemy.vx * dt
   enemy.y += enemy.vy * dt
 
-  // Clamp to arena
+  // Clamp to arena — bounce off walls
+  const prevX = enemy.x
+  const prevY = enemy.y
   const clamped = clampToArena(enemy.x, enemy.y, enemy.radius)
   enemy.x = clamped.x
   enemy.y = clamped.y
-
-  // Pattern-driven beat: check if this enemy type should fire now (not during spawn)
-  if (enemy.attackTimer < 0 && enemy.spawnTimer >= 1 && shouldFire(enemy.typeName)) {
-    // Scale expand time to fit 80% of the interval between beats
-    const interval = getBeatInterval(enemy.typeName)
-    enemy.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * 0.8)
-    enemy.attackTimer = 0
-    playWindup(enemy.expandTime, false)
+  if (isBounce) {
+    if (clamped.x !== prevX) enemy.bounceVx = -enemy.bounceVx
+    if (clamped.y !== prevY) enemy.bounceVy = -enemy.bounceVy
   }
 
-  // Advance attack animation
-  if (enemy.attackTimer >= 0) {
-    enemy.attackTimer += dt
-    if (enemy.attackTimer >= enemy.expandTime && enemy.attackTimer - dt < enemy.expandTime) {
-      emit('enemy:beat', enemy)
-    }
-    if (enemy.attackTimer > enemy.expandTime + 0.05) {
-      enemy.attackTimer = -1
+  // Update each ring independently
+  if (enemy.spawnTimer >= 1) {
+    for (let i = 0; i < enemy.rings.length; i++) {
+      const rs = enemy.rings[i]!
+      if (rs.attackTimer < 0 && shouldFire(rs.patternName)) {
+        const interval = getBeatInterval(rs.patternName)
+        rs.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * 0.8)
+        rs.attackTimer = 0
+        playWindup(rs.expandTime, false)
+        // Trigger lunge toward player
+        if (enemy.movePattern === 'lunge' && enemy.lungeTimer <= 0) {
+          const ldx = player.x - enemy.x
+          const ldy = player.y - enemy.y
+          const ldist = Math.sqrt(ldx * ldx + ldy * ldy)
+          if (ldist > 1) {
+            enemy.lungeDirX = ldx / ldist
+            enemy.lungeDirY = ldy / ldist
+            enemy.lungeTimer = 0.3
+          }
+        }
+      }
+
+      if (rs.attackTimer >= 0) {
+        rs.attackTimer += dt
+        if (rs.attackTimer >= rs.expandTime && rs.attackTimer - dt < rs.expandTime) {
+          emit('enemy:beat', enemy, i)
+        }
+        if (rs.attackTimer > rs.expandTime + 0.05) {
+          rs.attackTimer = -1
+        }
+      }
     }
   }
 }
@@ -163,7 +314,7 @@ export const DEATH_DURATION = 0.3
 export function damageEnemy(enemy: Enemy, amount: number): void {
   if (enemy.dying) return
   enemy.hp -= amount
-  enemy.hitFlash = 0.15
+  enemy.hitFlash = HIT_FLASH_DURATION
   if (enemy.hp <= 0) {
     enemy.dying = true
     enemy.deathTimer = 0

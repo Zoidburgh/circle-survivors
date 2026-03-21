@@ -1,8 +1,9 @@
 // Arena — fixed rectangular play area with Brotato-style camera
 
+import { ARENA_BUFFER, CAMERA_LEAD_AMOUNT } from '../utils/constants.ts'
+
 export const ARENA_W = 2000
 export const ARENA_H = 1200
-export const ARENA_BUFFER = 80  // visible spawn zone outside arena
 
 export interface Camera {
   x: number  // world position of camera center
@@ -26,7 +27,7 @@ export function updateCamera(
   dt: number
 ): void {
   // Lead ahead — offset toward movement direction
-  const leadAmount = 80
+  const leadAmount = CAMERA_LEAD_AMOUNT
   const leadX = playerX + moveX * leadAmount
   const leadY = playerY + moveY * leadAmount
 
@@ -68,14 +69,3 @@ export function getSpawnPos(playerX: number, playerY: number, minDist = 250): { 
   return { x: margin + Math.random() * 100, y: margin + Math.random() * 100 }
 }
 
-/** Get a random spawn position along an arena edge */
-export function getEdgeSpawnPos(margin = 50): { x: number; y: number } {
-  const edge = Math.floor(Math.random() * 4)
-  switch (edge) {
-    case 0: return { x: Math.random() * ARENA_W, y: -margin }
-    case 1: return { x: ARENA_W + margin, y: Math.random() * ARENA_H }
-    case 2: return { x: Math.random() * ARENA_W, y: ARENA_H + margin }
-    case 3: return { x: -margin, y: Math.random() * ARENA_H }
-    default: return { x: 0, y: 0 }
-  }
-}

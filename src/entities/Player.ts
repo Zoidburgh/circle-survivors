@@ -5,7 +5,7 @@ import { shouldFire } from '../audio/PatternClock.ts'
 import * as Input from '../game/InputManager.ts'
 import { emit } from '../core/EventBus.ts'
 import { playDash, playWindup } from '../audio/AudioEngine.ts'
-import { clampToArena } from '../game/Arena.ts'
+import { clampToArena, ARENA_W, ARENA_H } from '../game/Arena.ts'
 import {
   PLAYER_SPEED,
   PLAYER_TEMPO,
@@ -13,6 +13,7 @@ import {
   MAX_RING_RADIUS,
   PLAYER_MAX_HP,
   PLAYER_BASE_DAMAGE,
+  HP_DRAIN_SPEED,
 } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import { COLOR_PLAYER } from '../utils/constants.ts'
@@ -41,6 +42,11 @@ export interface Player {
   dashRechargeTimer: number // time until next charge gained
   trail: { x: number; y: number }[]
   trailTimer: number
+  prevX: number
+  prevY: number
+  dashStartX: number  // position when dash began — for sweep hit detection
+  dashStartY: number
+  hitRadius: number
 }
 
 export function createPlayer(x: number, y: number): Player {
@@ -63,6 +69,11 @@ export function createPlayer(x: number, y: number): Player {
     dashRechargeTimer: 0,
     trail: [],
     trailTimer: 0,
+    prevX: ARENA_W / 2,
+    prevY: ARENA_H / 2,
+    dashStartX: ARENA_W / 2,
+    dashStartY: ARENA_H / 2,
+    hitRadius: PLAYER_RADIUS,
   }
 }
 
@@ -75,7 +86,7 @@ export function updatePlayer(player: Player, dt: number): void {
 
   // Smooth HP display
   if (player.displayHp > player.hp) {
-    player.displayHp -= (player.displayHp - player.hp) * 8 * dt
+    player.displayHp -= (player.displayHp - player.hp) * HP_DRAIN_SPEED * dt
     if (player.displayHp - player.hp < 0.01) player.displayHp = player.hp
   }
 
@@ -95,6 +106,10 @@ export function updatePlayer(player: Player, dt: number): void {
     if (player.trail.length > 8) player.trail.shift()
     player.trailTimer = 0.03
   }
+
+  // Store previous position for sweep hit detection
+  player.prevX = player.x
+  player.prevY = player.y
 
   // Dash movement
   if (player.dashTimer >= 0) {
@@ -120,14 +135,13 @@ export function updatePlayer(player: Player, dt: number): void {
   // Beat detection — pattern driven
   if (player.attackTimer < 0 && shouldFire('Player')) {
     player.attackTimer = 0
-    playWindup(ATTACK_EXPAND_TIME, true)
   }
 
   // Attack animation
   if (player.attackTimer >= 0) {
     player.attackTimer += dt
     if (player.attackTimer >= ATTACK_EXPAND_TIME && player.attackTimer - dt < ATTACK_EXPAND_TIME) {
-      emit('player:beat', player)
+      emit('player:beat', player) // damage fires at ring peak
     }
     if (player.attackTimer > ATTACK_TOTAL_TIME) {
       player.attackTimer = -1
@@ -146,6 +160,8 @@ export function updatePlayer(player: Player, dt: number): void {
         player.dashDirX = Math.cos(player.facingAngle)
         player.dashDirY = Math.sin(player.facingAngle)
       }
+      player.dashStartX = player.x
+      player.dashStartY = player.y
       player.dashTimer = DASH_DURATION
       player.dashCharges--
       playDash()

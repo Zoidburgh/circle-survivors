@@ -8,12 +8,19 @@ import { getPattern, getLoopPosition, getLoopLength } from '../audio/PatternCloc
 import { getPreviewEnemy } from '../game/EnemyDesigner.ts'
 import type { Camera } from '../game/Arena.ts'
 import { ARENA_W, ARENA_H } from '../game/Arena.ts'
+import { getBlockedArcs } from '../game/RingOcclusion.ts'
+import type { BlockedArc } from '../game/RingOcclusion.ts'
+import { getEnemies } from '../core/GameState.ts'
+import { getBeatName } from '../audio/AudioEngine.ts'
 import { BEAT_SEC } from '../utils/constants.ts'
 import {
   GRID_ALPHA,
   GRID_CELL_PX,
   COLOR_PLAYER,
   PLAYER_RADIUS,
+  PARTICLE_CAP,
+  ARENA_BUFFER,
+  HIT_FLASH_DURATION,
 } from '../utils/constants.ts'
 
 let canvas: HTMLCanvasElement
@@ -34,7 +41,7 @@ interface Particle {
 }
 
 const particles: Particle[] = []
-const MAX_PARTICLES = 2000
+const MAX_PARTICLES = PARTICLE_CAP
 let lastDt = 0.016
 
 function spawnParticle(
@@ -50,10 +57,22 @@ function spawnParticle(
 function spawnRingParticles(
   cx: number, cy: number, radius: number,
   ri: number, gi: number, bi: number,
-  count: number, speed: number, lifetime: number, size: number
+  count: number, speed: number, lifetime: number, size: number,
+  blocked: BlockedArc[] = []
 ): void {
   for (let i = 0; i < count; i++) {
     const angle = Math.random() * Math.PI * 2
+    // Skip if in a blocked arc
+    if (blocked.length > 0) {
+      let skip = false
+      const na = ((angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)
+      for (const arc of blocked) {
+        const s = ((arc.start % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)
+        const e = ((arc.end % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)
+        if (s <= e ? (na >= s && na <= e) : (na >= s || na <= e)) { skip = true; break }
+      }
+      if (skip) continue
+    }
     const px = cx + Math.cos(angle) * radius
     const py = cy + Math.sin(angle) * radius
     const vx = Math.cos(angle) * speed * (0.5 + Math.random())
@@ -121,10 +140,20 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   drawGrid()
   drawArenaBorder()
 
+  // Clip rings and particles to arena bounds
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(-camX, -camY, ARENA_W, ARENA_H)
+  ctx.clip()
+
   for (const enemy of enemies) {
     if (!enemy.alive && !enemy.dying) continue
     if (!enemy.dying) {
-      drawRing(enemy.x, enemy.y, enemy.ring, enemy.attackTimer, undefined, enemy.expandTime)
+      for (const rs of enemy.rings) {
+        const ringRadius = rs.ring.radius * getRingExpansion(rs.attackTimer)
+        const arcs = ringRadius > 1 ? getBlockedArcs(enemy.x, enemy.y, ringRadius, getEnemies(), enemy) : []
+        drawRing(enemy.x, enemy.y, rs.ring, rs.attackTimer, undefined, rs.expandTime, arcs)
+      }
     }
     drawEnemy(enemy, player)
   }
@@ -132,6 +161,8 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   drawRing(player.x, player.y, player.ring, player.attackTimer, getEffectiveRadius(player))
 
   drawParticles()
+
+  ctx.restore()
   drawPlayer(player)
   drawDesignerPreview(player)
   drawSpawnPanel()
@@ -161,25 +192,43 @@ function drawArenaBorder(): void {
   const y = -camY
   const w = ARENA_W
   const h = ARENA_H
-  const buffer = 80 // visible spawn buffer region
+  const buffer = ARENA_BUFFER
 
-  // Spawn buffer zone — slightly lighter than the void, shows where enemies appear
-  ctx.fillStyle = 'rgba(20, 15, 40, 0.5)'
-  // Top buffer
+  // Dark buffer — gradient edges that make the arena pop
+  // Top
+  const topGrad = ctx.createLinearGradient(0, y, 0, y - buffer)
+  topGrad.addColorStop(0, 'rgba(0, 0, 0, 0.3)')
+  topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.85)')
+  ctx.fillStyle = topGrad
   ctx.fillRect(x - buffer, y - buffer, w + buffer * 2, buffer)
-  // Bottom buffer
+
+  // Bottom
+  const botGrad = ctx.createLinearGradient(0, y + h, 0, y + h + buffer)
+  botGrad.addColorStop(0, 'rgba(0, 0, 0, 0.3)')
+  botGrad.addColorStop(1, 'rgba(0, 0, 0, 0.85)')
+  ctx.fillStyle = botGrad
   ctx.fillRect(x - buffer, y + h, w + buffer * 2, buffer)
-  // Left buffer
+
+  // Left
+  const leftGrad = ctx.createLinearGradient(x, 0, x - buffer, 0)
+  leftGrad.addColorStop(0, 'rgba(0, 0, 0, 0.3)')
+  leftGrad.addColorStop(1, 'rgba(0, 0, 0, 0.85)')
+  ctx.fillStyle = leftGrad
   ctx.fillRect(x - buffer, y, buffer, h)
-  // Right buffer
+
+  // Right
+  const rightGrad = ctx.createLinearGradient(x + w, 0, x + w + buffer, 0)
+  rightGrad.addColorStop(0, 'rgba(0, 0, 0, 0.3)')
+  rightGrad.addColorStop(1, 'rgba(0, 0, 0, 0.85)')
+  ctx.fillStyle = rightGrad
   ctx.fillRect(x + w, y, buffer, h)
 
-  // Outer border of buffer zone — faint dashed line
-  ctx.strokeStyle = 'rgba(255, 100, 100, 0.15)'
-  ctx.lineWidth = 1
-  ctx.setLineDash([8, 8])
-  ctx.strokeRect(x - buffer, y - buffer, w + buffer * 2, h + buffer * 2)
-  ctx.setLineDash([])
+  // Corners
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.85)'
+  ctx.fillRect(x - buffer, y - buffer, buffer, buffer)
+  ctx.fillRect(x + w, y - buffer, buffer, buffer)
+  ctx.fillRect(x - buffer, y + h, buffer, buffer)
+  ctx.fillRect(x + w, y + h, buffer, buffer)
 
   // Arena border — layered glow from soft outer to bright inner
   ctx.strokeStyle = 'rgba(79, 195, 247, 0.03)'
@@ -199,7 +248,69 @@ function drawArenaBorder(): void {
   ctx.strokeRect(x, y, w, h)
 }
 
-function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: number, radiusOverride?: number, expandTime = ATTACK_EXPAND_TIME): void {
+/** Normalize, split wrapping arcs, merge overlaps, return sorted non-overlapping arcs */
+function resolveArcs(blocked: BlockedArc[]): { start: number; end: number }[] {
+  if (blocked.length === 0) return []
+  const TWO_PI = Math.PI * 2
+  const flat: { start: number; end: number }[] = []
+
+  for (const a of blocked) {
+    let s = ((a.start % TWO_PI) + TWO_PI) % TWO_PI
+    let e = ((a.end % TWO_PI) + TWO_PI) % TWO_PI
+    if (s > e) {
+      // Wraps around 0 — split into two
+      flat.push({ start: s, end: TWO_PI })
+      flat.push({ start: 0, end: e })
+    } else {
+      flat.push({ start: s, end: e })
+    }
+  }
+
+  // Sort by start
+  flat.sort((a, b) => a.start - b.start)
+
+  // Merge overlapping
+  const merged: { start: number; end: number }[] = [flat[0]!]
+  for (let i = 1; i < flat.length; i++) {
+    const prev = merged[merged.length - 1]!
+    const curr = flat[i]!
+    if (curr.start <= prev.end) {
+      prev.end = Math.max(prev.end, curr.end)
+    } else {
+      merged.push(curr)
+    }
+  }
+  return merged
+}
+
+/** Draw a circle arc, skipping blocked angle ranges */
+function drawArcWithGaps(cx: number, cy: number, radius: number, blocked: BlockedArc[]): void {
+  if (blocked.length === 0) {
+    ctx.beginPath()
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2)
+    ctx.stroke()
+    return
+  }
+
+  const arcs = resolveArcs(blocked)
+
+  let angle = 0
+  for (const arc of arcs) {
+    if (arc.start > angle + 0.01) {
+      ctx.beginPath()
+      ctx.arc(cx, cy, radius, angle, arc.start)
+      ctx.stroke()
+    }
+    angle = arc.end
+  }
+  if (angle < Math.PI * 2 - 0.01) {
+    ctx.beginPath()
+    ctx.arc(cx, cy, radius, angle, Math.PI * 2)
+    ctx.stroke()
+  }
+}
+
+function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: number, radiusOverride?: number, expandTime = ATTACK_EXPAND_TIME, blockedArcs: BlockedArc[] = []): void {
   if (attackTimer < 0) return
 
   const sx = worldX - camX
@@ -217,34 +328,37 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   const buildup = Math.min(attackTimer / expandTime, 1)
   const alpha = getRingAlpha(attackTimer, 0.3 + 0.5 * buildup)
   const lineW = 2 + 4 * buildup
-  const atPeak = attackTimer >= expandTime * 0.9 && attackTimer <= expandTime * 1.1
+  // Red ring visible from peak for a short fade-out
+  const pastPeak = attackTimer - expandTime
+  const showRedRing = pastPeak >= 0 && pastPeak < 0.11
 
   // Trail particles
   if (buildup > 0.2) {
     const trailCount = Math.floor(buildup * 3)
-    spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, trailCount, 20 + buildup * 40, 0.3, 2)
+    spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, trailCount, 20 + buildup * 40, 0.3, 2, blockedArcs)
   }
 
   // Explosion at peak
-  if (atPeak && attackTimer - lastDt < expandTime * 0.9) {
-    spawnRingParticles(worldX, worldY, currentRadius, 255, 255, 255, 40, 40, 0.5, 4)
-    spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, 30, 25, 0.6, 3)
+  if (showRedRing && pastPeak < lastDt * 2) {
+    spawnRingParticles(worldX, worldY, currentRadius, 255, 255, 255, 40, 40, 0.5, 5, blockedArcs)
+    spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, 30, 25, 0.6, 3.6, blockedArcs)
   }
 
-  // Main ring
-  ctx.beginPath()
-  ctx.arc(sx, sy, currentRadius, 0, Math.PI * 2)
+  // Main ring — draw with occlusion gaps if blocked
   ctx.strokeStyle = `rgba(${ri}, ${gi}, ${bi}, ${alpha})`
   ctx.lineWidth = lineW
-  ctx.stroke()
+  drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
 
   // Red flash at peak
-  if (atPeak) {
-    ctx.beginPath()
-    ctx.arc(sx, sy, currentRadius, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(255, 50, 50, 0.8)`
-    ctx.lineWidth = 3
-    ctx.stroke()
+  if (showRedRing) {
+    const redAlpha = 0.8 * (1 - pastPeak / 0.11)
+    ctx.strokeStyle = `rgba(255, 80, 80, ${redAlpha})`
+    ctx.lineWidth = 4
+    drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
+    // Outer glow
+    ctx.strokeStyle = `rgba(255, 120, 120, ${redAlpha * 0.4})`
+    ctx.lineWidth = 10
+    drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
   }
 }
 
@@ -268,7 +382,7 @@ function drawPlayer(player: Player): void {
   let fillColor = 'rgba(79, 195, 247, 0.15)'
   let strokeColor = COLOR_PLAYER
   if (player.hitFlash > 0) {
-    fillColor = `rgba(255, 50, 50, ${0.5 * (player.hitFlash / 0.15)})`
+    fillColor = `rgba(255, 50, 50, ${0.5 * (player.hitFlash / HIT_FLASH_DURATION)})`
     strokeColor = '#FF3333'
   }
 
@@ -500,8 +614,9 @@ function drawDesignerPreview(player: Player): void {
   const hg = parseInt(preview.color.slice(3, 5), 16)
   const hb = parseInt(preview.color.slice(5, 7), 16)
 
-  // Orbit at sweet spot
-  const orbitDist = preview.ringRadius * 0.85
+  // Orbit at sweet spot of largest ring
+  const maxRingR = Math.max(...preview.previewRings.map(r => r.ringRadius), 100)
+  const orbitDist = maxRingR * 0.85
   const orbitSpeed = preview.moveSpeed / 200
   const angle = performance.now() / 1000 * orbitSpeed
   const worldX = player.x + Math.cos(angle) * orbitDist
@@ -509,52 +624,33 @@ function drawDesignerPreview(player: Player): void {
   const sx = worldX - camX
   const sy = worldY - camY
 
-  // Attack ring — uses same animation as real enemies
-  if (preview.attackTimer >= 0) {
-    const expansion = getRingExpansion(preview.attackTimer)
-    const currentRadius = preview.ringRadius * expansion
-    if (currentRadius > 1) {
-      const pExpandTime = preview.expandTime
-      const buildup = Math.min(preview.attackTimer / pExpandTime, 1)
-      const alpha = getRingAlpha(preview.attackTimer, 0.3 + 0.5 * buildup)
-      const atPeak = preview.attackTimer >= pExpandTime * 0.9 && preview.attackTimer <= pExpandTime * 1.1
+  // Draw each preview ring
+  for (const pr of preview.previewRings) {
+    if (pr.attackTimer >= 0) {
+      const expansion = getRingExpansion(pr.attackTimer)
+      const currentRadius = pr.ringRadius * expansion
+      if (currentRadius > 1) {
+        const pExpandTime = pr.expandTime
+        const buildup = Math.min(pr.attackTimer / pExpandTime, 1)
+        const alpha = getRingAlpha(pr.attackTimer, 0.3 + 0.5 * buildup)
 
-      // Trail particles
-      if (buildup > 0.2) {
-        const trailCount = Math.floor(buildup * 3)
-        spawnRingParticles(worldX, worldY, currentRadius, hr, hg, hb, trailCount, 20 + buildup * 40, 0.3, 2)
-      }
-
-      // Burst at peak
-      if (atPeak && preview.attackTimer - lastDt < pExpandTime * 0.9) {
-        spawnRingParticles(worldX, worldY, currentRadius, 255, 255, 255, 30, 40, 0.5, 4)
-        spawnRingParticles(worldX, worldY, currentRadius, hr, hg, hb, 20, 25, 0.6, 3)
-      }
-
-      ctx.beginPath()
-      ctx.arc(sx, sy, currentRadius, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${alpha})`
-      ctx.lineWidth = 2 + 4 * buildup
-      ctx.stroke()
-
-      if (atPeak) {
         ctx.beginPath()
         ctx.arc(sx, sy, currentRadius, 0, Math.PI * 2)
-        ctx.strokeStyle = 'rgba(255, 50, 50, 0.8)'
-        ctx.lineWidth = 3
+        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${alpha})`
+        ctx.lineWidth = 2 + 4 * buildup
         ctx.stroke()
       }
     }
-  }
 
-  // Max ring range
-  ctx.beginPath()
-  ctx.arc(sx, sy, preview.ringRadius, 0, Math.PI * 2)
-  ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.1)`
-  ctx.lineWidth = 1
-  ctx.setLineDash([4, 6])
-  ctx.stroke()
-  ctx.setLineDash([])
+    // Max ring range — dashed
+    ctx.beginPath()
+    ctx.arc(sx, sy, pr.ringRadius, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.1)`
+    ctx.lineWidth = 1
+    ctx.setLineDash([4, 6])
+    ctx.stroke()
+    ctx.setLineDash([])
+  }
 
   // Ghost body
   ctx.globalAlpha = 0.7
@@ -642,8 +738,8 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
   ctx.fillText(`FPS: ${fps}`, x, 20)
   ctx.fillText(`HP: ${player.hp}/${player.maxHp}`, x, 36)
   ctx.fillText(`Enemies: ${enemies.filter(e => e.alive).length}`, x, 52)
-  ctx.fillText(`Song: ${pat?.name ?? 'none'} [${loopPos.toFixed(1)}/${loopLen}]`, x, 68)
-  ctx.fillText(`WASD=move  LMB=dash  Tab=designer`, 10, height - 12)
+  ctx.fillText(`Beat: ${getBeatName()} | Song: ${pat?.name ?? 'none'} [${loopPos.toFixed(1)}/${loopLen}]`, x - 80, 68)
+  ctx.fillText(`WASD=move  LMB=dash  Tab=designer  F1-F5=beats`, 10, height - 12)
   ctx.fillText(`1-5=spawn  0=spawn 100`, 10, height - 28)
 }
 

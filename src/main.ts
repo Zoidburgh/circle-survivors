@@ -30,6 +30,14 @@ function spawnEnemy(type: typeof ENEMY_TYPES[number]): void {
 }
 
 window.addEventListener('keydown', e => {
+  // F1-F5: switch beat presets
+  if (e.key.startsWith('F') && e.key.length <= 2) {
+    const num = parseInt(e.key.slice(1))
+    if (num >= 1 && num <= 5) {
+      Audio.switchBeat(num - 1)
+      return
+    }
+  }
   if (e.key === '0') {
     for (let i = 0; i < 100; i++) {
       const type = ENEMY_TYPES[Math.floor(Math.random() * ENEMY_TYPES.length)]!

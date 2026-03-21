@@ -1,21 +1,24 @@
+// Pattern-driven beat clock — reads AudioContext.currentTime for sync with music
+// Runs at MASTER_BPM (game speed), same time source as BeatLoop
+
 import type { SongPattern } from './SongPatterns.ts'
 import { BEAT_SEC } from '../utils/constants.ts'
+import { getAudioTime } from './AudioEngine.ts'
+import { getBeatZeroTime } from './BeatLoop.ts'
 
 let currentPattern: SongPattern | null = null
-let beatTime = 0
-let prevBeatTime = 0
+let startTime = 0 // AudioContext time when pattern started
 
 const firedBeats = new Map<string, Set<number>>()
-
-// Which types should fire THIS tick — computed once per tick, read by all enemies
 const firingThisTick = new Set<string>()
+let lastLoopBeat = -1
 
 export function setPattern(pattern: SongPattern): void {
   currentPattern = pattern
-  beatTime = 0
-  prevBeatTime = 0
+  startTime = getAudioTime()
   firedBeats.clear()
   firingThisTick.clear()
+  lastLoopBeat = -1
 }
 
 export function getPattern(): SongPattern | null {
@@ -23,25 +26,28 @@ export function getPattern(): SongPattern | null {
 }
 
 export function getLoopPosition(): number {
-  return beatTime
+  if (!currentPattern) return 0
+  // Use BeatLoop's start time so game beats align with music beats
+  const elapsed = getAudioTime() - getBeatZeroTime()
+  if (elapsed < 0) return 0
+  const totalBeats = elapsed / BEAT_SEC
+  return totalBeats % currentPattern.loopBeats
 }
 
 export function getLoopLength(): number {
   return currentPattern?.loopBeats ?? 8
 }
 
-export function advancePatternClock(dt: number): void {
+export function advancePatternClock(_dt: number): void {
   if (!currentPattern) return
 
-  prevBeatTime = beatTime
-  beatTime += dt / BEAT_SEC
+  const beatTime = getLoopPosition()
 
-  // Loop wrap
-  if (beatTime >= currentPattern.loopBeats) {
-    beatTime -= currentPattern.loopBeats
-    prevBeatTime = -0.01
+  // Detect loop wrap — clear fired beats
+  if (beatTime < lastLoopBeat - 1) {
     firedBeats.clear()
   }
+  lastLoopBeat = beatTime
 
   // Compute which types fire this tick
   firingThisTick.clear()
@@ -60,13 +66,12 @@ export function advancePatternClock(dt: number): void {
       if (dist < window) {
         firedSet.add(beat)
         firingThisTick.add(typeName)
-        break // one trigger per type per tick is enough
+        break
       }
     }
   }
 }
 
-/** Check if this enemy type should fire — all enemies of this type get the same answer */
 export function shouldFire(typeName: string): boolean {
   return firingThisTick.has(typeName)
 }
@@ -76,15 +81,13 @@ function loopDist(a: number, b: number, len: number): number {
   return Math.min(d, len - d)
 }
 
-/** Get the shortest interval (in seconds) between beats for a type */
 export function getBeatInterval(typeName: string): number {
   if (!currentPattern) return BEAT_SEC
   const beats = currentPattern.patterns[typeName]
   if (!beats || beats.length < 2) return currentPattern.loopBeats * BEAT_SEC
 
-  // Sort and find smallest gap (including wrap-around)
   const sorted = [...beats].sort((a, b) => a - b)
-  let minGap = currentPattern.loopBeats - sorted[sorted.length - 1]! + sorted[0]! // wrap gap
+  let minGap = currentPattern.loopBeats - sorted[sorted.length - 1]! + sorted[0]!
   for (let i = 1; i < sorted.length; i++) {
     const gap = sorted[i]! - sorted[i - 1]!
     if (gap < minGap) minGap = gap

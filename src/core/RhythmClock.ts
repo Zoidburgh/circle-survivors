@@ -12,6 +12,3 @@ export function getPhaseForTempo(tempo: number): number {
   return (globalTime / tempo) % 1.0
 }
 
-export function getGlobalTime(): number {
-  return globalTime
-}

@@ -12,30 +12,115 @@ import { BEAT_SEC } from '../utils/constants.ts'
 export const SOUND_POOL = [
   'pop', 'click', 'snap', 'bell', 'buzz', 'bass', 'chord', 'pluck',
   'thump', 'chirp', 'zap', 'bloop', 'clap', 'rim', 'tom', 'whistle',
+  'purr', 'ping', 'growl', 'chime', 'knock', 'sweep', 'drop', 'pulse',
 ] as const
 
 export type SoundName = typeof SOUND_POOL[number]
 
+import type { RingConfig } from '../entities/EnemyTypes.ts'
+
 export interface DesignedEnemy extends EnemyType {
-  sound: SoundName
-  beats: number[]
+  sound: SoundName       // default sound (first ring)
+  beats: number[]        // default beats (first ring)
+  rings: RingConfig[]    // all rings
 }
 
 const designedEnemies: DesignedEnemy[] = []
 let panel: HTMLDivElement | null = null
 let visible = false
 
+// ── Persistence ──
+const SAVE_KEY = 'circle-survivors-enemies'
+const SAVE_VERSION = 1
+
+interface SaveData {
+  version: number
+  enemies: DesignedEnemy[]
+}
+
+function saveToStorage(): void {
+  const data: SaveData = { version: SAVE_VERSION, enemies: designedEnemies }
+  localStorage.setItem(SAVE_KEY, JSON.stringify(data))
+}
+
+function loadFromStorage(): DesignedEnemy[] {
+  try {
+    const raw = localStorage.getItem(SAVE_KEY)
+    if (!raw) return []
+    const data = JSON.parse(raw) as SaveData
+    if (data.version !== SAVE_VERSION) return [] // future: migrate
+    return data.enemies ?? []
+  } catch {
+    return []
+  }
+}
+
+function resolveNameConflict(name: string): string {
+  const existing = designedEnemies.map(e => e.name)
+  if (!existing.includes(name)) return name
+  let i = 2
+  while (existing.includes(`${name}_${i}`)) i++
+  return `${name}_${i}`
+}
+
+function exportEnemies(): void {
+  const data: SaveData = { version: SAVE_VERSION, enemies: designedEnemies }
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'circle-survivors-enemies.json'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+function importEnemies(): void {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.json'
+  input.addEventListener('change', () => {
+    const file = input.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result as string) as SaveData
+        if (!data.enemies?.length) return
+        for (const enemy of data.enemies) {
+          enemy.name = resolveNameConflict(enemy.name)
+          designedEnemies.push(enemy)
+          const typeIdx = ENEMY_TYPES.findIndex(t => t.name === enemy.name)
+          if (typeIdx >= 0) ENEMY_TYPES[typeIdx] = enemy
+          else ENEMY_TYPES.push(enemy)
+          addEnemyForm(enemy)
+        }
+        rebuildPattern()
+        saveToStorage()
+      } catch {
+        // invalid file, ignore
+      }
+    }
+    reader.readAsText(file)
+  })
+  input.click()
+}
+
 // Live preview enemy shown on the game canvas
-export interface PreviewEnemy {
-  radius: number
+export interface PreviewRing {
   ringRadius: number
-  color: string
-  name: string
-  moveSpeed: number
   beats: number[]
   sound: string
   attackTimer: number
   expandTime: number
+  patternName: string
+}
+
+export interface PreviewEnemy {
+  radius: number
+  color: string
+  name: string
+  moveSpeed: number
+  previewRings: PreviewRing[]
 }
 let previewEnemy: PreviewEnemy | null = null
 
@@ -55,7 +140,7 @@ function getIntervalFromBeats(beats: number[], loopLen: number): number {
   return minGap
 }
 
-let previewFiredBeats = new Set<number>()
+let previewFiredBeats = new Set<string>()
 let previewLastLoop = -1
 
 export function updatePreviewEnemy(dt: number): void {
@@ -65,38 +150,38 @@ export function updatePreviewEnemy(dt: number): void {
   const loopLen = getLoopLength()
 
   // Detect loop wrap — reset fired set
-  const loopIndex = Math.floor(loopPos)
   if (loopPos < 0.1 && previewLastLoop > loopLen - 1) {
     previewFiredBeats.clear()
   }
   previewLastLoop = loopPos
 
-  // Check if any of preview's beats just hit — start ring animation
-  if (previewEnemy.attackTimer < 0) {
-    for (const beat of previewEnemy.beats) {
-      if (previewFiredBeats.has(beat)) continue
-      const d = Math.abs(loopPos - beat)
-      const dist = Math.min(d, loopLen - d)
-      if (dist < 0.08) {
-        previewFiredBeats.add(beat)
-        // Scale expand time to fit beat interval
-        const interval = getIntervalFromBeats(previewEnemy.beats, loopLen)
-        previewEnemy.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * BEAT_SEC * 0.8)
-        previewEnemy.attackTimer = 0
-        break
+  // Update each preview ring independently
+  for (const pr of previewEnemy.previewRings) {
+    if (pr.attackTimer < 0) {
+      for (const beat of pr.beats) {
+        const key = `${pr.patternName}:${beat}`
+        if (previewFiredBeats.has(key)) continue
+        const d = Math.abs(loopPos - beat)
+        const dist = Math.min(d, loopLen - d)
+        if (dist < 0.08) {
+          previewFiredBeats.add(key)
+          const interval = getIntervalFromBeats(pr.beats, loopLen)
+          pr.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * BEAT_SEC * 0.8)
+          pr.attackTimer = 0
+          break
+        }
       }
     }
-  }
 
-  // Advance attack animation, play sound at peak (same as real enemies)
-  if (previewEnemy.attackTimer >= 0) {
-    const prev = previewEnemy.attackTimer
-    previewEnemy.attackTimer += dt
-    if (previewEnemy.attackTimer >= previewEnemy.expandTime && prev < previewEnemy.expandTime) {
-      playEnemyBeatTick(previewEnemy.name, previewEnemy.sound)
-    }
-    if (previewEnemy.attackTimer > previewEnemy.expandTime + 0.05) {
-      previewEnemy.attackTimer = -1
+    if (pr.attackTimer >= 0) {
+      const prev = pr.attackTimer
+      pr.attackTimer += dt
+      if (pr.attackTimer >= pr.expandTime && prev < pr.expandTime) {
+        playEnemyBeatTick(pr.patternName, pr.sound)
+      }
+      if (pr.attackTimer > pr.expandTime + 0.05) {
+        pr.attackTimer = -1
+      }
     }
   }
 }
@@ -120,7 +205,7 @@ export function initDesigner(): void {
   panel = document.createElement('div')
   panel.id = 'enemy-designer'
   panel.style.cssText = `
-    position: fixed; top: 10px; right: 10px; width: 360px;
+    position: fixed; top: 10px; right: 10px; width: 440px;
     background: rgba(13,10,26,0.97); border: 1px solid rgba(79,195,247,0.3);
     border-radius: 8px; padding: 16px; color: #ccc; font: 12px monospace;
     z-index: 100; display: none; max-height: 90vh; overflow-y: auto;
@@ -138,6 +223,10 @@ export function initDesigner(): void {
       background: rgba(79,195,247,0.15); border: 1px solid rgba(79,195,247,0.3);
       color: #4FC3F7; font: 13px monospace; border-radius: 4px;
     ">+ Add Enemy Type</button>
+    <div style="display:flex;gap:6px;margin-top:6px;">
+      <button id="ed-export" style="flex:1;padding:6px;cursor:pointer;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);color:#888;font:11px monospace;border-radius:3px;">Export JSON</button>
+      <button id="ed-import" style="flex:1;padding:6px;cursor:pointer;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);color:#888;font:11px monospace;border-radius:3px;">Import JSON</button>
+    </div>
   `
 
   document.body.appendChild(panel)
@@ -148,6 +237,8 @@ export function initDesigner(): void {
 
   panel.querySelector('#ed-close')!.addEventListener('click', toggleDesigner)
   panel.querySelector('#ed-add')!.addEventListener('click', () => addEnemyForm())
+  panel.querySelector('#ed-export')!.addEventListener('click', exportEnemies)
+  panel.querySelector('#ed-import')!.addEventListener('click', importEnemies)
 
   window.addEventListener('keydown', e => {
     if (e.key === 'Tab') {
@@ -155,6 +246,17 @@ export function initDesigner(): void {
       toggleDesigner()
     }
   })
+
+  // Restore saved enemies
+  const saved = loadFromStorage()
+  for (const enemy of saved) {
+    designedEnemies.push(enemy)
+    const typeIdx = ENEMY_TYPES.findIndex(t => t.name === enemy.name)
+    if (typeIdx >= 0) ENEMY_TYPES[typeIdx] = enemy
+    else ENEMY_TYPES.push(enemy)
+    addEnemyForm(enemy)
+  }
+  if (saved.length > 0) rebuildPattern()
 }
 
 let enemyCounter = 0
@@ -198,56 +300,41 @@ function addEnemyForm(existing?: DesignedEnemy): void {
   })
 
   body.innerHTML = `
-    <div style="display: flex; gap: 8px; margin-bottom: 10px; align-items: center;">
-      <div style="flex:1;">
-        <span style="${labelCSS}">Name</span>
-        <input id="ed-name-${id}" value="${defaultName}" style="${inputCSS}">
-        <div style="display:flex;gap:6px;margin-top:6px;align-items:center;">
-          <div>
-            <span style="${labelCSS}">Color</span>
-            <input id="ed-color-${id}" type="color" value="${defaultColor}" style="width:40px;height:30px;border:none;cursor:pointer;background:none;">
-          </div>
-          <div style="flex:1;">
-            <span style="${labelCSS}">Sound</span>
-            <select id="ed-sound-${id}" style="${inputCSS}">
-              ${SOUND_POOL.map(s => `<option value="${s}" ${s === (existing?.sound ?? 'pop') ? 'selected' : ''}>${s}</option>`).join('')}
-            </select>
-          </div>
-          <button id="ed-audition-${id}" style="margin-top:14px;padding:6px 10px;cursor:pointer;background:rgba(255,255,255,0.1);border:1px solid #444;color:#fff;font:12px monospace;border-radius:3px;">♪</button>
-        </div>
-      </div>
-      <button id="ed-del-${id}" style="position:absolute;top:8px;right:8px;background:none;border:none;color:#666;cursor:pointer;font-size:16px;">✕</button>
+    <button id="ed-del-${id}" style="position:absolute;top:8px;right:8px;background:none;border:none;color:#666;cursor:pointer;font-size:16px;">✕</button>
+    <div style="display:flex;gap:8px;margin-bottom:8px;">
+      <div style="flex:1;"><span style="${labelCSS}">Name</span><input id="ed-name-${id}" value="${defaultName}" style="${inputCSS}"></div>
+      <div><span style="${labelCSS}">Color</span><input id="ed-color-${id}" type="color" value="${defaultColor}" style="width:40px;height:32px;border:none;cursor:pointer;background:none;display:block;"></div>
     </div>
-
-    <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; margin-bottom: 8px;">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;margin-bottom:8px;">
       <div><span style="${labelCSS}">HP</span><input id="ed-hp-${id}" type="text" value="${existing?.hp ?? 2}" style="${inputCSS}"></div>
       <div><span style="${labelCSS}">Speed</span><input id="ed-speed-${id}" type="text" value="${existing?.moveSpeed ?? 50}" style="${inputCSS}"></div>
-      <div><span style="${labelCSS}">Body Size</span><input id="ed-radius-${id}" type="text" value="${existing?.radius ?? 40}" style="${inputCSS}"></div>
+      <div><span style="${labelCSS}">Size</span><input id="ed-radius-${id}" type="text" value="${existing?.radius ?? 40}" style="${inputCSS}"></div>
+      <div><span style="${labelCSS}">Key</span><input id="ed-key-${id}" type="text" value="${existing?.key ?? (id + 1).toString()}" maxlength="1" style="${inputCSS}"></div>
     </div>
-    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px;">
-      <div><span style="${labelCSS}">Ring Range</span><input id="ed-ring-${id}" type="text" value="${existing?.ringRadius ?? 120}" style="${inputCSS}"></div>
-      <div><span style="${labelCSS}">Spawn Key</span><input id="ed-key-${id}" type="text" value="${existing?.key ?? (id + 1).toString()}" maxlength="1" style="${inputCSS}"></div>
-    </div>
-
-    <div style="margin-bottom: 8px;">
-      <span style="${labelCSS}">Rhythm Pattern</span>
-      <select id="ed-rhythm-${id}" style="${inputCSS}">
-        <option value="offbeat">Offbeat — between every player beat</option>
-        <option value="onbeat">On Beat — same as player</option>
-        <option value="half">Half Time — every other beat</option>
-        <option value="double">Double Time — twice per beat</option>
-        <option value="backbeat">Backbeat — beats 2 and 4</option>
-        <option value="synco1">Syncopated A — and-of-1, 2, and-of-3, 4</option>
-        <option value="synco2">Syncopated B — 1, and-of-2, and-of-3, 4</option>
-        <option value="triplet">Triplet Feel — 3 per beat</option>
-        <option value="sparse">Sparse — beats 1 and 5</option>
-        <option value="gallop">Gallop — 1, 1.5, 3, 3.5, 5, 5.5, 7, 7.5</option>
-        <option value="custom">Custom...</option>
-      </select>
-      <input id="ed-beats-${id}" type="text" value="${existing?.beats?.join(', ') ?? '0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5'}" style="${inputCSS} display:none;margin-top:4px;" placeholder="0.5, 1.5, 2.5...">
+    <div style="display:flex;gap:6px;margin-bottom:8px;align-items:center;">
+      <div style="flex:1;">
+        <span style="${labelCSS}">Movement</span>
+        <select id="ed-move-${id}" style="${inputCSS}">
+          <option value="pursue" ${(existing?.movePattern ?? 'pursue') === 'pursue' ? 'selected' : ''}>Pursue — chase to sweet spot</option>
+          <option value="orbit" ${existing?.movePattern === 'orbit' ? 'selected' : ''}>Orbit — circle the player</option>
+          <option value="zigzag" ${existing?.movePattern === 'zigzag' ? 'selected' : ''}>Zigzag — weave toward player</option>
+          <option value="lunge" ${existing?.movePattern === 'lunge' ? 'selected' : ''}>Lunge — sits still, dashes on beat</option>
+          <option value="bounce" ${existing?.movePattern === 'bounce' ? 'selected' : ''}>Bounce — ricochets off walls and bodies</option>
+          <option value="stationary" ${existing?.movePattern === 'stationary' ? 'selected' : ''}>Stationary — turret</option>
+        </select>
+      </div>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:14px;">
+        <input id="ed-blocks-${id}" type="checkbox" ${existing?.blocksRings ? 'checked' : ''}>
+        <span style="${labelCSS} margin:0;">Shield</span>
+      </label>
     </div>
 
-    <div style="display:flex;gap:6px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <span style="color:#4FC3F7;font-size:12px;font-weight:bold;">Rings</span>
+      <button id="ed-addring-${id}" style="padding:3px 10px;cursor:pointer;background:rgba(79,195,247,0.15);border:1px solid rgba(79,195,247,0.3);color:#4FC3F7;font:11px monospace;border-radius:3px;">+ Ring</button>
+    </div>
+    <div id="ed-rings-${id}"></div>
+    <div style="display:flex;gap:6px;margin-top:8px;">
       <button id="ed-save-${id}" style="flex:1;padding:8px;cursor:pointer;background:rgba(100,255,120,0.15);border:1px solid rgba(100,255,120,0.3);color:#64FF78;font:12px monospace;border-radius:4px;">Save</button>
       <button id="ed-spawn-${id}" style="flex:1;padding:8px;cursor:pointer;background:rgba(79,195,247,0.15);border:1px solid rgba(79,195,247,0.3);color:#4FC3F7;font:12px monospace;border-radius:4px;">Spawn</button>
     </div>
@@ -270,49 +357,125 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     gallop:   [0, 0.5, 2, 2.5, 4, 4.5, 6, 6.5],
   }
 
-  const rhythmSelect = div.querySelector(`#ed-rhythm-${id}`) as HTMLSelectElement
-  const beatsInput = div.querySelector(`#ed-beats-${id}`) as HTMLInputElement
+  const ringsContainer = body.querySelector(`#ed-rings-${id}`) as HTMLDivElement
+  let ringCounter = 0
 
-  // Set initial dropdown from existing beats
-  if (existing?.beats) {
-    const beatsStr = existing.beats.join(', ')
-    let matched = false
-    for (const [key, preset] of Object.entries(RHYTHM_PRESETS)) {
-      if (preset.join(', ') === beatsStr) {
-        rhythmSelect.value = key
-        matched = true
-        break
+  function addRingForm(rc?: RingConfig): void {
+    const ri = ringCounter++
+    const ringDiv = document.createElement('div')
+    ringDiv.style.cssText = 'border:1px solid rgba(255,255,255,0.08);border-radius:4px;padding:6px;margin-bottom:4px;'
+    const defaultBeats = rc?.beats?.join(', ') ?? '0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5'
+    const defaultSound = rc?.sound ?? 'rim'
+    const defaultRadius = rc?.ringRadius ?? 120
+
+    ringDiv.innerHTML = `
+      <div style="display:flex;gap:4px;margin-bottom:4px;align-items:center;">
+        <span style="color:#666;font:10px monospace;flex-shrink:0;">Ring ${ri + 1}</span>
+        <select class="ed-rsound" style="${inputCSS} flex:1;">
+          ${SOUND_POOL.map(s => `<option value="${s}" ${s === defaultSound ? 'selected' : ''}>${s}</option>`).join('')}
+        </select>
+        <input class="ed-rradius" type="text" value="${defaultRadius}" placeholder="Range" style="${inputCSS} width:60px;">
+        <button class="ed-raudition" style="padding:4px 8px;cursor:pointer;background:rgba(255,255,255,0.1);border:1px solid #444;color:#fff;font:11px monospace;border-radius:3px;">♪</button>
+        <button class="ed-rdel" style="background:none;border:none;color:#666;cursor:pointer;font-size:14px;">✕</button>
+      </div>
+      <select class="ed-rrhythm" style="${inputCSS} margin-bottom:3px;">
+        <option value="offbeat">Offbeat</option>
+        <option value="onbeat">On Beat</option>
+        <option value="half">Half Time</option>
+        <option value="double">Double Time</option>
+        <option value="backbeat">Backbeat</option>
+        <option value="synco1">Syncopated A</option>
+        <option value="synco2">Syncopated B</option>
+        <option value="triplet">Triplet</option>
+        <option value="sparse">Sparse</option>
+        <option value="gallop">Gallop</option>
+        <option value="custom">Custom...</option>
+      </select>
+      <input class="ed-rbeats" type="text" value="${defaultBeats}" style="${inputCSS} display:none;" placeholder="0.5, 1.5...">
+    `
+    ringsContainer.appendChild(ringDiv)
+
+    const rhythmSel = ringDiv.querySelector('.ed-rrhythm') as HTMLSelectElement
+    const beatsInp = ringDiv.querySelector('.ed-rbeats') as HTMLInputElement
+
+    // Match preset from existing beats
+    if (rc?.beats) {
+      const bs = rc.beats.join(', ')
+      let matched = false
+      for (const [key, preset] of Object.entries(RHYTHM_PRESETS)) {
+        if (preset.join(', ') === bs) { rhythmSel.value = key; matched = true; break }
       }
+      if (!matched) { rhythmSel.value = 'custom'; beatsInp.style.display = 'block' }
     }
-    if (!matched) {
-      rhythmSelect.value = 'custom'
-      beatsInput.style.display = 'block'
-    }
+
+    rhythmSel.addEventListener('change', () => {
+      if (rhythmSel.value === 'custom') {
+        beatsInp.style.display = 'block'
+      } else {
+        beatsInp.style.display = 'none'
+        beatsInp.value = (RHYTHM_PRESETS[rhythmSel.value] ?? []).join(', ')
+      }
+      updatePreview()
+    })
+
+    ringDiv.querySelector('.ed-rdel')!.addEventListener('click', () => {
+      ringDiv.remove()
+      updatePreview()
+    })
+
+    ringDiv.querySelector('.ed-raudition')!.addEventListener('click', () => {
+      const sound = (ringDiv.querySelector('.ed-rsound') as HTMLSelectElement).value
+      playEnemyBeatTick('audition', sound)
+    })
+
+    // Wire inputs to preview
+    ringDiv.querySelectorAll('input, select').forEach(inp => {
+      inp.addEventListener('input', updatePreview)
+      inp.addEventListener('change', updatePreview)
+    })
   }
 
-  rhythmSelect.addEventListener('change', () => {
-    if (rhythmSelect.value === 'custom') {
-      beatsInput.style.display = 'block'
-    } else {
-      beatsInput.style.display = 'none'
-      const preset = RHYTHM_PRESETS[rhythmSelect.value]
-      if (preset) beatsInput.value = preset.join(', ')
-    }
-    updatePreview()
-  })
+  function readRingForms(): RingConfig[] {
+    const ringDivs = ringsContainer.querySelectorAll(':scope > div')
+    const result: RingConfig[] = []
+    ringDivs.forEach(rd => {
+      const sound = (rd.querySelector('.ed-rsound') as HTMLSelectElement).value
+      const ringRadius = parseInt((rd.querySelector('.ed-rradius') as HTMLInputElement).value) || 120
+      const beatsStr = (rd.querySelector('.ed-rbeats') as HTMLInputElement).value
+      const beats = beatsStr.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n))
+      result.push({ ringRadius, sound, beats })
+    })
+    return result
+  }
+
+  // Add ring button
+  body.querySelector(`#ed-addring-${id}`)!.addEventListener('click', () => addRingForm())
+
+  // Initialize rings from existing data
+  const initRings = existing?.rings ?? [{ ringRadius: 140, sound: 'rim', beats: [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5] }]
+  for (const rc of initRings) addRingForm(rc)
 
   function updatePreview(): void {
     const form = readForm()
-    if (!previewEnemy) {
-      previewEnemy = { radius: form.radius, ringRadius: form.ringRadius, color: form.color, name: form.name, moveSpeed: form.moveSpeed, beats: form.beats, sound: form.sound, attackTimer: -1, expandTime: ATTACK_EXPAND_TIME }
-    } else {
-      previewEnemy.radius = form.radius
-      previewEnemy.ringRadius = form.ringRadius
-      previewEnemy.color = form.color
-      previewEnemy.name = form.name
-      previewEnemy.moveSpeed = form.moveSpeed
-      previewEnemy.beats = form.beats
-      previewEnemy.sound = form.sound
+    const newRings: PreviewRing[] = form.rings.map((rc, i) => {
+      const pName = form.rings.length > 1 ? `_preview_${form.name}_r${i}` : `_preview_${form.name}`
+      // Preserve existing attack timer if ring count matches
+      const existing = previewEnemy?.previewRings[i]
+      return {
+        ringRadius: rc.ringRadius,
+        beats: rc.beats,
+        sound: rc.sound,
+        attackTimer: existing?.attackTimer ?? -1,
+        expandTime: existing?.expandTime ?? ATTACK_EXPAND_TIME,
+        patternName: pName,
+      }
+    })
+    previewEnemy = {
+      radius: form.radius,
+      color: form.color,
+      name: form.name,
+      moveSpeed: form.moveSpeed,
+      previewRings: newRings,
     }
   }
 
@@ -332,34 +495,60 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const typeIdx = ENEMY_TYPES.findIndex(t => t.name === readForm().name)
     if (typeIdx >= 0) ENEMY_TYPES.splice(typeIdx, 1)
     rebuildPattern()
+    saveToStorage()
   })
 
   function readForm(): DesignedEnemy {
     const name = (div.querySelector(`#ed-name-${id}`) as HTMLInputElement).value
     const color = (div.querySelector(`#ed-color-${id}`) as HTMLInputElement).value
-    const sound = (div.querySelector(`#ed-sound-${id}`) as HTMLSelectElement).value as SoundName
     const hp = parseInt((div.querySelector(`#ed-hp-${id}`) as HTMLInputElement).value) || 2
     const speed = parseInt((div.querySelector(`#ed-speed-${id}`) as HTMLInputElement).value) || 50
     const radius = parseInt((div.querySelector(`#ed-radius-${id}`) as HTMLInputElement).value) || 40
-    const ring = parseInt((div.querySelector(`#ed-ring-${id}`) as HTMLInputElement).value) || 120
     const key = (div.querySelector(`#ed-key-${id}`) as HTMLInputElement).value || (id + 1).toString()
-    const beatsStr = (div.querySelector(`#ed-beats-${id}`) as HTMLInputElement).value
-    const beats = beatsStr.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n))
-    return { name, color, hp, moveSpeed: speed, radius, ringRadius: ring, key, role: sound, sound, beats }
+    const blocksRings = (div.querySelector(`#ed-blocks-${id}`) as HTMLInputElement).checked
+    const movePattern = (div.querySelector(`#ed-move-${id}`) as HTMLSelectElement).value as import('../entities/EnemyTypes.ts').MovePattern
+    const rings: RingConfig[] = readRingForms()
+    const sound = (rings[0]?.sound ?? 'pop') as SoundName
+    const beats = rings[0]?.beats ?? []
+    const ringRadius = rings[0]?.ringRadius ?? 120
+    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, movePattern }
   }
 
-  // Audition — play the sound once
-  div.querySelector(`#ed-audition-${id}`)!.addEventListener('click', () => {
-    const form = readForm()
-    playEnemyBeatTick(form.name, form.sound)
-  })
+
+  // Track which saved entry this form owns
+  let savedName: string | null = existing?.name ?? null
 
   // Save — collapse and update header
   div.querySelector(`#ed-save-${id}`)!.addEventListener('click', () => {
     const designed = readForm()
+
+    // If we previously saved under a different name, remove the old entry
+    if (savedName && savedName !== designed.name) {
+      const oldIdx = designedEnemies.findIndex(e => e.name === savedName)
+      if (oldIdx >= 0) designedEnemies.splice(oldIdx, 1)
+      const oldTypeIdx = ENEMY_TYPES.findIndex(t => t.name === savedName)
+      if (oldTypeIdx >= 0) ENEMY_TYPES.splice(oldTypeIdx, 1)
+    }
+
+    // Check name conflict with OTHER forms (not our own saved entry)
+    if (designed.name !== savedName) {
+      const conflict = designedEnemies.some(e => e.name === designed.name)
+      if (conflict) {
+        designed.name = resolveNameConflict(designed.name)
+        const nameInput = div.querySelector(`#ed-name-${id}`) as HTMLInputElement
+        nameInput.value = designed.name
+      }
+    }
+
+    // Update or add
     const idx = designedEnemies.findIndex(e => e.name === designed.name)
-    if (idx >= 0) designedEnemies[idx] = designed
-    else designedEnemies.push(designed)
+    if (idx >= 0) {
+      designedEnemies[idx] = designed
+    } else {
+      designedEnemies.push(designed)
+    }
+
+    savedName = designed.name
     const typeIdx = ENEMY_TYPES.findIndex(t => t.name === designed.name)
     if (typeIdx >= 0) ENEMY_TYPES[typeIdx] = designed
     else ENEMY_TYPES.push(designed)
@@ -372,13 +561,14 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const headerSound = div.querySelector(`#ed-header-sound-${id}`) as HTMLSpanElement
     swatch.style.background = designed.color
     headerName.textContent = `${designed.name} [${designed.key}]`
-    headerRhythm.textContent = rhythmSelect.value
-    headerSound.textContent = designed.sound
+    headerRhythm.textContent = `${designed.rings.length} ring${designed.rings.length > 1 ? 's' : ''}`
+    headerSound.textContent = designed.rings.map(r => r.sound).join(', ')
     // Collapse
     expanded = false
     body.style.display = 'none'
     div.style.borderColor = 'rgba(100,255,120,0.5)'
     setTimeout(() => div.style.borderColor = 'rgba(255,255,255,0.1)', 400)
+    saveToStorage()
   })
 
   // Spawn
@@ -397,7 +587,15 @@ function rebuildPattern(): void {
     'Player': [0, 1, 2, 3, 4, 5, 6, 7],
   }
   for (const de of designedEnemies) {
-    patterns[de.name] = de.beats
+    if (de.rings.length <= 1) {
+      // Single ring — use enemy name as pattern key
+      patterns[de.name] = de.beats
+    } else {
+      // Multiple rings — each gets its own pattern key
+      for (let i = 0; i < de.rings.length; i++) {
+        patterns[`${de.name}_r${i}`] = de.rings[i]!.beats
+      }
+    }
   }
   setPattern({ name: 'Custom', loopBeats: pat?.loopBeats ?? 8, patterns })
 }
