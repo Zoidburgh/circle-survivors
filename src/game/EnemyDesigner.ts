@@ -4,6 +4,7 @@ import type { SongPattern } from '../audio/SongPatterns.ts'
 import { setPattern, getPattern, getLoopPosition, getLoopLength } from '../audio/PatternClock.ts'
 import { getPlayer, getEnemies } from '../core/GameState.ts'
 import { createEnemy } from '../entities/Enemy.ts'
+import { getSpawnPos } from './Arena.ts'
 import { playEnemyBeatTick } from '../audio/AudioEngine.ts'
 import { ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { BEAT_SEC } from '../utils/constants.ts'
@@ -385,23 +386,18 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const designed = readForm()
     if (!ENEMY_TYPES.find(t => t.name === designed.name)) ENEMY_TYPES.push(designed)
     const player = getPlayer()
-    const enemies = getEnemies()
-    const angle = Math.random() * Math.PI * 2
-    const dist = 300 + Math.random() * 150
-    enemies.push(createEnemy(
-      player.x + Math.cos(angle) * dist,
-      player.y + Math.sin(angle) * dist,
-      designed
-    ))
+    const pos = getSpawnPos(player.x, player.y)
+    getEnemies().push(createEnemy(pos.x, pos.y, designed))
   })
 }
 
 function rebuildPattern(): void {
-  const patterns: Record<string, number[]> = {
+  const pat = getPattern()
+  const patterns: Record<string, number[]> = pat ? { ...pat.patterns } : {
     'Player': [0, 1, 2, 3, 4, 5, 6, 7],
   }
   for (const de of designedEnemies) {
     patterns[de.name] = de.beats
   }
-  setPattern({ name: 'Custom', loopBeats: 8, patterns })
+  setPattern({ name: 'Custom', loopBeats: pat?.loopBeats ?? 8, patterns })
 }

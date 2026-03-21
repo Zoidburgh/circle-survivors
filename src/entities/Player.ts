@@ -4,10 +4,12 @@ import { ATTACK_TOTAL_TIME, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { shouldFire } from '../audio/PatternClock.ts'
 import * as Input from '../game/InputManager.ts'
 import { emit } from '../core/EventBus.ts'
-import { playDash } from '../audio/AudioEngine.ts'
+import { playDash, playWindup } from '../audio/AudioEngine.ts'
+import { clampToArena } from '../game/Arena.ts'
 import {
   PLAYER_SPEED,
   PLAYER_TEMPO,
+  PLAYER_RADIUS,
   MAX_RING_RADIUS,
   PLAYER_MAX_HP,
   PLAYER_BASE_DAMAGE,
@@ -110,9 +112,15 @@ export function updatePlayer(player: Player, dt: number): void {
     }
   }
 
+  // Clamp to arena
+  const clamped = clampToArena(player.x, player.y, PLAYER_RADIUS)
+  player.x = clamped.x
+  player.y = clamped.y
+
   // Beat detection — pattern driven
   if (player.attackTimer < 0 && shouldFire('Player')) {
     player.attackTimer = 0
+    playWindup(ATTACK_EXPAND_TIME, true)
   }
 
   // Attack animation

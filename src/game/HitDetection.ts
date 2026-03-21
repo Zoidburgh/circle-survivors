@@ -24,10 +24,9 @@ export function initHitDetection(): void {
         hitAny = true
       }
     }
+    Audio.playBeatTick() // kick drum — always on your beat
     if (hitAny) {
-      Audio.playHit()
-    } else {
-      Audio.playMiss()
+      Audio.playHit()    // crunch layered on top
     }
   })
 

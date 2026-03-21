@@ -1,6 +1,9 @@
 // Musical synth voices for each enemy role
 // All sounds go through the provided destination node (reverb input)
 
+function rP(f: number): number { return f * (0.97 + Math.random() * 0.06) }
+function rV(v: number): number { return v * (0.9 + Math.random() * 0.2) }
+
 let ctx: AudioContext
 let dest: AudioNode
 
@@ -30,29 +33,44 @@ function applyADSR(
 // ── Player kick drum ──
 export function playKick(): void {
   const t = ctx.currentTime
-  const osc = ctx.createOscillator()
-  const gain = ctx.createGain()
-  osc.type = 'sine'
-  osc.frequency.setValueAtTime(150, t)
-  osc.frequency.exponentialRampToValueAtTime(40, t + 0.12)
-  gain.gain.setValueAtTime(0.7, t)
-  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
-  osc.connect(gain)
-  gain.connect(dest)
-  osc.start(t)
-  osc.stop(t + 0.2)
 
-  // Click transient
+  // Sub thump — the body
+  const sub = ctx.createOscillator()
+  const subGain = ctx.createGain()
+  sub.type = 'sine'
+  sub.frequency.setValueAtTime(rP(160), t)
+  sub.frequency.exponentialRampToValueAtTime(rP(35), t + 0.15)
+  subGain.gain.setValueAtTime(rV(0.9), t)
+  subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.25)
+  sub.connect(subGain)
+  subGain.connect(dest)
+  sub.start(t)
+  sub.stop(t + 0.25)
+
+  // Punch layer — adds chest hit feel
+  const punch = ctx.createOscillator()
+  const punchGain = ctx.createGain()
+  punch.type = 'triangle'
+  punch.frequency.setValueAtTime(100, t)
+  punch.frequency.exponentialRampToValueAtTime(30, t + 0.1)
+  punchGain.gain.setValueAtTime(0.6, t)
+  punchGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
+  punch.connect(punchGain)
+  punchGain.connect(dest)
+  punch.start(t)
+  punch.stop(t + 0.15)
+
+  // Click transient — the snap
   const click = ctx.createOscillator()
   const clickGain = ctx.createGain()
   click.type = 'square'
-  click.frequency.value = 300
-  clickGain.gain.setValueAtTime(0.3, t)
-  clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.015)
+  click.frequency.value = rP(350)
+  clickGain.gain.setValueAtTime(rV(0.4), t)
+  clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.012)
   click.connect(clickGain)
   clickGain.connect(dest)
   click.start(t)
-  click.stop(t + 0.015)
+  click.stop(t + 0.012)
 }
 
 // ── Whole note: Bass ──
@@ -60,8 +78,8 @@ export function playBass(freq: number): void {
   const osc = ctx.createOscillator()
   const gain = ctx.createGain()
   osc.type = 'triangle'
-  osc.frequency.value = freq
-  applyADSR(gain, 0.9, 0.01, 0.15, 0.7, 0.3, 0.4)
+  osc.frequency.value = rP(freq)
+  applyADSR(gain, rV(0.45), 0.01, 0.15, 0.7, 0.3, 0.4)
   osc.connect(gain)
   gain.connect(dest)
   osc.start(ctx.currentTime)
@@ -71,7 +89,7 @@ export function playBass(freq: number): void {
 // ── Half note: Chord stab ──
 export function playChord(freqs: [number, number]): void {
   const gain = ctx.createGain()
-  applyADSR(gain, 0.25, 0.005, 0.1, 0.3, 0.2, 0.25)
+  applyADSR(gain, rV(0.2), 0.005, 0.1, 0.3, 0.2, 0.25)
   gain.connect(dest)
 
   for (const freq of freqs) {
@@ -95,10 +113,8 @@ export function playMelody(freq: number): void {
   const osc = ctx.createOscillator()
   const gain = ctx.createGain()
   osc.type = 'square'
-  osc.frequency.value = freq
-
-  // Gentle low-pass via gain shaping
-  applyADSR(gain, 0.3, 0.005, 0.08, 0.4, 0.15, 0.2)
+  osc.frequency.value = rP(freq)
+  applyADSR(gain, rV(0.25), 0.005, 0.08, 0.4, 0.15, 0.2)
   osc.connect(gain)
   gain.connect(dest)
   osc.start(ctx.currentTime)
@@ -111,8 +127,8 @@ export function playPluck(freq: number): void {
   const osc = ctx.createOscillator()
   const gain = ctx.createGain()
   osc.type = 'triangle'
-  osc.frequency.value = freq * 2 // one octave up from melody range
-  applyADSR(gain, 0.45, 0.003, 0.04, 0.15, 0.1, 0.08)
+  osc.frequency.value = rP(freq * 2)
+  applyADSR(gain, rV(0.3), 0.003, 0.04, 0.15, 0.1, 0.08)
   osc.connect(gain)
   gain.connect(dest)
   osc.start(t)
@@ -125,8 +141,8 @@ export function playTap(freq: number): void {
   const osc = ctx.createOscillator()
   const gain = ctx.createGain()
   osc.type = 'sine'
-  osc.frequency.value = freq * 4 // two octaves up, very high and soft
-  gain.gain.setValueAtTime(0.3, t)
+  osc.frequency.value = rP(freq * 4)
+  gain.gain.setValueAtTime(rV(0.2), t)
   gain.gain.exponentialRampToValueAtTime(0.001, t + 0.06)
   osc.connect(gain)
   gain.connect(dest)

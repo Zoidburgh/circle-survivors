@@ -18,6 +18,6 @@ export const ENEMY_TYPES: EnemyType[] = [
     radius: 44,
     ringRadius: 140,
     key: '1',
-    role: 'offbeat',
+    role: 'rim',
   },
 ]

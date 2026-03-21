@@ -5,9 +5,9 @@ import { updateEnemy, updateDeath } from '../entities/Enemy.ts'
 import { advanceGlobalTime } from './RhythmClock.ts'
 import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
 import { advancePatternClock } from '../audio/PatternClock.ts'
-import { getPlayer, getEnemies, getGrid } from './GameState.ts'
+import { getPlayer, getEnemies, getGrid, getCamera } from './GameState.ts'
+import { updateCamera } from '../game/Arena.ts'
 
-// ── FPS counter ──
 let fps = 0
 let frameCount = 0
 let lastFpsTime = performance.now()
@@ -16,6 +16,7 @@ export function update(dt: number): void {
   const player = getPlayer()
   const enemies = getEnemies()
   const grid = getGrid()
+  const cam = getCamera()
 
   Input.flush()
   advanceGlobalTime(dt)
@@ -23,7 +24,11 @@ export function update(dt: number): void {
   updatePreviewEnemy(dt)
   updatePlayer(player, dt)
 
-  // Rebuild spatial grid each frame
+  // Update camera — lead toward movement direction
+  const dir = Input.getMovementDir()
+  updateCamera(cam, player.x, player.y, dir.x, dir.y, window.innerWidth, window.innerHeight, dt)
+
+  // Rebuild spatial grid
   grid.clear()
   for (const enemy of enemies) {
     if (enemy.alive) grid.insert(enemy)
@@ -38,6 +43,7 @@ export function update(dt: number): void {
 export function render(alpha: number): void {
   const player = getPlayer()
   const enemies = getEnemies()
+  const cam = getCamera()
 
   frameCount++
   const now = performance.now()
@@ -46,5 +52,5 @@ export function render(alpha: number): void {
     frameCount = 0
     lastFpsTime = now
   }
-  Renderer.render(player, enemies, alpha, fps, 1 / 60)
+  Renderer.render(player, enemies, alpha, fps, 1 / 60, cam)
 }

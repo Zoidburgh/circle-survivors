@@ -3,6 +3,10 @@ import { initDrone, startDrone } from './MusicDrone.ts'
 import { generateWaveMusic, pickMelodyNote, pickChordNotes } from './MusicScale.ts'
 import type { WaveMusic } from './MusicScale.ts'
 
+// ── Micro-variation: prevents repetition fatigue ──
+function rPitch(freq: number): number { return freq * (0.97 + Math.random() * 0.06) }
+function rVol(vol: number): number { return vol * (0.9 + Math.random() * 0.2) }
+
 let ctx: AudioContext | null = null
 let master: GainNode
 let compressor: DynamicsCompressorNode
@@ -139,67 +143,60 @@ export function playMiss(): void {
 export function playHit(): void {
   ensureContext()
   const c = ctx!
-  const osc1 = c.createOscillator()
-  const osc2 = c.createOscillator()
-  const osc3 = c.createOscillator()
+  const t = c.currentTime
+  // Priority 1: Short rising tone (low-mid lane 300-500hz)
+  const osc = c.createOscillator()
   const gain = c.createGain()
-  osc1.type = 'square'
-  osc1.frequency.setValueAtTime(600, c.currentTime)
-  osc1.frequency.exponentialRampToValueAtTime(200, c.currentTime + 0.05)
-  osc2.type = 'sine'
-  osc2.frequency.value = 440
-  osc3.type = 'triangle'
-  osc3.frequency.setValueAtTime(120, c.currentTime)
-  osc3.frequency.exponentialRampToValueAtTime(60, c.currentTime + 0.1)
-  gain.gain.setValueAtTime(0.9, c.currentTime)
-  gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.2)
-  osc1.connect(gain)
-  osc2.connect(gain)
-  osc3.connect(gain)
-  gain.connect(master)
-  osc1.start(c.currentTime)
-  osc2.start(c.currentTime)
-  osc3.start(c.currentTime)
-  osc1.stop(c.currentTime + 0.2)
-  osc2.stop(c.currentTime + 0.2)
-  osc3.stop(c.currentTime + 0.2)
+  osc.type = 'sine'
+  osc.frequency.setValueAtTime(rPitch(330), t)
+  osc.frequency.exponentialRampToValueAtTime(rPitch(500), t + 0.1)
+  gain.gain.setValueAtTime(rVol(0.75), t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.12)
+  osc.connect(gain)
+  gain.connect(reverbInput)
+  osc.start(t)
+  osc.stop(t + 0.12)
 }
 
 export function playKill(): void {
   ensureContext()
   const c = ctx!
+  const t = c.currentTime
+  // Priority 1: Rising sine (mid lane 440-880hz)
   const osc = c.createOscillator()
   const gain = c.createGain()
   osc.type = 'sine'
-  osc.frequency.setValueAtTime(440, c.currentTime)
-  osc.frequency.exponentialRampToValueAtTime(880, c.currentTime + 0.25)
-  gain.gain.setValueAtTime(0.8, c.currentTime)
-  gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.3)
+  osc.frequency.setValueAtTime(rPitch(440), t)
+  osc.frequency.exponentialRampToValueAtTime(rPitch(880), t + 0.25)
+  gain.gain.setValueAtTime(rVol(0.8), t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3)
   osc.connect(gain)
   gain.connect(reverbInput)
-  osc.start(c.currentTime)
-  osc.stop(c.currentTime + 0.3)
+  osc.start(t)
+  osc.stop(t + 0.3)
 }
 
 export function playPlayerHit(): void {
   ensureContext()
   const c = ctx!
+  const t = c.currentTime
+  // Priority 2: Low thud (sub lane 40-90hz)
   const osc1 = c.createOscillator()
   const osc2 = c.createOscillator()
   const gain = c.createGain()
   osc1.type = 'triangle'
-  osc1.frequency.value = 65
+  osc1.frequency.value = rPitch(65)
   osc2.type = 'sawtooth'
-  osc2.frequency.value = 90
-  gain.gain.setValueAtTime(1.0, c.currentTime)
-  gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.35)
+  osc2.frequency.value = rPitch(90)
+  gain.gain.setValueAtTime(rVol(0.6), t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3)
   osc1.connect(gain)
   osc2.connect(gain)
   gain.connect(master)
-  osc1.start(c.currentTime)
-  osc2.start(c.currentTime)
-  osc1.stop(c.currentTime + 0.35)
-  osc2.stop(c.currentTime + 0.35)
+  osc1.start(t)
+  osc2.start(t)
+  osc1.stop(t + 0.3)
+  osc2.stop(t + 0.3)
 }
 
 export function playBeatTick(): void {
@@ -210,31 +207,51 @@ export function playBeatTick(): void {
 export function playDash(): void {
   ensureContext()
   const c = ctx!
+  const t = c.currentTime
+  // Breathy whoosh — two detuned high sines sweeping down
   const osc1 = c.createOscillator()
   const osc2 = c.createOscillator()
-  const osc3 = c.createOscillator()
   const gain = c.createGain()
-  osc1.type = 'sawtooth'
-  osc1.frequency.setValueAtTime(800, c.currentTime)
-  osc1.frequency.exponentialRampToValueAtTime(200, c.currentTime + 0.15)
-  osc2.type = 'sawtooth'
-  osc2.frequency.setValueAtTime(850, c.currentTime)
-  osc2.frequency.exponentialRampToValueAtTime(180, c.currentTime + 0.15)
-  osc3.type = 'sine'
-  osc3.frequency.setValueAtTime(300, c.currentTime)
-  osc3.frequency.exponentialRampToValueAtTime(100, c.currentTime + 0.2)
-  gain.gain.setValueAtTime(0.5, c.currentTime)
-  gain.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.2)
+  osc1.type = 'sine'
+  osc2.type = 'sine'
+  osc1.frequency.setValueAtTime(rPitch(600), t)
+  osc1.frequency.exponentialRampToValueAtTime(rPitch(180), t + 0.3)
+  osc2.frequency.setValueAtTime(rPitch(650), t)
+  osc2.frequency.exponentialRampToValueAtTime(rPitch(160), t + 0.3)
+  gain.gain.setValueAtTime(0.001, t)
+  gain.gain.linearRampToValueAtTime(rVol(0.15), t + 0.04)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3)
   osc1.connect(gain)
   osc2.connect(gain)
-  osc3.connect(gain)
-  gain.connect(master)
-  osc1.start(c.currentTime)
-  osc2.start(c.currentTime)
-  osc3.start(c.currentTime)
-  osc1.stop(c.currentTime + 0.2)
-  osc2.stop(c.currentTime + 0.2)
-  osc3.stop(c.currentTime + 0.2)
+  gain.connect(reverbInput)
+  osc1.start(t)
+  osc2.start(t)
+  osc1.stop(t + 0.3)
+  osc2.stop(t + 0.3)
+}
+
+// ── Attack windup — quiet rising tone that telegraphs incoming attack ──
+
+export function playWindup(duration: number, isPlayer: boolean): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  const osc = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'sine'
+  // Player windup rises higher, enemy stays low
+  const startFreq = isPlayer ? 80 : 50
+  const endFreq = isPlayer ? 200 : 120
+  osc.frequency.setValueAtTime(startFreq, t)
+  osc.frequency.exponentialRampToValueAtTime(endFreq, t + duration)
+  // Starts silent, builds to subtle volume
+  gain.gain.setValueAtTime(0.001, t)
+  gain.gain.exponentialRampToValueAtTime(0.05, t + duration * 0.8)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + duration)
+  osc.connect(gain)
+  gain.connect(reverbInput)
+  osc.start(t)
+  osc.stop(t + duration)
 }
 
 // ── Enemy instrument sounds ──
@@ -405,8 +422,8 @@ function playRim(): void {
   const osc = c.createOscillator()
   const gain = c.createGain()
   osc.type = 'triangle'
-  osc.frequency.setValueAtTime(900, t)
-  osc.frequency.exponentialRampToValueAtTime(500, t + 0.02)
+  osc.frequency.setValueAtTime(rPitch(900), t)
+  osc.frequency.exponentialRampToValueAtTime(rPitch(500), t + 0.02)
   gain.gain.setValueAtTime(0.6, t)
   gain.gain.exponentialRampToValueAtTime(0.001, t + 0.04)
   osc.connect(gain); gain.connect(reverbInput)

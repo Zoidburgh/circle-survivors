@@ -2,6 +2,8 @@ import type { Ring } from './Ring.ts'
 import { createRing } from './Ring.ts'
 import { ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { shouldFire, getBeatInterval } from '../audio/PatternClock.ts'
+import { playWindup } from '../audio/AudioEngine.ts'
+import { clampToArena } from '../game/Arena.ts'
 import { emit } from '../core/EventBus.ts'
 import { PLAYER_RADIUS } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
@@ -27,9 +29,11 @@ export interface Enemy {
   color: string
   hitFlash: number
   attackTimer: number
-  expandTime: number   // adaptive — scales to fit beat interval
+  expandTime: number
   deathTimer: number
   dying: boolean
+  spawnTimer: number    // 0→1 grow-in animation
+  baseRadius: number    // full size — radius scales during spawn
 }
 
 export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
@@ -41,7 +45,7 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     maxHp: type.hp,
     displayHp: type.hp,
     damage: 1,
-    radius: type.radius,
+    radius: 1,  // starts tiny, grows during spawn animation
     alive: true,
     vx: 0,
     vy: 0,
@@ -54,6 +58,8 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     expandTime: ATTACK_EXPAND_TIME,
     deathTimer: -1,
     dying: false,
+    spawnTimer: 0,
+    baseRadius: type.radius,
   }
 }
 
@@ -61,6 +67,15 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   if (!enemy.alive) return
 
   if (enemy.hitFlash > 0) enemy.hitFlash -= dt
+
+  // Spawn grow-in animation (0.4s)
+  if (enemy.spawnTimer < 1) {
+    enemy.spawnTimer += dt / 0.4
+    if (enemy.spawnTimer > 1) enemy.spawnTimer = 1
+    // Ease-out: grows fast then decelerates
+    const t = 1 - (1 - enemy.spawnTimer) * (1 - enemy.spawnTimer)
+    enemy.radius = enemy.baseRadius * t
+  }
 
   // Smooth HP display
   if (enemy.displayHp > enemy.hp) {
@@ -117,12 +132,18 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   enemy.x += enemy.vx * dt
   enemy.y += enemy.vy * dt
 
-  // Pattern-driven beat: check if this enemy type should fire now
-  if (enemy.attackTimer < 0 && shouldFire(enemy.typeName)) {
+  // Clamp to arena
+  const clamped = clampToArena(enemy.x, enemy.y, enemy.radius)
+  enemy.x = clamped.x
+  enemy.y = clamped.y
+
+  // Pattern-driven beat: check if this enemy type should fire now (not during spawn)
+  if (enemy.attackTimer < 0 && enemy.spawnTimer >= 1 && shouldFire(enemy.typeName)) {
     // Scale expand time to fit 80% of the interval between beats
     const interval = getBeatInterval(enemy.typeName)
     enemy.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * 0.8)
     enemy.attackTimer = 0
+    playWindup(enemy.expandTime, false)
   }
 
   // Advance attack animation

@@ -6,6 +6,8 @@ import { getRingExpansion, getRingAlpha, ATTACK_EXPAND_TIME, ATTACK_TOTAL_TIME }
 import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
 import { getPattern, getLoopPosition, getLoopLength } from '../audio/PatternClock.ts'
 import { getPreviewEnemy } from '../game/EnemyDesigner.ts'
+import type { Camera } from '../game/Arena.ts'
+import { ARENA_W, ARENA_H } from '../game/Arena.ts'
 import { BEAT_SEC } from '../utils/constants.ts'
 import {
   GRID_ALPHA,
@@ -101,10 +103,15 @@ function resize(): void {
   canvas.height = height
 }
 
-export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0, dt = 0.016): void {
+export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0, dt = 0.016, cam?: Camera): void {
   lastDt = dt
-  camX = player.x - width / 2
-  camY = player.y - height / 2
+  if (cam) {
+    camX = cam.x - width / 2
+    camY = cam.y - height / 2
+  } else {
+    camX = player.x - width / 2
+    camY = player.y - height / 2
+  }
 
   updateParticles(dt)
 
@@ -112,6 +119,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   ctx.fillRect(0, 0, width, height)
 
   drawGrid()
+  drawArenaBorder()
 
   for (const enemy of enemies) {
     if (!enemy.alive && !enemy.dying) continue
@@ -146,6 +154,49 @@ function drawGrid(): void {
     ctx.lineTo(width, y - camY)
   }
   ctx.stroke()
+}
+
+function drawArenaBorder(): void {
+  const x = -camX
+  const y = -camY
+  const w = ARENA_W
+  const h = ARENA_H
+  const buffer = 80 // visible spawn buffer region
+
+  // Spawn buffer zone — slightly lighter than the void, shows where enemies appear
+  ctx.fillStyle = 'rgba(20, 15, 40, 0.5)'
+  // Top buffer
+  ctx.fillRect(x - buffer, y - buffer, w + buffer * 2, buffer)
+  // Bottom buffer
+  ctx.fillRect(x - buffer, y + h, w + buffer * 2, buffer)
+  // Left buffer
+  ctx.fillRect(x - buffer, y, buffer, h)
+  // Right buffer
+  ctx.fillRect(x + w, y, buffer, h)
+
+  // Outer border of buffer zone — faint dashed line
+  ctx.strokeStyle = 'rgba(255, 100, 100, 0.15)'
+  ctx.lineWidth = 1
+  ctx.setLineDash([8, 8])
+  ctx.strokeRect(x - buffer, y - buffer, w + buffer * 2, h + buffer * 2)
+  ctx.setLineDash([])
+
+  // Arena border — layered glow from soft outer to bright inner
+  ctx.strokeStyle = 'rgba(79, 195, 247, 0.03)'
+  ctx.lineWidth = 30
+  ctx.strokeRect(x - 10, y - 10, w + 20, h + 20)
+
+  ctx.strokeStyle = 'rgba(79, 195, 247, 0.06)'
+  ctx.lineWidth = 18
+  ctx.strokeRect(x - 4, y - 4, w + 8, h + 8)
+
+  ctx.strokeStyle = 'rgba(79, 195, 247, 0.12)'
+  ctx.lineWidth = 8
+  ctx.strokeRect(x, y, w, h)
+
+  ctx.strokeStyle = 'rgba(79, 195, 247, 0.4)'
+  ctx.lineWidth = 2
+  ctx.strokeRect(x, y, w, h)
 }
 
 function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: number, radiusOverride?: number, expandTime = ATTACK_EXPAND_TIME): void {
@@ -527,12 +578,26 @@ function drawDesignerPreview(player: Player): void {
   ctx.globalAlpha = 1
 }
 
+// Store panel button rects for click detection
+const spawnPanelRects: { x: number; y: number; w: number; h: number; typeIndex: number }[] = []
+
+export function getSpawnPanelClick(mx: number, my: number): number {
+  for (const rect of spawnPanelRects) {
+    if (mx >= rect.x && mx <= rect.x + rect.w && my >= rect.y && my <= rect.y + rect.h) {
+      return rect.typeIndex
+    }
+  }
+  return -1
+}
+
 function drawSpawnPanel(): void {
   const panelX = 10
   const panelY = 10
   const boxW = 140
   const boxH = 32
   const gap = 4
+
+  spawnPanelRects.length = 0
 
   ctx.fillStyle = 'rgba(13, 10, 26, 0.85)'
   ctx.fillRect(panelX - 4, panelY - 4, boxW + 8, (boxH + gap) * ENEMY_TYPES.length + 8)
@@ -541,6 +606,8 @@ function drawSpawnPanel(): void {
   for (let i = 0; i < ENEMY_TYPES.length; i++) {
     const t = ENEMY_TYPES[i]!
     const y = panelY + i * (boxH + gap)
+
+    spawnPanelRects.push({ x: panelX, y, w: boxW, h: boxH, typeIndex: i })
 
     ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'
     ctx.fillRect(panelX, y, boxW, boxH)
