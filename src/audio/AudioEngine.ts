@@ -268,6 +268,23 @@ export function playDash(): void {
   osc2.stop(t + 0.3)
 }
 
+export function playCollect(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  const osc = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'sine'
+  osc.frequency.setValueAtTime(rPitch(600), t)
+  osc.frequency.exponentialRampToValueAtTime(rPitch(900), t + 0.06)
+  gain.gain.setValueAtTime(rVol(0.3), t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08)
+  osc.connect(gain)
+  gain.connect(reverbInput)
+  osc.start(t)
+  osc.stop(t + 0.08)
+}
+
 // ── Attack windup — quiet rising tone that telegraphs incoming attack ──
 
 export function playWindup(duration: number, isPlayer: boolean): void {

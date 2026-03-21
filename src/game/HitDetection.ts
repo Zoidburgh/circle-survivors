@@ -5,9 +5,10 @@ import { damageEnemy } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { getRingExpansion } from '../core/PhaseSystem.ts'
 import { distance } from '../utils/math.ts'
-import { HIT_FLASH_DURATION } from '../utils/constants.ts'
-import * as Audio from '../audio/AudioEngine.ts'
+import { HIT_FLASH_DURATION, HIT_GRACE } from '../utils/constants.ts'
+import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playCollect, getAudioTime } from '../audio/AudioEngine.ts'
 import { getBlockedArcs, isTargetBlocked } from './RingOcclusion.ts'
+import { spawnOrb, getOrbs, collectOrb } from '../entities/XPOrb.ts'
 
 export function initHitDetection(): void {
   on('player:beat', () => {
@@ -32,16 +33,37 @@ export function initHitDetection(): void {
         const enemy = entity as Enemy
         if (!enemy.alive || hitEnemies.has(enemy)) continue
         const dist = distance({ x: sx, y: sy }, { x: enemy.x, y: enemy.y })
-        if (Math.abs(dist - ringRadius) < enemy.radius) {
+        if (Math.abs(dist - ringRadius) < enemy.radius + HIT_GRACE) {
           damageEnemy(enemy, player.damage)
           hitEnemies.add(enemy)
         }
       }
     }
 
-    Audio.playMiss()
+    // Check orbs along the same sweep
+    const orbs = getOrbs()
+    let collectedAny = false
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps
+      const sx = sweepFromX + (player.x - sweepFromX) * t
+      const sy = sweepFromY + (player.y - sweepFromY) * t
+      for (const orb of orbs) {
+        if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
+        const odx = sx - orb.x
+        const ody = sy - orb.y
+        const oDist = Math.sqrt(odx * odx + ody * ody)
+        if (Math.abs(oDist - ringRadius) < orb.radius + HIT_GRACE) {
+          collectOrb(orb)
+          player.xp += orb.value
+          collectedAny = true
+        }
+      }
+    }
+    if (collectedAny) playCollect()
+
+    playMiss()
     if (hitEnemies.size > 0) {
-      Audio.playHit()
+      playHit()
     }
   })
 
@@ -51,7 +73,7 @@ export function initHitDetection(): void {
     const rs = enemy.rings[ringIndex]
     if (!rs) return
 
-    Audio.playEnemyBeatTick(rs.patternName, rs.sound)
+    playEnemyBeatTick(rs.patternName, rs.sound)
 
     const ringRadius = rs.ring.radius * getRingExpansion(rs.attackTimer)
     const dist = distance(
@@ -64,13 +86,14 @@ export function initHitDetection(): void {
       if (!blocked) {
         player.hp -= enemy.damage
         player.hitFlash = HIT_FLASH_DURATION
-        Audio.playPlayerHit()
+        playPlayerHit()
         if (player.hp <= 0) player.hp = 0
       }
     }
   })
 
-  on('enemy:killed', () => {
-    Audio.playKill()
+  on('enemy:killed', (enemy) => {
+    playKill()
+    spawnOrb(enemy.x, enemy.y)
   })
 }

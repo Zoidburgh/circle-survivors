@@ -6,6 +6,7 @@ import { advanceGlobalTime } from './RhythmClock.ts'
 import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
 import { advancePatternClock } from '../audio/PatternClock.ts'
 import { getPlayer, getEnemies, getGrid, getCamera } from './GameState.ts'
+import { updateOrbs, cleanupOrbs } from '../entities/XPOrb.ts'
 import { updateCamera } from '../game/Arena.ts'
 
 let fps = 0
@@ -38,6 +39,10 @@ export function update(dt: number): void {
     updateDeath(enemy, dt)
     updateEnemy(enemy, player, dt, grid)
   }
+
+  // XP orbs — physics push by player and enemies
+  updateOrbs(dt, player.x, player.y, enemies)
+  cleanupOrbs()
 }
 
 export function render(alpha: number): void {

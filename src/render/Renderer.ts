@@ -11,6 +11,7 @@ import { ARENA_W, ARENA_H } from '../game/Arena.ts'
 import { getBlockedArcs } from '../game/RingOcclusion.ts'
 import type { BlockedArc } from '../game/RingOcclusion.ts'
 import { getEnemies } from '../core/GameState.ts'
+import { getOrbs } from '../entities/XPOrb.ts'
 import { getBeatName } from '../audio/AudioEngine.ts'
 import { BEAT_SEC } from '../utils/constants.ts'
 import {
@@ -160,6 +161,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
 
   drawRing(player.x, player.y, player.ring, player.attackTimer, getEffectiveRadius(player))
 
+  drawXPOrbs(player)
   drawParticles()
 
   ctx.restore()
@@ -362,6 +364,61 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   }
 }
 
+function drawXPOrbs(player: Player): void {
+  const orbs = getOrbs()
+  const playerRadius = player.attackTimer >= 0 ? getEffectiveRadius(player) * getRingExpansion(player.attackTimer) : 0
+  for (const orb of orbs) {
+    if (!orb.alive && !orb.dying) continue
+    const sx = orb.x - camX
+    const sy = orb.y - camY
+
+    // Death animation — dissolve like enemies
+    if (orb.dying) {
+      const t = Math.min(orb.deathTimer / 0.2, 1)
+      const r = orb.baseRadius * (1 - t * 0.5)
+
+      // Spawn particles on first frame
+      if (orb.deathTimer < 0.02) {
+        spawnRingParticles(orb.x, orb.y, r * 0.5, 100, 255, 200, 10, 100, 0.3, 3)
+        spawnRingParticles(orb.x, orb.y, r * 0.3, 255, 255, 255, 6, 60, 0.2, 2)
+      }
+
+      ctx.globalAlpha = (1 - t) * (1 - t)
+      ctx.beginPath()
+      ctx.arc(sx, sy, r, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(100, 255, 200, 0.5)'
+      ctx.fill()
+      ctx.globalAlpha = 1
+      continue
+    }
+
+    const r = orb.radius
+
+    // Check if player ring is over this orb
+    const distToPlayer = Math.sqrt((orb.x - player.x) ** 2 + (orb.y - player.y) ** 2)
+    const ringOver = playerRadius > 0 && Math.abs(distToPlayer - playerRadius) < r
+
+    // Glow
+    ctx.beginPath()
+    ctx.arc(sx, sy, r + 4, 0, Math.PI * 2)
+    ctx.fillStyle = ringOver ? 'rgba(255, 255, 255, 0.25)' : 'rgba(100, 255, 200, 0.12)'
+    ctx.fill()
+
+    // Orb body
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.fillStyle = 'rgba(100, 255, 200, 0.7)'
+    ctx.fill()
+
+    // White outline when ring is over
+    if (ringOver) {
+      ctx.strokeStyle = '#FFFFFF'
+      ctx.lineWidth = 2
+      ctx.stroke()
+    }
+  }
+}
+
 function drawPlayer(player: Player): void {
   const sx = player.x - camX
   const sy = player.y - camY
@@ -378,12 +435,15 @@ function drawPlayer(player: Player): void {
     ctx.fill()
   }
 
-  // Pick fill/stroke based on state
+  // Hit shrink + color fade
+  let drawRadius = PLAYER_RADIUS
   let fillColor = 'rgba(79, 195, 247, 0.15)'
   let strokeColor = COLOR_PLAYER
   if (player.hitFlash > 0) {
-    fillColor = `rgba(255, 50, 50, ${0.5 * (player.hitFlash / HIT_FLASH_DURATION)})`
-    strokeColor = '#FF3333'
+    const t = player.hitFlash / HIT_FLASH_DURATION // 1 = just hit, 0 = recovered
+    drawRadius = PLAYER_RADIUS * (0.85 + 0.15 * (1 - t)) // shrinks to 90% then bounces back
+    fillColor = `rgba(${Math.floor(255 - 176 * (1 - t))}, ${Math.floor(50 + 145 * (1 - t))}, ${Math.floor(50 + 197 * (1 - t))}, ${0.15 + 0.35 * t})`
+    strokeColor = `rgb(${Math.floor(255 - 176 * (1 - t))}, ${Math.floor(50 + 145 * (1 - t))}, ${Math.floor(50 + 197 * (1 - t))})`
   }
 
   // Dash trail
@@ -409,36 +469,37 @@ function drawPlayer(player: Player): void {
   const hpEnd = hpStart + hpFraction * Math.PI * 2
 
   ctx.beginPath()
-  ctx.arc(sx, sy, PLAYER_RADIUS, 0, Math.PI * 2)
+  ctx.arc(sx, sy, drawRadius, 0, Math.PI * 2)
   ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'
   ctx.fill()
 
   if (hpFraction > 0) {
     ctx.beginPath()
     ctx.moveTo(sx, sy)
-    ctx.arc(sx, sy, PLAYER_RADIUS, hpStart, hpEnd)
+    ctx.arc(sx, sy, drawRadius, hpStart, hpEnd)
     ctx.closePath()
     ctx.fillStyle = fillColor
     ctx.fill()
   }
 
   ctx.beginPath()
-  ctx.arc(sx, sy, PLAYER_RADIUS, 0, Math.PI * 2)
+  ctx.arc(sx, sy, drawRadius, 0, Math.PI * 2)
   ctx.strokeStyle = strokeColor
   ctx.lineWidth = 2.5
   ctx.stroke()
 
   // Dash charges
-  const orbitR = PLAYER_RADIUS + 5
+  const orbitR = drawRadius
   const orbitSpeed = performance.now() / 800
-  const totalSlots = player.dashMaxCharges
 
-  for (let i = 0; i < totalSlots; i++) {
-    const baseAngle = orbitSpeed + (Math.PI * 2 * i) / totalSlots
+  for (let i = 0; i < player.dashSlots.length; i++) {
+    const baseAngle = orbitSpeed + (Math.PI * 2 * i) / player.dashSlots.length
     const dotX = sx + Math.cos(baseAngle) * orbitR
     const dotY = sy + Math.sin(baseAngle) * orbitR
+    const timer = player.dashSlots[i]!
 
-    if (i < player.dashCharges) {
+    if (timer <= 0) {
+      // Ready — green dot
       ctx.beginPath()
       ctx.arc(dotX, dotY, 5, 0, Math.PI * 2)
       ctx.fillStyle = 'rgba(100, 255, 120, 0.95)'
@@ -447,26 +508,38 @@ function drawPlayer(player: Player): void {
       ctx.arc(dotX, dotY, 10, 0, Math.PI * 2)
       ctx.fillStyle = 'rgba(100, 255, 120, 0.25)'
       ctx.fill()
-    } else if (i === player.dashCharges && player.dashCharges < player.dashMaxCharges) {
-      const fill = player.dashRechargeTimer / 3.0
-      ctx.beginPath()
-      ctx.arc(dotX, dotY, 4, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(79, 195, 247, ${0.15 + fill * 0.5})`
-      ctx.fill()
-      ctx.beginPath()
-      ctx.arc(dotX, dotY, 4, -Math.PI / 2, -Math.PI / 2 + fill * Math.PI * 2)
-      ctx.strokeStyle = 'rgba(79, 195, 247, 0.8)'
-      ctx.lineWidth = 1.5
-      ctx.stroke()
     } else {
+      // Charging — white pie in place
+      const fill = 1 - (timer / 2.5)
       ctx.beginPath()
-      ctx.arc(dotX, dotY, 3, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(79, 195, 247, 0.1)'
+      ctx.arc(dotX, dotY, 5.2, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'
       ctx.fill()
+      if (fill > 0) {
+        ctx.beginPath()
+        ctx.moveTo(dotX, dotY)
+        ctx.arc(dotX, dotY, 5.2, -Math.PI / 2, -Math.PI / 2 + fill * Math.PI * 2)
+        ctx.closePath()
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)'
+        ctx.fill()
+      }
     }
   }
 
-  // Dash burst particles
+  // Green dash particles — trail behind during entire dash
+  if (player.dashTimer >= 0 && player.dashTimer > 0) {
+    for (let i = 0; i < 2; i++) {
+      const a = Math.random() * Math.PI * 2
+      const px = player.x + Math.cos(a) * orbitR * (0.5 + Math.random() * 0.5)
+      const py = player.y + Math.sin(a) * orbitR * (0.5 + Math.random() * 0.5)
+      spawnParticle(px, py,
+        -player.dashDirX * 30 + (Math.random() - 0.5) * 20,
+        -player.dashDirY * 30 + (Math.random() - 0.5) * 20,
+        100, 255, 120, 0.4, 2.5)
+    }
+  }
+
+  // Cyan dash trail burst
   if (player.dashTimer >= 0 && player.dashTimer > 0.48) {
     for (let i = 0; i < 12; i++) {
       const a = Math.random() * Math.PI * 2
@@ -738,7 +811,8 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
   ctx.fillText(`FPS: ${fps}`, x, 20)
   ctx.fillText(`HP: ${player.hp}/${player.maxHp}`, x, 36)
   ctx.fillText(`Enemies: ${enemies.filter(e => e.alive).length}`, x, 52)
-  ctx.fillText(`Beat: ${getBeatName()} | Song: ${pat?.name ?? 'none'} [${loopPos.toFixed(1)}/${loopLen}]`, x - 80, 68)
+  ctx.fillText(`XP: ${player.xp}`, x, 68)
+  ctx.fillText(`Beat: ${getBeatName()} | Song: ${pat?.name ?? 'none'} [${loopPos.toFixed(1)}/${loopLen}]`, x - 80, 84)
   ctx.fillText(`WASD=move  LMB=dash  Tab=designer  F1-F11=beats`, 10, height - 12)
   ctx.fillText(`1-5=spawn  0=spawn 100`, 10, height - 28)
 }

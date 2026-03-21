@@ -20,7 +20,7 @@ import { COLOR_PLAYER } from '../utils/constants.ts'
 
 const DASH_DISTANCE = 260
 const DASH_DURATION = 0.5
-export const DASH_CHARGE_TIME = 3.0  // seconds to regen one charge
+export const DASH_CHARGE_TIME = 2.5  // seconds to regen one charge
 export const DASH_MAX_CHARGES = 2
 
 export interface Player {
@@ -37,9 +37,8 @@ export interface Player {
   dashTimer: number
   dashDirX: number
   dashDirY: number
-  dashCharges: number       // current available charges
-  dashMaxCharges: number    // max (upgradeable later)
-  dashRechargeTimer: number // time until next charge gained
+  dashMaxCharges: number
+  dashSlots: number[]  // per-slot timer: 0 = ready, >0 = charging (counts down)
   trail: { x: number; y: number }[]
   trailTimer: number
   prevX: number
@@ -47,6 +46,7 @@ export interface Player {
   dashStartX: number  // position when dash began — for sweep hit detection
   dashStartY: number
   hitRadius: number
+  xp: number
 }
 
 export function createPlayer(x: number, y: number): Player {
@@ -64,9 +64,8 @@ export function createPlayer(x: number, y: number): Player {
     dashTimer: -1,
     dashDirX: 0,
     dashDirY: 0,
-    dashCharges: DASH_MAX_CHARGES,
     dashMaxCharges: DASH_MAX_CHARGES,
-    dashRechargeTimer: 0,
+    dashSlots: Array(DASH_MAX_CHARGES).fill(0),
     trail: [],
     trailTimer: 0,
     prevX: ARENA_W / 2,
@@ -74,6 +73,7 @@ export function createPlayer(x: number, y: number): Player {
     dashStartX: ARENA_W / 2,
     dashStartY: ARENA_H / 2,
     hitRadius: PLAYER_RADIUS,
+    xp: 0,
   }
 }
 
@@ -90,12 +90,11 @@ export function updatePlayer(player: Player, dt: number): void {
     if (player.displayHp - player.hp < 0.01) player.displayHp = player.hp
   }
 
-  // Dash charge regen
-  if (player.dashCharges < player.dashMaxCharges) {
-    player.dashRechargeTimer += dt
-    if (player.dashRechargeTimer >= DASH_CHARGE_TIME) {
-      player.dashCharges++
-      player.dashRechargeTimer = 0
+  // Dash charge regen — each slot charges independently
+  for (let i = 0; i < player.dashSlots.length; i++) {
+    if (player.dashSlots[i]! > 0) {
+      player.dashSlots[i]! -= dt
+      if (player.dashSlots[i]! <= 0) player.dashSlots[i] = 0
     }
   }
 
@@ -150,7 +149,8 @@ export function updatePlayer(player: Player, dt: number): void {
 
   // Dash input — need a charge AND not mid-dash
   if (Input.consumeLeftClick() || Input.consumeSpace()) {
-    if (player.dashCharges > 0) {
+    const readySlot = player.dashSlots.findIndex(t => t <= 0)
+    if (readySlot >= 0) {
       const dir = Input.getMovementDir()
       if (dir.x !== 0 || dir.y !== 0) {
         player.dashDirX = dir.x
@@ -163,7 +163,7 @@ export function updatePlayer(player: Player, dt: number): void {
       player.dashStartX = player.x
       player.dashStartY = player.y
       player.dashTimer = DASH_DURATION
-      player.dashCharges--
+      player.dashSlots[readySlot] = DASH_CHARGE_TIME
       playDash()
     }
   }

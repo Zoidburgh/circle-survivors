@@ -36,4 +36,5 @@ export const HP_DRAIN_SPEED = 8
 export const PARTICLE_CAP = 2000
 export const CAMERA_LEAD_AMOUNT = 80
 export const ARENA_BUFFER = 80
+export const HIT_GRACE = 2  // extra pixels on enemy/orb hitbox for easier hits (visual unchanged)
 export const AUDIO_THROTTLE_INTERVAL = 0.04
