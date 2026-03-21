@@ -1,7 +1,7 @@
 import type { Ring } from './Ring.ts'
 import { createRing } from './Ring.ts'
-import { isAtBeat, ATTACK_TOTAL_TIME, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
-import { getPhaseForTempo } from '../core/RhythmClock.ts'
+import { ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
+import { shouldFire, getBeatInterval } from '../audio/PatternClock.ts'
 import { emit } from '../core/EventBus.ts'
 import { PLAYER_RADIUS } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
@@ -15,19 +15,19 @@ export interface Enemy {
   ring: Ring
   hp: number
   maxHp: number
-  displayHp: number  // smoothly lerps toward hp
+  displayHp: number
   damage: number
   radius: number
   alive: boolean
-  wasAtBeat: boolean
   vx: number
   vy: number
   moveSpeed: number
-  audioFreq: number
   typeName: string
+  sound: string
   color: string
   hitFlash: number
   attackTimer: number
+  expandTime: number   // adaptive — scales to fit beat interval
   deathTimer: number
   dying: boolean
 }
@@ -36,22 +36,22 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
   return {
     x,
     y,
-    ring: createRing(type.ringRadius, type.tempo, hexToRgba(type.color), 'enemy'),
+    ring: createRing(type.ringRadius, 1, hexToRgba(type.color), 'enemy'),
     hp: type.hp,
     maxHp: type.hp,
     displayHp: type.hp,
     damage: 1,
     radius: type.radius,
     alive: true,
-    wasAtBeat: false,
     vx: 0,
     vy: 0,
     moveSpeed: type.moveSpeed,
-    audioFreq: type.audioFreq,
     typeName: type.name,
+    sound: type.role,
     color: type.color,
     hitFlash: 0,
     attackTimer: -1,
+    expandTime: ATTACK_EXPAND_TIME,
     deathTimer: -1,
     dying: false,
   }
@@ -68,7 +68,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     if (enemy.displayHp - enemy.hp < 0.01) enemy.displayHp = enemy.hp
   }
 
-  // Move toward player but stop at ring attack sweet spot
+  // Movement
   const dx = player.x - enemy.x
   const dy = player.y - enemy.y
   const dist = Math.sqrt(dx * dx + dy * dy)
@@ -85,7 +85,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     moveY = -(dy / dist) * enemy.moveSpeed * 0.5
   }
 
-  // Separation from nearby enemies (spatial grid query instead of O(n²))
+  // Separation from nearby enemies
   const nearby = grid.query(enemy)
   for (const other of nearby) {
     const otherEnemy = other as Enemy
@@ -117,23 +117,21 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   enemy.x += enemy.vx * dt
   enemy.y += enemy.vy * dt
 
-  // Sync ring phase to global rhythm clock
-  enemy.ring.phase = getPhaseForTempo(enemy.ring.tempo)
-
-  // Detect beat crossing → start attack animation
-  const nowAtBeat = isAtBeat(enemy.ring)
-  if (nowAtBeat && !enemy.wasAtBeat && enemy.attackTimer < 0) {
+  // Pattern-driven beat: check if this enemy type should fire now
+  if (enemy.attackTimer < 0 && shouldFire(enemy.typeName)) {
+    // Scale expand time to fit 80% of the interval between beats
+    const interval = getBeatInterval(enemy.typeName)
+    enemy.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * 0.8)
     enemy.attackTimer = 0
   }
-  enemy.wasAtBeat = nowAtBeat
 
   // Advance attack animation
   if (enemy.attackTimer >= 0) {
     enemy.attackTimer += dt
-    if (enemy.attackTimer >= ATTACK_EXPAND_TIME && enemy.attackTimer - dt < ATTACK_EXPAND_TIME) {
+    if (enemy.attackTimer >= enemy.expandTime && enemy.attackTimer - dt < enemy.expandTime) {
       emit('enemy:beat', enemy)
     }
-    if (enemy.attackTimer > ATTACK_TOTAL_TIME) {
+    if (enemy.attackTimer > enemy.expandTime + 0.05) {
       enemy.attackTimer = -1
     }
   }

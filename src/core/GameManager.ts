@@ -3,6 +3,8 @@ import * as Renderer from '../render/Renderer.ts'
 import { updatePlayer } from '../entities/Player.ts'
 import { updateEnemy, updateDeath } from '../entities/Enemy.ts'
 import { advanceGlobalTime } from './RhythmClock.ts'
+import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
+import { advancePatternClock } from '../audio/PatternClock.ts'
 import { getPlayer, getEnemies, getGrid } from './GameState.ts'
 
 // ── FPS counter ──
@@ -17,6 +19,8 @@ export function update(dt: number): void {
 
   Input.flush()
   advanceGlobalTime(dt)
+  advancePatternClock(dt)
+  updatePreviewEnemy(dt)
   updatePlayer(player, dt)
 
   // Rebuild spatial grid each frame

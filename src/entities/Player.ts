@@ -1,7 +1,7 @@
 import type { Ring } from './Ring.ts'
 import { createRing } from './Ring.ts'
-import { isAtBeat, ATTACK_TOTAL_TIME, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
-import { getPhaseForTempo } from '../core/RhythmClock.ts'
+import { ATTACK_TOTAL_TIME, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
+import { shouldFire } from '../audio/PatternClock.ts'
 import * as Input from '../game/InputManager.ts'
 import { emit } from '../core/EventBus.ts'
 import { playDash } from '../audio/AudioEngine.ts'
@@ -29,7 +29,6 @@ export interface Player {
   displayHp: number
   damage: number
   facingAngle: number
-  wasAtBeat: boolean
   attackTimer: number
   hitFlash: number
   dashTimer: number
@@ -52,7 +51,6 @@ export function createPlayer(x: number, y: number): Player {
     displayHp: PLAYER_MAX_HP,
     damage: PLAYER_BASE_DAMAGE,
     facingAngle: 0,
-    wasAtBeat: false,
     attackTimer: -1,
     hitFlash: 0,
     dashTimer: -1,
@@ -96,9 +94,6 @@ export function updatePlayer(player: Player, dt: number): void {
     player.trailTimer = 0.03
   }
 
-  // Sync ring phase to global rhythm clock
-  player.ring.phase = getPhaseForTempo(player.ring.tempo)
-
   // Dash movement
   if (player.dashTimer >= 0) {
     player.dashTimer -= dt
@@ -115,12 +110,10 @@ export function updatePlayer(player: Player, dt: number): void {
     }
   }
 
-  // Beat detection
-  const nowAtBeat = isAtBeat(player.ring)
-  if (nowAtBeat && !player.wasAtBeat && player.attackTimer < 0) {
+  // Beat detection — pattern driven
+  if (player.attackTimer < 0 && shouldFire('Player')) {
     player.attackTimer = 0
   }
-  player.wasAtBeat = nowAtBeat
 
   // Attack animation
   if (player.attackTimer >= 0) {

@@ -3,7 +3,7 @@ export const FIXED_HZ = 120
 export const FIXED_DT = 1000 / FIXED_HZ
 
 // ── Master BPM — everything derives from this ──
-export const MASTER_BPM = 30
+export const MASTER_BPM = 72
 export const BEAT_SEC = 60 / MASTER_BPM
 
 // ── Ring ──

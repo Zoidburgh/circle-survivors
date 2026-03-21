@@ -13,7 +13,7 @@ let spaceConsumed = false
 export function init(canvas: HTMLCanvasElement): void {
   window.addEventListener('keydown', e => {
     // Don't block browser shortcuts (F12, Ctrl+Shift+I, etc)
-    if (e.key.startsWith('F') || e.ctrlKey || e.metaKey) return
+    if (e.key === 'F12' || e.ctrlKey || e.metaKey) return
     e.preventDefault()
     keysDown.add(e.key.toLowerCase())
     if (e.key === ' ') { spacePressed = true; spaceConsumed = false }

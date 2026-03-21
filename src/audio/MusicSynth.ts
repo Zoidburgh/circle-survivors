@@ -61,7 +61,7 @@ export function playBass(freq: number): void {
   const gain = ctx.createGain()
   osc.type = 'triangle'
   osc.frequency.value = freq
-  applyADSR(gain, 0.7, 0.01, 0.2, 0.6, 0.4, 0.5)
+  applyADSR(gain, 0.9, 0.01, 0.15, 0.7, 0.3, 0.4)
   osc.connect(gain)
   gain.connect(dest)
   osc.start(ctx.currentTime)

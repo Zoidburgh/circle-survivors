@@ -10,7 +10,7 @@ export function isAtBeat(ring: Ring): boolean {
 }
 
 // ── Attack animation — fixed duration for ALL rings ──
-export const ATTACK_EXPAND_TIME = 1.0
+export const ATTACK_EXPAND_TIME = 0.45
 export const ATTACK_LINGER_TIME = 0.05
 export const ATTACK_TOTAL_TIME = ATTACK_EXPAND_TIME + ATTACK_LINGER_TIME
 

@@ -2,8 +2,11 @@ import type { Player } from '../entities/Player.ts'
 import { getEffectiveRadius } from '../entities/Player.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import type { Ring } from '../entities/Ring.ts'
-import { getRingExpansion, getRingAlpha, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
+import { getRingExpansion, getRingAlpha, ATTACK_EXPAND_TIME, ATTACK_TOTAL_TIME } from '../core/PhaseSystem.ts'
 import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
+import { getPattern, getLoopPosition, getLoopLength } from '../audio/PatternClock.ts'
+import { getPreviewEnemy } from '../game/EnemyDesigner.ts'
+import { BEAT_SEC } from '../utils/constants.ts'
 import {
   GRID_ALPHA,
   GRID_CELL_PX,
@@ -23,8 +26,8 @@ interface Particle {
   x: number; y: number
   vx: number; vy: number
   r: number; g: number; b: number
-  life: number      // 0→1, dies at 1
-  lifetime: number  // seconds
+  life: number
+  lifetime: number
   size: number
 }
 
@@ -42,7 +45,6 @@ function spawnParticle(
   particles.push({ x, y, vx, vy, r, g, b, life: 0, lifetime, size })
 }
 
-/** Spawn particles along a ring edge */
 function spawnRingParticles(
   cx: number, cy: number, radius: number,
   ri: number, gi: number, bi: number,
@@ -52,7 +54,6 @@ function spawnRingParticles(
     const angle = Math.random() * Math.PI * 2
     const px = cx + Math.cos(angle) * radius
     const py = cy + Math.sin(angle) * radius
-    // Particles fly outward from ring center
     const vx = Math.cos(angle) * speed * (0.5 + Math.random())
     const vy = Math.sin(angle) * speed * (0.5 + Math.random())
     spawnParticle(px, py, vx, vy, ri, gi, bi, lifetime * (0.5 + Math.random() * 0.5), size)
@@ -65,7 +66,6 @@ function updateParticles(dt: number): void {
     p.life += dt / p.lifetime
     p.x += p.vx * dt
     p.y += p.vy * dt
-    // Slow down
     p.vx *= 0.96
     p.vy *= 0.96
     if (p.life >= 1) {
@@ -116,7 +116,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   for (const enemy of enemies) {
     if (!enemy.alive && !enemy.dying) continue
     if (!enemy.dying) {
-      drawRing(enemy.x, enemy.y, enemy.ring, enemy.attackTimer)
+      drawRing(enemy.x, enemy.y, enemy.ring, enemy.attackTimer, undefined, enemy.expandTime)
     }
     drawEnemy(enemy, player)
   }
@@ -125,6 +125,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
 
   drawParticles()
   drawPlayer(player)
+  drawDesignerPreview(player)
   drawSpawnPanel()
   drawHUD(player, enemies, fps)
 }
@@ -147,8 +148,8 @@ function drawGrid(): void {
   ctx.stroke()
 }
 
-function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: number, radiusOverride?: number): void {
-  if (attackTimer < 0) return // no active attack
+function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: number, radiusOverride?: number, expandTime = ATTACK_EXPAND_TIME): void {
+  if (attackTimer < 0) return
 
   const sx = worldX - camX
   const sy = worldY - camY
@@ -162,11 +163,10 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   const gi = Math.floor(g * 255)
   const bi = Math.floor(b * 255)
 
-  // Buildup is 0→1 during expand phase
-  const buildup = Math.min(attackTimer / ATTACK_EXPAND_TIME, 1)
+  const buildup = Math.min(attackTimer / expandTime, 1)
   const alpha = getRingAlpha(attackTimer, 0.3 + 0.5 * buildup)
   const lineW = 2 + 4 * buildup
-  const atPeak = attackTimer >= ATTACK_EXPAND_TIME * 0.9 && attackTimer <= ATTACK_EXPAND_TIME * 1.1
+  const atPeak = attackTimer >= expandTime * 0.9 && attackTimer <= expandTime * 1.1
 
   // Trail particles
   if (buildup > 0.2) {
@@ -174,8 +174,8 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
     spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, trailCount, 20 + buildup * 40, 0.3, 2)
   }
 
-  // Explosion at peak — tight to the ring edge
-  if (atPeak && attackTimer - lastDt < ATTACK_EXPAND_TIME * 0.9) {
+  // Explosion at peak
+  if (atPeak && attackTimer - lastDt < expandTime * 0.9) {
     spawnRingParticles(worldX, worldY, currentRadius, 255, 255, 255, 40, 40, 0.5, 4)
     spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, 30, 25, 0.6, 3)
   }
@@ -187,7 +187,7 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   ctx.lineWidth = lineW
   ctx.stroke()
 
-  // White flash at peak
+  // Red flash at peak
   if (atPeak) {
     ctx.beginPath()
     ctx.arc(sx, sy, currentRadius, 0, Math.PI * 2)
@@ -221,7 +221,7 @@ function drawPlayer(player: Player): void {
     strokeColor = '#FF3333'
   }
 
-  // Dash trail — multiple afterimages
+  // Dash trail
   if (player.dashTimer >= 0) {
     for (let i = 1; i <= 6; i++) {
       const trailAlpha = (player.dashTimer / 0.5) * (1 - i * 0.14)
@@ -238,18 +238,16 @@ function drawPlayer(player: Player): void {
     }
   }
 
-  // HP pie chart on player body
+  // HP pie chart
   const hpFraction = player.displayHp / player.maxHp
   const hpStart = -Math.PI / 2
   const hpEnd = hpStart + hpFraction * Math.PI * 2
 
-  // Dark background (missing HP)
   ctx.beginPath()
   ctx.arc(sx, sy, PLAYER_RADIUS, 0, Math.PI * 2)
   ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'
   ctx.fill()
 
-  // HP wedge
   if (hpFraction > 0) {
     ctx.beginPath()
     ctx.moveTo(sx, sy)
@@ -259,18 +257,16 @@ function drawPlayer(player: Player): void {
     ctx.fill()
   }
 
-  // Outline
   ctx.beginPath()
   ctx.arc(sx, sy, PLAYER_RADIUS, 0, Math.PI * 2)
   ctx.strokeStyle = strokeColor
   ctx.lineWidth = 2.5
   ctx.stroke()
 
-  // Dash charges — orbiting glowing dots on edge
+  // Dash charges
   const orbitR = PLAYER_RADIUS + 5
   const orbitSpeed = performance.now() / 800
   const totalSlots = player.dashMaxCharges
-  const recharging = player.dashCharges < player.dashMaxCharges
 
   for (let i = 0; i < totalSlots; i++) {
     const baseAngle = orbitSpeed + (Math.PI * 2 * i) / totalSlots
@@ -278,31 +274,26 @@ function drawPlayer(player: Player): void {
     const dotY = sy + Math.sin(baseAngle) * orbitR
 
     if (i < player.dashCharges) {
-      // Full charge — bright green glowing dot
       ctx.beginPath()
       ctx.arc(dotX, dotY, 5, 0, Math.PI * 2)
       ctx.fillStyle = 'rgba(100, 255, 120, 0.95)'
       ctx.fill()
-      // Glow
       ctx.beginPath()
       ctx.arc(dotX, dotY, 10, 0, Math.PI * 2)
       ctx.fillStyle = 'rgba(100, 255, 120, 0.25)'
       ctx.fill()
-    } else if (i === player.dashCharges && recharging) {
-      // Recharging dot — partial fill
-      const fill = player.dashRechargeTimer / 3.0 // DASH_CHARGE_TIME
+    } else if (i === player.dashCharges && player.dashCharges < player.dashMaxCharges) {
+      const fill = player.dashRechargeTimer / 3.0
       ctx.beginPath()
       ctx.arc(dotX, dotY, 4, 0, Math.PI * 2)
       ctx.fillStyle = `rgba(79, 195, 247, ${0.15 + fill * 0.5})`
       ctx.fill()
-      // Partial glow ring
       ctx.beginPath()
       ctx.arc(dotX, dotY, 4, -Math.PI / 2, -Math.PI / 2 + fill * Math.PI * 2)
       ctx.strokeStyle = 'rgba(79, 195, 247, 0.8)'
       ctx.lineWidth = 1.5
       ctx.stroke()
     } else {
-      // Empty slot — dim dot
       ctx.beginPath()
       ctx.arc(dotX, dotY, 3, 0, Math.PI * 2)
       ctx.fillStyle = 'rgba(79, 195, 247, 0.1)'
@@ -310,16 +301,14 @@ function drawPlayer(player: Player): void {
     }
   }
 
-  // Dash burst — particles fly off when dashing
+  // Dash burst particles
   if (player.dashTimer >= 0 && player.dashTimer > 0.48) {
     for (let i = 0; i < 12; i++) {
       const a = Math.random() * Math.PI * 2
       const px = player.x + Math.cos(a) * orbitR
       const py = player.y + Math.sin(a) * orbitR
       const speed = 60 + Math.random() * 80
-      spawnParticle(px, py,
-        Math.cos(a) * speed, Math.sin(a) * speed,
-        79, 195, 247, 0.3, 2.5)
+      spawnParticle(px, py, Math.cos(a) * speed, Math.sin(a) * speed, 79, 195, 247, 0.3, 2.5)
     }
   }
 
@@ -338,7 +327,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   const sy = enemy.y - camY
   let r = enemy.radius
 
-  // Death animation — dissolve into pixel squares
+  // Death animation
   if (enemy.dying) {
     const dt = enemy.deathTimer
     const deathDur = 0.3
@@ -348,7 +337,6 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     const hg = parseInt(enemy.color.slice(3, 5), 16)
     const hb = parseInt(enemy.color.slice(5, 7), 16)
 
-    // Spawn dissolve particles across the body area over the duration
     if (dt < deathDur) {
       const count = t < 0.1 ? 15 : 4
       for (let i = 0; i < count; i++) {
@@ -366,7 +354,6 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       }
     }
 
-    // Draw remaining body — shrinks and becomes transparent with holes
     if (r > 1) {
       ctx.globalAlpha = (1 - t) * (1 - t)
       ctx.beginPath()
@@ -386,12 +373,10 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   const distToPlayer = Math.sqrt((enemy.x - player.x) ** 2 + (enemy.y - player.y) ** 2)
   const ringOverEnemy = playerRadius > 0 && Math.abs(distToPlayer - playerRadius) < r
 
-  // Parse hex color
   const hr = parseInt(enemy.color.slice(1, 3), 16)
   const hg = parseInt(enemy.color.slice(3, 5), 16)
   const hb = parseInt(enemy.color.slice(5, 7), 16)
 
-  // Pick fill/stroke: red flash > yellow tint > normal
   const fillColor = `rgba(${hr}, ${hg}, ${hb}, 0.4)`
   const strokeColor = enemy.color
 
@@ -402,7 +387,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   const endAngle = startAngle + hpFraction * Math.PI * 2
   const afterHitEnd = startAngle + afterHitFraction * Math.PI * 2
 
-  // Dark background circle (missing HP)
+  // Dark background
   ctx.beginPath()
   ctx.arc(sx, sy, r, 0, Math.PI * 2)
   ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'
@@ -418,13 +403,11 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     ctx.fill()
   }
 
-  // Damage preview — section flickers between fill color and transparent
+  // Damage preview
   if (ringOverEnemy && afterHitFraction < hpFraction) {
     if (afterHitFraction <= 0) {
-      // Killing blow — entire remaining HP pulses
       const t = (performance.now() % 180) / 180
       const pulse = t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t)
-      // Pulse between full color and dimmed
       ctx.beginPath()
       ctx.moveTo(sx, sy)
       ctx.arc(sx, sy, r, startAngle, endAngle)
@@ -432,7 +415,6 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       ctx.fillStyle = `rgba(0, 0, 0, ${0.5 * pulse})`
       ctx.fill()
     } else {
-      // Partial damage — dim the section that will drain
       ctx.beginPath()
       ctx.moveTo(sx, sy)
       ctx.arc(sx, sy, r, afterHitEnd, endAngle)
@@ -459,6 +441,92 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   ctx.globalAlpha = 1.0
 }
 
+function drawDesignerPreview(player: Player): void {
+  const preview = getPreviewEnemy()
+  if (!preview) return
+
+  const hr = parseInt(preview.color.slice(1, 3), 16)
+  const hg = parseInt(preview.color.slice(3, 5), 16)
+  const hb = parseInt(preview.color.slice(5, 7), 16)
+
+  // Orbit at sweet spot
+  const orbitDist = preview.ringRadius * 0.85
+  const orbitSpeed = preview.moveSpeed / 200
+  const angle = performance.now() / 1000 * orbitSpeed
+  const worldX = player.x + Math.cos(angle) * orbitDist
+  const worldY = player.y + Math.sin(angle) * orbitDist
+  const sx = worldX - camX
+  const sy = worldY - camY
+
+  // Attack ring — uses same animation as real enemies
+  if (preview.attackTimer >= 0) {
+    const expansion = getRingExpansion(preview.attackTimer)
+    const currentRadius = preview.ringRadius * expansion
+    if (currentRadius > 1) {
+      const pExpandTime = preview.expandTime
+      const buildup = Math.min(preview.attackTimer / pExpandTime, 1)
+      const alpha = getRingAlpha(preview.attackTimer, 0.3 + 0.5 * buildup)
+      const atPeak = preview.attackTimer >= pExpandTime * 0.9 && preview.attackTimer <= pExpandTime * 1.1
+
+      // Trail particles
+      if (buildup > 0.2) {
+        const trailCount = Math.floor(buildup * 3)
+        spawnRingParticles(worldX, worldY, currentRadius, hr, hg, hb, trailCount, 20 + buildup * 40, 0.3, 2)
+      }
+
+      // Burst at peak
+      if (atPeak && preview.attackTimer - lastDt < pExpandTime * 0.9) {
+        spawnRingParticles(worldX, worldY, currentRadius, 255, 255, 255, 30, 40, 0.5, 4)
+        spawnRingParticles(worldX, worldY, currentRadius, hr, hg, hb, 20, 25, 0.6, 3)
+      }
+
+      ctx.beginPath()
+      ctx.arc(sx, sy, currentRadius, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${alpha})`
+      ctx.lineWidth = 2 + 4 * buildup
+      ctx.stroke()
+
+      if (atPeak) {
+        ctx.beginPath()
+        ctx.arc(sx, sy, currentRadius, 0, Math.PI * 2)
+        ctx.strokeStyle = 'rgba(255, 50, 50, 0.8)'
+        ctx.lineWidth = 3
+        ctx.stroke()
+      }
+    }
+  }
+
+  // Max ring range
+  ctx.beginPath()
+  ctx.arc(sx, sy, preview.ringRadius, 0, Math.PI * 2)
+  ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.1)`
+  ctx.lineWidth = 1
+  ctx.setLineDash([4, 6])
+  ctx.stroke()
+  ctx.setLineDash([])
+
+  // Ghost body
+  ctx.globalAlpha = 0.7
+  ctx.beginPath()
+  ctx.arc(sx, sy, preview.radius, 0, Math.PI * 2)
+  ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, 0.4)`
+  ctx.fill()
+  ctx.strokeStyle = preview.color
+  ctx.lineWidth = 2
+  ctx.setLineDash([4, 4])
+  ctx.stroke()
+  ctx.setLineDash([])
+
+  // Labels
+  ctx.fillStyle = preview.color
+  ctx.font = '11px monospace'
+  ctx.textAlign = 'center'
+  ctx.fillText('PREVIEW', sx, sy - preview.radius - 8)
+  ctx.fillText(preview.name, sx, sy + preview.radius + 14)
+  ctx.textAlign = 'left'
+  ctx.globalAlpha = 1
+}
+
 function drawSpawnPanel(): void {
   const panelX = 10
   const panelY = 10
@@ -474,15 +542,12 @@ function drawSpawnPanel(): void {
     const t = ENEMY_TYPES[i]!
     const y = panelY + i * (boxH + gap)
 
-    // Box background
     ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'
     ctx.fillRect(panelX, y, boxW, boxH)
 
-    // Color bar on left
     ctx.fillStyle = t.color
     ctx.fillRect(panelX, y, 4, boxH)
 
-    // Key badge
     ctx.fillStyle = t.color
     ctx.globalAlpha = 0.8
     ctx.fillRect(panelX + 8, y + 6, 20, 20)
@@ -491,13 +556,12 @@ function drawSpawnPanel(): void {
     ctx.font = 'bold 13px monospace'
     ctx.fillText(t.key, panelX + 14, y + 21)
 
-    // Name + tempo
     ctx.fillStyle = t.color
     ctx.font = '11px monospace'
     ctx.fillText(`${t.name}`, panelX + 34, y + 15)
     ctx.fillStyle = 'rgba(255,255,255,0.4)'
     ctx.font = '10px monospace'
-    ctx.fillText(`${t.tempo}s`, panelX + 34, y + 27)
+    ctx.fillText(t.role, panelX + 34, y + 27)
   }
 }
 
@@ -505,10 +569,14 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
   ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
   ctx.font = '12px monospace'
   const x = width - 200
+  const pat = getPattern()
+  const loopPos = getLoopPosition()
+  const loopLen = getLoopLength()
   ctx.fillText(`FPS: ${fps}`, x, 20)
   ctx.fillText(`HP: ${player.hp}/${player.maxHp}`, x, 36)
   ctx.fillText(`Enemies: ${enemies.filter(e => e.alive).length}`, x, 52)
-  ctx.fillText(`WASD=move  LMB=dash`, 10, height - 12)
+  ctx.fillText(`Song: ${pat?.name ?? 'none'} [${loopPos.toFixed(1)}/${loopLen}]`, x, 68)
+  ctx.fillText(`WASD=move  LMB=dash  Tab=designer`, 10, height - 12)
   ctx.fillText(`1-5=spawn  0=spawn 100`, 10, height - 28)
 }
 

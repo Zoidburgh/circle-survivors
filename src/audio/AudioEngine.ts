@@ -9,8 +9,8 @@ let compressor: DynamicsCompressorNode
 let reverbInput: GainNode
 let reverbWet: GainNode
 
-let lastEnemyTickTime = 0
-const ENEMY_TICK_MIN_INTERVAL = 0.05
+const lastTickByType = new Map<string, number>()
+const TICK_MIN_INTERVAL = 0.04
 
 let currentMusic: WaveMusic | null = null
 
@@ -237,33 +237,237 @@ export function playDash(): void {
   osc3.stop(c.currentTime + 0.2)
 }
 
-// ── Enemy sounds — now musical ──
+// ── Enemy instrument sounds ──
 
-export function playEnemyBeatTick(enemyType: string): void {
+// ── Sound pool — each has a distinct character ──
+
+function playPop(): void {
+  const c = ctx!
+  const t = c.currentTime
+  const osc = c.createOscillator()
+  const osc2 = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'triangle'
+  osc.frequency.setValueAtTime(800, t)
+  osc.frequency.exponentialRampToValueAtTime(300, t + 0.06)
+  osc2.type = 'sine'
+  osc2.frequency.value = 400
+  gain.gain.setValueAtTime(0.6, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1)
+  osc.connect(gain)
+  osc2.connect(gain)
+  gain.connect(reverbInput)
+  osc.start(t)
+  osc2.start(t)
+  osc.stop(t + 0.1)
+  osc2.stop(t + 0.1)
+}
+
+function playClick(): void {
+  const c = ctx!; const t = c.currentTime
+  const osc = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'square'
+  osc.frequency.setValueAtTime(1200, t)
+  osc.frequency.exponentialRampToValueAtTime(400, t + 0.03)
+  gain.gain.setValueAtTime(0.5, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.05)
+  osc.connect(gain); gain.connect(reverbInput)
+  osc.start(t); osc.stop(t + 0.05)
+}
+
+function playBassSound(): void {
+  const c = ctx!; const t = c.currentTime
+  if (currentMusic) playBass(currentMusic.bassNote)
+}
+
+function playChordSound(): void {
+  const c = ctx!
+  if (currentMusic) playChord(pickChordNotes(currentMusic))
+}
+
+function playPluckSound(): void {
+  const c = ctx!
+  if (currentMusic) playPluck(pickMelodyNote(currentMusic))
+}
+
+function playSnap(): void {
+  const c = ctx!; const t = c.currentTime
+  const osc = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'sawtooth'
+  osc.frequency.setValueAtTime(500, t)
+  osc.frequency.exponentialRampToValueAtTime(150, t + 0.04)
+  gain.gain.setValueAtTime(0.6, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.07)
+  osc.connect(gain); gain.connect(reverbInput)
+  osc.start(t); osc.stop(t + 0.07)
+}
+
+function playBell(): void {
+  const c = ctx!; const t = c.currentTime
+  const osc = c.createOscillator()
+  const osc2 = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'sine'
+  osc.frequency.value = currentMusic ? pickMelodyNote(currentMusic) * 2 : 880
+  osc2.type = 'sine'
+  osc2.frequency.value = (currentMusic ? pickMelodyNote(currentMusic) * 2 : 880) * 1.5
+  gain.gain.setValueAtTime(0.35, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3)
+  osc.connect(gain); osc2.connect(gain); gain.connect(reverbInput)
+  osc.start(t); osc2.start(t); osc.stop(t + 0.3); osc2.stop(t + 0.3)
+}
+
+function playBuzz(): void {
+  const c = ctx!; const t = c.currentTime
+  const osc = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'sawtooth'
+  osc.frequency.value = currentMusic ? currentMusic.bassNote * 2 : 220
+  gain.gain.setValueAtTime(0.35, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08)
+  osc.connect(gain); gain.connect(reverbInput)
+  osc.start(t); osc.stop(t + 0.08)
+}
+
+function playThump(): void {
+  const c = ctx!; const t = c.currentTime
+  const osc = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'sine'
+  osc.frequency.setValueAtTime(200, t)
+  osc.frequency.exponentialRampToValueAtTime(40, t + 0.15)
+  gain.gain.setValueAtTime(0.7, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
+  osc.connect(gain); gain.connect(reverbInput)
+  osc.start(t); osc.stop(t + 0.15)
+}
+
+function playChirp(): void {
+  const c = ctx!; const t = c.currentTime
+  const osc = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'sine'
+  osc.frequency.setValueAtTime(600, t)
+  osc.frequency.exponentialRampToValueAtTime(1200, t + 0.06)
+  gain.gain.setValueAtTime(0.4, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08)
+  osc.connect(gain); gain.connect(reverbInput)
+  osc.start(t); osc.stop(t + 0.08)
+}
+
+function playZap(): void {
+  const c = ctx!; const t = c.currentTime
+  const osc = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'sawtooth'
+  osc.frequency.setValueAtTime(1500, t)
+  osc.frequency.exponentialRampToValueAtTime(100, t + 0.08)
+  gain.gain.setValueAtTime(0.4, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1)
+  osc.connect(gain); gain.connect(reverbInput)
+  osc.start(t); osc.stop(t + 0.1)
+}
+
+function playBloop(): void {
+  const c = ctx!; const t = c.currentTime
+  const osc = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'sine'
+  osc.frequency.setValueAtTime(300, t)
+  osc.frequency.exponentialRampToValueAtTime(600, t + 0.05)
+  osc.frequency.exponentialRampToValueAtTime(200, t + 0.12)
+  gain.gain.setValueAtTime(0.5, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
+  osc.connect(gain); gain.connect(reverbInput)
+  osc.start(t); osc.stop(t + 0.15)
+}
+
+function playClap(): void {
+  const c = ctx!; const t = c.currentTime
+  const gain = c.createGain()
+  gain.gain.setValueAtTime(0.5, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1)
+  gain.connect(reverbInput)
+  for (let i = 0; i < 4; i++) {
+    const osc = c.createOscillator()
+    osc.type = 'square'
+    osc.frequency.value = 1000 + Math.random() * 2000
+    osc.connect(gain)
+    osc.start(t + i * 0.005)
+    osc.stop(t + 0.06 + i * 0.005)
+  }
+}
+
+function playRim(): void {
+  const c = ctx!; const t = c.currentTime
+  const osc = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'triangle'
+  osc.frequency.setValueAtTime(900, t)
+  osc.frequency.exponentialRampToValueAtTime(500, t + 0.02)
+  gain.gain.setValueAtTime(0.6, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.04)
+  osc.connect(gain); gain.connect(reverbInput)
+  osc.start(t); osc.stop(t + 0.04)
+}
+
+function playTom(): void {
+  const c = ctx!; const t = c.currentTime
+  const osc = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'sine'
+  osc.frequency.setValueAtTime(250, t)
+  osc.frequency.exponentialRampToValueAtTime(100, t + 0.15)
+  gain.gain.setValueAtTime(0.6, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
+  osc.connect(gain); gain.connect(reverbInput)
+  osc.start(t); osc.stop(t + 0.2)
+}
+
+function playWhistle(): void {
+  const c = ctx!; const t = c.currentTime
+  const osc = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'sine'
+  osc.frequency.setValueAtTime(800, t)
+  osc.frequency.linearRampToValueAtTime(1200, t + 0.1)
+  osc.frequency.linearRampToValueAtTime(800, t + 0.2)
+  gain.gain.setValueAtTime(0.3, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25)
+  osc.connect(gain); gain.connect(reverbInput)
+  osc.start(t); osc.stop(t + 0.25)
+}
+
+const SOUND_MAP: Record<string, () => void> = {
+  pop: playPop,
+  click: playClick,
+  bass: playBassSound,
+  chord: playChordSound,
+  pluck: playPluckSound,
+  snap: playSnap,
+  bell: playBell,
+  buzz: playBuzz,
+  thump: playThump,
+  chirp: playChirp,
+  zap: playZap,
+  bloop: playBloop,
+  clap: playClap,
+  rim: playRim,
+  tom: playTom,
+  whistle: playWhistle,
+}
+
+// ── Enemy beat dispatch ──
+
+export function playEnemyBeatTick(enemyType: string, sound?: string): void {
   ensureContext()
   const c = ctx!
-  if (c.currentTime - lastEnemyTickTime < ENEMY_TICK_MIN_INTERVAL) return
-  lastEnemyTickTime = c.currentTime
+  const lastTime = lastTickByType.get(enemyType) ?? 0
+  if (c.currentTime - lastTime < TICK_MIN_INTERVAL) return
+  lastTickByType.set(enemyType, c.currentTime)
 
-  if (!currentMusic) return
-
-  switch (enemyType) {
-    case 'Whole':
-      playBass(currentMusic.bassNote)
-      break
-    case 'Half':
-      playChord(pickChordNotes(currentMusic))
-      break
-    case 'Quarter':
-      playMelody(pickMelodyNote(currentMusic))
-      break
-    case 'Eighth':
-      playPluck(pickMelodyNote(currentMusic))
-      break
-    case 'Sixteenth':
-      playTap(pickMelodyNote(currentMusic))
-      break
-    default:
-      playMelody(pickMelodyNote(currentMusic))
-  }
+  const soundFn = SOUND_MAP[sound ?? 'pop']
+  if (soundFn) soundFn()
 }

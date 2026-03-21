@@ -7,6 +7,9 @@ import { ENEMY_TYPES } from './entities/EnemyTypes.ts'
 import { getPlayer, getEnemies } from './core/GameState.ts'
 import { update, render } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
+import { initDesigner } from './game/EnemyDesigner.ts'
+import { setPattern } from './audio/PatternClock.ts'
+import { SONG_DEFAULT } from './audio/SongPatterns.ts'
 
 // ── Init ──
 const canvas = document.getElementById('game') as HTMLCanvasElement
@@ -14,6 +17,8 @@ Input.init(canvas)
 Renderer.init(canvas)
 Audio.init()
 initHitDetection()
+setPattern(SONG_DEFAULT)
+initDesigner()
 
 // ── Spawn enemies with number keys ──
 window.addEventListener('keydown', e => {
