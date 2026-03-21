@@ -1,5 +1,5 @@
 import { initSynth, playKick, playBass, playChord, playPluck } from './MusicSynth.ts'
-import { initBeatLoop, startBeatLoop, loadPreset, getCurrentPresetName } from './BeatLoop.ts'
+import { initBeatLoop, startBeatLoop, loadPreset, getCurrentPresetName, setGenerative } from './BeatLoop.ts'
 import { BEAT_PRESETS } from './BeatPresets.ts'
 import { initDrone, startDrone } from './MusicDrone.ts'
 import { generateWaveMusic, pickMelodyNote, pickChordNotes } from './MusicScale.ts'
@@ -119,7 +119,10 @@ export function getCurrentMusic(): WaveMusic | null {
 export function switchBeat(index: number): void {
   ensureContext()
   const preset = BEAT_PRESETS[index]
-  if (preset) loadPreset(preset)
+  if (preset) {
+    loadPreset(preset)
+    setGenerative(preset.name === 'Generative')
+  }
 }
 
 export function getBeatName(): string {

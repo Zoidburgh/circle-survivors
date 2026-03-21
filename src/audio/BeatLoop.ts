@@ -202,22 +202,86 @@ export function setBeatLoopBpm(newBpm: number): void {
   beatDuration = 60 / bpm
 }
 
+let isGenerative = false
+
+export function setGenerative(on: boolean): void {
+  isGenerative = on
+}
+
+function randomizePatterns(): void {
+  // Kick: always on 1, randomly add 1-2 more
+  const k: (0|1)[] = [1,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0]
+  const extraKicks = 1 + Math.floor(Math.random() * 2)
+  for (let i = 0; i < extraKicks; i++) {
+    const pos = [4, 8, 12, 6, 10, 2][Math.floor(Math.random() * 6)]!
+    k[pos] = 1
+  }
+  kickPattern = k
+
+  // Snare: backbeat + maybe ghost
+  const s: (0|1)[] = [0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0]
+  s[4] = 1  // always beat 2
+  s[12] = 1 // always beat 4
+  if (Math.random() > 0.5) s[Math.random() > 0.5 ? 7 : 11] = 1 // ghost
+  snarePattern = s
+
+  // Hihat: random density
+  const hDensity = Math.random()
+  const h: (0|1)[] = Array(16).fill(0) as (0|1)[]
+  for (let i = 0; i < 16; i++) {
+    if (hDensity < 0.3) h[i] = i % 4 === 0 ? 1 : 0       // quarter
+    else if (hDensity < 0.7) h[i] = i % 2 === 0 ? 1 : 0   // eighth
+    else h[i] = 1                                           // sixteenth
+  }
+  hihatPattern = h
+
+  // Bass: random rhythm, 3-5 hits
+  const b: (0|1)[] = Array(16).fill(0) as (0|1)[]
+  b[0] = 1 // always root on 1
+  const bHits = 2 + Math.floor(Math.random() * 3)
+  for (let i = 0; i < bHits; i++) {
+    b[Math.floor(Math.random() * 16)] = 1
+  }
+  bassPattern = b
+  bassNotes = Array(16).fill(0).map(() => Math.floor(Math.random() * 5))
+
+  // Melody: sparse, 2-4 hits, playful
+  const m: (0|1)[] = Array(16).fill(0) as (0|1)[]
+  const mHits = 2 + Math.floor(Math.random() * 3)
+  for (let i = 0; i < mHits; i++) {
+    m[Math.floor(Math.random() * 16)] = 1
+  }
+  melodyPattern = m
+  melodyNotes = Array(16).fill(0).map(() => Math.floor(Math.random() * 8))
+}
+
 function scheduler(): void {
   if (!playing) return
   while (nextBeatTime < ctx.currentTime + scheduleAheadTime) {
-    scheduleStep(currentStep % STEPS, nextBeatTime + 0.37) // delay to sync with ring peak (0.45 expand - ~0.08 pattern window)
-    nextBeatTime += beatDuration / 2 // eighth note resolution
+    // Regenerate patterns at the start of each bar
+    if (isGenerative && currentStep % STEPS === 0) {
+      randomizePatterns()
+    }
+    scheduleStep(currentStep % STEPS, nextBeatTime + 0.37)
+    nextBeatTime += beatDuration / 2
     currentStep = (currentStep + 1) % STEPS
   }
   timerID = window.setTimeout(scheduler, 25)
 }
 
 function scheduleStep(step: number, time: number): void {
-  if (kickPattern[step]) { scheduleKick(time); duckPad(time) }
-  if (snarePattern[step]) scheduleSnare(time)
-  if (hihatPattern[step]) scheduleHihat(time)
-  if (bassPattern[step]) scheduleBass(time, bassNotes[step]!)
-  if (melodyPattern[step]) scheduleMelody(time, melodyNotes[step]!)
+  // Each instrument uses step % its own pattern length — allows polyrhythmic patterns
+  const kStep = step % kickPattern.length
+  const sStep = step % snarePattern.length
+  const hStep = step % hihatPattern.length
+  const bStep = step % bassPattern.length
+  const mStep = step % melodyPattern.length
+
+  if (kickPattern[kStep]) { scheduleKick(time); duckPad(time) }
+  if (snarePattern[sStep]) scheduleSnare(time)
+  if (hihatPattern[hStep]) scheduleHihat(time)
+  if (bassPattern[bStep]) scheduleBass(time, bassNotes[bStep % bassNotes.length]!)
+  if (melodyPattern[mStep]) scheduleMelody(time, melodyNotes[mStep % melodyNotes.length]!)
 }
 
 function scheduleKick(time: number): void {

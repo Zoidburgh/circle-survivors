@@ -739,7 +739,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
   ctx.fillText(`HP: ${player.hp}/${player.maxHp}`, x, 36)
   ctx.fillText(`Enemies: ${enemies.filter(e => e.alive).length}`, x, 52)
   ctx.fillText(`Beat: ${getBeatName()} | Song: ${pat?.name ?? 'none'} [${loopPos.toFixed(1)}/${loopLen}]`, x - 80, 68)
-  ctx.fillText(`WASD=move  LMB=dash  Tab=designer  F1-F5=beats`, 10, height - 12)
+  ctx.fillText(`WASD=move  LMB=dash  Tab=designer  F1-F11=beats`, 10, height - 12)
   ctx.fillText(`1-5=spawn  0=spawn 100`, 10, height - 28)
 }
 
