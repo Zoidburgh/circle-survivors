@@ -2,8 +2,8 @@
 
 import { ARENA_BUFFER, CAMERA_LEAD_AMOUNT } from '../utils/constants.ts'
 
-export const ARENA_W = 2000
-export const ARENA_H = 1200
+export const ARENA_W = 1700
+export const ARENA_H = 1100
 
 export interface Camera {
   x: number  // world position of camera center

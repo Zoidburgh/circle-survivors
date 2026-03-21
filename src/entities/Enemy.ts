@@ -1,7 +1,7 @@
 import type { Ring } from './Ring.ts'
 import { createRing } from './Ring.ts'
 import { ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
-import { shouldFire, getBeatInterval } from '../audio/PatternClock.ts'
+import { shouldFire, getBeatInterval, getLoopPosition } from '../audio/PatternClock.ts'
 import { playWindup } from '../audio/AudioEngine.ts'
 import { clampToArena } from '../game/Arena.ts'
 import { emit } from '../core/EventBus.ts'
@@ -44,7 +44,11 @@ export interface Enemy {
   moveTimer: number
   bounceVx: number
   bounceVy: number
-  lungeTimer: number   // >0 = lunging, counts down
+  zigDir: number
+  zigFlipTimer: number
+  lungeTimer: number
+  lungeDuration: number
+  lungeCooldown: number  // counts up, lunges every 1 second
   lungeDirX: number
   lungeDirY: number
 }
@@ -89,7 +93,11 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     // Bounce: random initial direction
     bounceVx: Math.cos(Math.random() * Math.PI * 2) * type.moveSpeed,
     bounceVy: Math.sin(Math.random() * Math.PI * 2) * type.moveSpeed,
+    zigDir: Math.random() > 0.5 ? 1 : -1,
+    zigFlipTimer: 0,
     lungeTimer: -1,
+    lungeDuration: 0.5,
+    lungeCooldown: 0,
     lungeDirX: 0,
     lungeDirY: 0,
   }
@@ -157,36 +165,52 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
       }
       break
 
-    case 'zigzag':
-      // Move toward player but weave side to side
+    case 'zigzag': {
+      // Flip direction on the beat — synced to audio clock
+      if (shouldFire('HalfBeat')) enemy.zigDir *= -1
       if (dist > 1) {
-        const zigPhase = Math.sin(enemy.moveTimer * 4) * 1.2
         const perpX = -dirY
         const perpY = dirX
         if (dist > sweetSpot + 10) {
-          moveX = (dirX + perpX * zigPhase) * enemy.moveSpeed
-          moveY = (dirY + perpY * zigPhase) * enemy.moveSpeed
+          // Approach + heavy weave — more sideways than forward
+          moveX = (dirX * 0.7 + perpX * enemy.zigDir * 1.2) * enemy.moveSpeed
+          moveY = (dirY * 0.7 + perpY * enemy.zigDir * 1.2) * enemy.moveSpeed
         } else if (dist < sweetSpot - 20) {
-          moveX = -dirX * enemy.moveSpeed * 0.5
-          moveY = -dirY * enemy.moveSpeed * 0.5
+          // Too close — zigzag away
+          moveX = (-dirX * 0.7 + perpX * enemy.zigDir * 1.2) * enemy.moveSpeed * 0.7
+          moveY = (-dirY * 0.7 + perpY * enemy.zigDir * 1.2) * enemy.moveSpeed * 0.7
         } else {
-          // At sweet spot, still weave
-          moveX = perpX * zigPhase * enemy.moveSpeed * 0.5
-          moveY = perpY * zigPhase * enemy.moveSpeed * 0.5
+          // At sweet spot — just strafe
+          moveX = perpX * enemy.zigDir * enemy.moveSpeed * 0.5
+          moveY = perpY * enemy.zigDir * enemy.moveSpeed * 0.5
         }
       }
       break
+    }
 
     case 'lunge': {
-      const lungeDur = 0.3
+      // Lunge on the beat — synced to audio clock
+      if (enemy.lungeTimer <= 0 && enemy.spawnTimer >= 1 && shouldFire('Player')) {
+        const ldx = player.x - enemy.x
+        const ldy = player.y - enemy.y
+        const ldist = Math.sqrt(ldx * ldx + ldy * ldy)
+        if (ldist > 1) {
+          enemy.lungeDirX = ldx / ldist
+          enemy.lungeDirY = ldy / ldist
+          enemy.lungeDuration = 0.5
+          enemy.lungeTimer = 0.5
+        }
+      }
       if (enemy.lungeTimer > 0) {
         enemy.lungeTimer -= dt
-        const lProg = 1 - Math.max(0, enemy.lungeTimer) / lungeDur
-        // Ease-in-out cubic — slow start, smooth peak, gentle stop
-        const t = lProg < 0.5
-          ? 4 * lProg * lProg * lProg
-          : 1 - Math.pow(-2 * lProg + 2, 3) / 2
-        const lSpeed = t * (1 - t) * 4 * enemy.moveSpeed * 2.2
+        const lProg = 1 - Math.max(0, enemy.lungeTimer) / enemy.lungeDuration
+        // Fast start, holds speed, quick stop at the end
+        const t = lProg < 0.15
+          ? lProg / 0.15  // quick ramp up
+          : lProg > 0.85
+            ? (1 - lProg) / 0.15  // quick ramp down
+            : 1.0  // full speed in the middle
+        const lSpeed = t * enemy.moveSpeed * 2.5
         if (dist > sweetSpot + 10) {
           moveX = enemy.lungeDirX * lSpeed
           moveY = enemy.lungeDirY * lSpeed
@@ -194,10 +218,11 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
           moveX = -dirX * lSpeed
           moveY = -dirY * lSpeed
         }
-      } else if (dist < sweetSpot - 30) {
+      } else if (dist < sweetSpot - 30 && shouldFire('Player')) {
         enemy.lungeDirX = -dirX
         enemy.lungeDirY = -dirY
-        enemy.lungeTimer = lungeDur * 0.7
+        enemy.lungeDuration = 0.5
+        enemy.lungeTimer = 0.5
       }
       break
     }
@@ -272,6 +297,12 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   if (isBounce) {
     if (clamped.x !== prevX) enemy.bounceVx = -enemy.bounceVx
     if (clamped.y !== prevY) enemy.bounceVy = -enemy.bounceVy
+    // Normalize back to constant speed
+    const bSpeed = Math.sqrt(enemy.bounceVx * enemy.bounceVx + enemy.bounceVy * enemy.bounceVy)
+    if (bSpeed > 0.1) {
+      enemy.bounceVx = (enemy.bounceVx / bSpeed) * enemy.moveSpeed
+      enemy.bounceVy = (enemy.bounceVy / bSpeed) * enemy.moveSpeed
+    }
   }
 
   // Update each ring independently
@@ -283,17 +314,6 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
         rs.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * 0.8)
         rs.attackTimer = 0
         playWindup(rs.expandTime, false)
-        // Trigger lunge toward player
-        if (enemy.movePattern === 'lunge' && enemy.lungeTimer <= 0) {
-          const ldx = player.x - enemy.x
-          const ldy = player.y - enemy.y
-          const ldist = Math.sqrt(ldx * ldx + ldy * ldy)
-          if (ldist > 1) {
-            enemy.lungeDirX = ldx / ldist
-            enemy.lungeDirY = ldy / ldist
-            enemy.lungeTimer = 0.3
-          }
-        }
       }
 
       if (rs.attackTimer >= 0) {
