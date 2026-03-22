@@ -6,7 +6,7 @@ import type { Enemy } from '../entities/Enemy.ts'
 import { getRingExpansion } from '../core/PhaseSystem.ts'
 import { distance } from '../utils/math.ts'
 import { HIT_FLASH_DURATION, HIT_GRACE } from '../utils/constants.ts'
-import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playCollect, getAudioTime } from '../audio/AudioEngine.ts'
+import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playCollect } from '../audio/AudioEngine.ts'
 import { getBlockedArcs, isTargetBlocked } from './RingOcclusion.ts'
 import { spawnOrb, getOrbs, collectOrb } from '../entities/XPOrb.ts'
 
@@ -34,7 +34,7 @@ export function initHitDetection(): void {
         if (!enemy.alive || hitEnemies.has(enemy)) continue
         const dist = distance({ x: sx, y: sy }, { x: enemy.x, y: enemy.y })
         if (Math.abs(dist - ringRadius) < enemy.radius + HIT_GRACE) {
-          damageEnemy(enemy, player.damage)
+          damageEnemy(enemy, player.damage * player.modifiers.damageMult)
           hitEnemies.add(enemy)
         }
       }
@@ -54,7 +54,7 @@ export function initHitDetection(): void {
         const oDist = Math.sqrt(odx * odx + ody * ody)
         if (Math.abs(oDist - ringRadius) < orb.radius + HIT_GRACE) {
           collectOrb(orb)
-          player.xp += orb.value
+          player.xp += orb.value * player.modifiers.xpMult
           collectedAny = true
         }
       }

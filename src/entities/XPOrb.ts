@@ -15,10 +15,12 @@ export interface XPOrb {
 
 const ORB_RADIUS = PLAYER_RADIUS * 0.5
 const DEATH_DUR = 0.2
+const MAX_ORBS = 150
 
 const orbs: XPOrb[] = []
 
 export function spawnOrb(x: number, y: number, value = 1): void {
+  if (orbs.length >= MAX_ORBS) return
   orbs.push({
     x, y,
     radius: 1,

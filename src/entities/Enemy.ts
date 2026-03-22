@@ -48,7 +48,6 @@ export interface Enemy {
   zigFlipTimer: number
   lungeTimer: number
   lungeDuration: number
-  lungeCooldown: number  // counts up, lunges every 1 second
   lungeDirX: number
   lungeDirY: number
 }
@@ -97,7 +96,6 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     zigFlipTimer: 0,
     lungeTimer: -1,
     lungeDuration: 0.5,
-    lungeCooldown: 0,
     lungeDirX: 0,
     lungeDirY: 0,
   }

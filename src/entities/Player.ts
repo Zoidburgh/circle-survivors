@@ -23,6 +23,28 @@ const DASH_DURATION = 0.5
 export const DASH_CHARGE_TIME = 2.5  // seconds to regen one charge
 export const DASH_MAX_CHARGES = 2
 
+export interface PlayerModifiers {
+  speedMult: number
+  damageMult: number
+  hpMult: number
+  ringRadiusMult: number
+  dashDistanceMult: number
+  dashChargeMult: number
+  xpMult: number
+}
+
+export function createDefaultModifiers(): PlayerModifiers {
+  return {
+    speedMult: 1.0,
+    damageMult: 1.0,
+    hpMult: 1.0,
+    ringRadiusMult: 1.0,
+    dashDistanceMult: 1.0,
+    dashChargeMult: 1.0,
+    xpMult: 1.0,
+  }
+}
+
 export interface Player {
   x: number
   y: number
@@ -47,6 +69,11 @@ export interface Player {
   dashStartY: number
   hitRadius: number
   xp: number
+  speed: number
+  dashDuration: number
+  dashChargeTime: number
+  dashDistance: number
+  modifiers: PlayerModifiers
 }
 
 export function createPlayer(x: number, y: number): Player {
@@ -74,11 +101,16 @@ export function createPlayer(x: number, y: number): Player {
     dashStartY: ARENA_H / 2,
     hitRadius: PLAYER_RADIUS,
     xp: 0,
+    speed: PLAYER_SPEED,
+    dashDuration: DASH_DURATION,
+    dashChargeTime: DASH_CHARGE_TIME,
+    dashDistance: DASH_DISTANCE,
+    modifiers: createDefaultModifiers(),
   }
 }
 
 export function getEffectiveRadius(player: Player): number {
-  return player.ring.radius
+  return player.ring.radius * player.modifiers.ringRadiusMult
 }
 
 export function updatePlayer(player: Player, dt: number): void {
@@ -113,15 +145,15 @@ export function updatePlayer(player: Player, dt: number): void {
   // Dash movement
   if (player.dashTimer >= 0) {
     player.dashTimer -= dt
-    const progress = 1 - (Math.max(0, player.dashTimer) / DASH_DURATION)
-    const speed = Math.sin(progress * Math.PI) * (DASH_DISTANCE / DASH_DURATION) * 1.6
+    const progress = 1 - (Math.max(0, player.dashTimer) / player.dashDuration)
+    const speed = Math.sin(progress * Math.PI) * (player.dashDistance * player.modifiers.dashDistanceMult / player.dashDuration) * 1.6
     player.x += player.dashDirX * speed * dt
     player.y += player.dashDirY * speed * dt
   } else {
     const dir = Input.getMovementDir()
     if (dir.x !== 0 || dir.y !== 0) {
-      player.x += dir.x * PLAYER_SPEED * dt
-      player.y += dir.y * PLAYER_SPEED * dt
+      player.x += dir.x * player.speed * player.modifiers.speedMult * dt
+      player.y += dir.y * player.speed * player.modifiers.speedMult * dt
       player.facingAngle = Math.atan2(dir.y, dir.x)
     }
   }
@@ -162,8 +194,8 @@ export function updatePlayer(player: Player, dt: number): void {
       }
       player.dashStartX = player.x
       player.dashStartY = player.y
-      player.dashTimer = DASH_DURATION
-      player.dashSlots[readySlot] = DASH_CHARGE_TIME
+      player.dashTimer = player.dashDuration
+      player.dashSlots[readySlot] = player.dashChargeTime * player.modifiers.dashChargeMult
       playDash()
     }
   }

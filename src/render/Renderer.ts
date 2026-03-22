@@ -2,7 +2,7 @@ import type { Player } from '../entities/Player.ts'
 import { getEffectiveRadius } from '../entities/Player.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import type { Ring } from '../entities/Ring.ts'
-import { getRingExpansion, getRingAlpha, ATTACK_EXPAND_TIME, ATTACK_TOTAL_TIME } from '../core/PhaseSystem.ts'
+import { getRingExpansion, getRingAlpha, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
 import { getPattern, getLoopPosition, getLoopLength } from '../audio/PatternClock.ts'
 import { getPreviewEnemy } from '../game/EnemyDesigner.ts'
@@ -510,7 +510,7 @@ function drawPlayer(player: Player): void {
       ctx.fill()
     } else {
       // Charging — white pie in place
-      const fill = 1 - (timer / 2.5)
+      const fill = 1 - (timer / (player.dashChargeTime * player.modifiers.dashChargeMult))
       ctx.beginPath()
       ctx.arc(dotX, dotY, 5.2, 0, Math.PI * 2)
       ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'
