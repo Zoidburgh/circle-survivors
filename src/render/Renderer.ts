@@ -379,8 +379,8 @@ function drawXPOrbs(player: Player): void {
 
       // Spawn particles on first frame
       if (orb.deathTimer < 0.02) {
-        spawnRingParticles(orb.x, orb.y, r * 0.5, 100, 255, 200, 10, 100, 0.3, 3)
-        spawnRingParticles(orb.x, orb.y, r * 0.3, 255, 255, 255, 6, 60, 0.2, 2)
+        spawnRingParticles(orb.x, orb.y, r * 0.5, 100, 255, 200, 20, 120, 0.4, 4)
+        spawnRingParticles(orb.x, orb.y, r * 0.3, 255, 255, 255, 12, 80, 0.3, 3)
       }
 
       ctx.globalAlpha = (1 - t) * (1 - t)

@@ -272,17 +272,23 @@ export function playCollect(): void {
   ensureContext()
   const c = ctx!
   const t = c.currentTime
-  const osc = c.createOscillator()
+  // Two-note ascending chime
+  const osc1 = c.createOscillator()
+  const osc2 = c.createOscillator()
   const gain = c.createGain()
-  osc.type = 'sine'
-  osc.frequency.setValueAtTime(rPitch(600), t)
-  osc.frequency.exponentialRampToValueAtTime(rPitch(900), t + 0.06)
-  gain.gain.setValueAtTime(rVol(0.3), t)
-  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.08)
-  osc.connect(gain)
+  osc1.type = 'sine'
+  osc1.frequency.value = rPitch(700)
+  osc2.type = 'sine'
+  osc2.frequency.value = rPitch(1050)
+  gain.gain.setValueAtTime(rVol(0.5), t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
+  osc1.connect(gain)
+  osc2.connect(gain)
   gain.connect(reverbInput)
-  osc.start(t)
-  osc.stop(t + 0.08)
+  osc1.start(t)
+  osc2.start(t + 0.04)
+  osc1.stop(t + 0.08)
+  osc2.stop(t + 0.15)
 }
 
 // ── Attack windup — quiet rising tone that telegraphs incoming attack ──
