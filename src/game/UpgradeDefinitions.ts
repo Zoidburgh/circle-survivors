@@ -23,6 +23,7 @@ export const UPGRADE_POOL: UpgradeDef[] = [
   { id: 'multi_kill', name: 'Overkill', description: '2+ kills in one beat = 2x XP each', bonus: { multiKillBonus: true }, color: '#64FFDA', tier: 'game', maxStacks: 1 },
   { id: 'multi_collect', name: 'Chain Harvest', description: '2+ orbs in one beat = 2x XP each', bonus: { multiCollectBonus: true }, color: '#80DEEA', tier: 'game', maxStacks: 1 },
   { id: 'ghost_dash', name: 'Ghost Dash', description: 'Invincible during dash', bonus: { ghostDash: true }, color: '#E0E0E0', tier: 'game', maxStacks: 1 },
+  { id: 'chill_hit', name: 'Frostbite', description: 'Ring hits slow enemies (10%/stack, 5 max)', bonus: { chillHit: true }, color: '#80D8FF', tier: 'game', maxStacks: 2 },
 ]
 
 /** Pick N random non-duplicate upgrades from the pool */

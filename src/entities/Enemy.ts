@@ -5,11 +5,12 @@ import { shouldFire, getBeatInterval, getLoopPosition } from '../audio/PatternCl
 import { playWindup } from '../audio/AudioEngine.ts'
 import { clampToArena } from '../game/Arena.ts'
 import { emit } from '../core/EventBus.ts'
-import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED } from '../utils/constants.ts'
+import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import type { Player } from './Player.ts'
 import type { EnemyType, MovePattern } from './EnemyTypes.ts'
 import { SpatialGrid } from '../core/SpatialGrid.ts'
+import { getChillRank } from '../game/UpgradeManager.ts'
 
 export interface RingState {
   ring: Ring
@@ -50,6 +51,8 @@ export interface Enemy {
   lungeDuration: number
   lungeDirX: number
   lungeDirY: number
+  chillStacks: number
+  chillDecayTimer: number
 }
 
 export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
@@ -98,6 +101,8 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     lungeDuration: 0.5,
     lungeDirX: 0,
     lungeDirY: 0,
+    chillStacks: 0,
+    chillDecayTimer: 0,
   }
 }
 
@@ -105,6 +110,16 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   if (!enemy.alive) return
 
   if (enemy.hitFlash > 0) enemy.hitFlash -= dt
+
+  // Chill stack decay
+  if (enemy.chillStacks > 0) {
+    enemy.chillDecayTimer += dt
+    const decayMult = getChillRank() >= 2 ? 2 : 1
+    if (enemy.chillDecayTimer >= CHILL_STACK_DECAY_TIME * decayMult) {
+      enemy.chillStacks--
+      enemy.chillDecayTimer = 0
+    }
+  }
 
   // Spawn grow-in
   if (enemy.spawnTimer < 1) {
@@ -114,9 +129,10 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     enemy.radius = enemy.baseRadius * t
   }
 
-  // Smooth HP display
+  // Smooth HP display — drain faster when dying so it completes before death anim ends
   if (enemy.displayHp > enemy.hp) {
-    enemy.displayHp -= (enemy.displayHp - enemy.hp) * HP_DRAIN_SPEED * dt
+    const drainRate = enemy.dying ? HP_DRAIN_SPEED * 4 : HP_DRAIN_SPEED * 2
+    enemy.displayHp -= (enemy.displayHp - enemy.hp) * drainRate * dt
     if (enemy.displayHp - enemy.hp < 0.01) enemy.displayHp = enemy.hp
   }
 
@@ -281,8 +297,10 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     }
   }
 
-  enemy.vx = moveX
-  enemy.vy = moveY
+  // Apply chill slow
+  const chillMult = 1 - enemy.chillStacks * CHILL_SLOW_PER_STACK
+  enemy.vx = moveX * chillMult
+  enemy.vy = moveY * chillMult
   enemy.x += enemy.vx * dt
   enemy.y += enemy.vy * dt
 

@@ -334,8 +334,8 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   const bi = Math.floor(b * 255)
 
   const buildup = Math.min(attackTimer / expandTime, 1)
-  const alpha = getRingAlpha(attackTimer, 0.3 + 0.5 * buildup)
-  const lineW = 2 + 4 * buildup
+  const alpha = getRingAlpha(attackTimer, 0.12 + 0.68 * buildup * buildup)
+  const lineW = 1.5 + 2.5 * buildup
   // Red ring visible from peak for a short fade-out
   const pastPeak = attackTimer - expandTime
   const showRedRing = pastPeak >= 0 && pastPeak < 0.11
@@ -352,7 +352,17 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
     spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, 30, 25, 0.6, 3.6, blockedArcs)
   }
 
-  // Main ring — draw with occlusion gaps if blocked
+  // Soft outer glow
+  ctx.strokeStyle = `rgba(${ri}, ${gi}, ${bi}, ${alpha * 0.1})`
+  ctx.lineWidth = lineW + 6
+  drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
+
+  // Mid glow
+  ctx.strokeStyle = `rgba(${ri}, ${gi}, ${bi}, ${alpha * 0.2})`
+  ctx.lineWidth = lineW + 2
+  drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
+
+  // Main ring — sharp crisp stroke
   ctx.strokeStyle = `rgba(${ri}, ${gi}, ${bi}, ${alpha})`
   ctx.lineWidth = lineW
   drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
@@ -360,12 +370,17 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   // Red flash at peak
   if (showRedRing) {
     const redAlpha = 0.8 * (1 - pastPeak / 0.11)
-    ctx.strokeStyle = `rgba(255, 80, 80, ${redAlpha})`
-    ctx.lineWidth = 4
-    drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
-    // Outer glow
-    ctx.strokeStyle = `rgba(255, 120, 120, ${redAlpha * 0.4})`
+    // Soft red glow
+    ctx.strokeStyle = `rgba(255, 100, 100, ${redAlpha * 0.15})`
     ctx.lineWidth = 10
+    drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
+    // Mid red
+    ctx.strokeStyle = `rgba(255, 80, 80, ${redAlpha * 0.5})`
+    ctx.lineWidth = 5
+    drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
+    // Sharp red core
+    ctx.strokeStyle = `rgba(255, 80, 80, ${redAlpha})`
+    ctx.lineWidth = 3
     drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
   }
 }
@@ -410,37 +425,58 @@ function drawXPOrbs(player: Player): void {
     const orbG = isDouble ? 215 : 255
     const orbB = isDouble ? 50 : 200
 
-    // Glow
+    // Soft outer glow
+    const glowR = r + (isDouble ? 8 : 5)
+    const glowGrad = ctx.createRadialGradient(sx, sy, r * 0.5, sx, sy, glowR)
+    if (ringOver) {
+      glowGrad.addColorStop(0, 'rgba(255, 255, 255, 0.3)')
+      glowGrad.addColorStop(1, 'rgba(255, 255, 255, 0)')
+    } else {
+      glowGrad.addColorStop(0, `rgba(${orbR}, ${orbG}, ${orbB}, ${isDouble ? 0.25 : 0.15})`)
+      glowGrad.addColorStop(1, `rgba(${orbR}, ${orbG}, ${orbB}, 0)`)
+    }
     ctx.beginPath()
-    ctx.arc(sx, sy, r + (isDouble ? 6 : 4), 0, Math.PI * 2)
-    ctx.fillStyle = ringOver ? 'rgba(255, 255, 255, 0.25)' : `rgba(${orbR}, ${orbG}, ${orbB}, ${isDouble ? 0.2 : 0.12})`
+    ctx.arc(sx, sy, glowR, 0, Math.PI * 2)
+    ctx.fillStyle = glowGrad
     ctx.fill()
 
-    // Orb body
+    // Orb body — radial gradient (bright white center → color at edge)
+    const bodyGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
+    bodyGrad.addColorStop(0, `rgba(255, 255, 255, 0.9)`)
+    bodyGrad.addColorStop(0.35, `rgba(${Math.min(255, orbR + 80)}, ${Math.min(255, orbG + 40)}, ${Math.min(255, orbB + 40)}, 0.8)`)
+    bodyGrad.addColorStop(1, `rgba(${orbR}, ${orbG}, ${orbB}, 0.7)`)
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(${orbR}, ${orbG}, ${orbB}, 0.8)`
+    ctx.fillStyle = bodyGrad
     ctx.fill()
 
-    // Double orbs get a bright outline
-    if (isDouble) {
-      ctx.strokeStyle = `rgba(${orbR}, ${orbG}, ${orbB}, 0.6)`
-      ctx.lineWidth = 2
-      ctx.stroke()
-    }
-
-    // White outline when ring is over
-    if (ringOver) {
-      ctx.strokeStyle = '#FFFFFF'
-      ctx.lineWidth = 2
-      ctx.stroke()
-    }
+    // Edge stroke
+    ctx.strokeStyle = ringOver ? '#FFFFFF' : `rgba(${orbR}, ${orbG}, ${orbB}, ${isDouble ? 0.6 : 0.4})`
+    ctx.lineWidth = isDouble ? 1.5 : 1
+    ctx.stroke()
   }
 }
 
 function drawPlayer(player: Player): void {
   const sx = player.x - camX
   const sy = player.y - camY
+
+  // Glow aura — soft radial gradient behind player, pulses on beat
+  {
+    const beatPulse = player.attackTimer >= 0
+      ? getRingExpansion(player.attackTimer) * 0.35
+      : 0
+    const glowRadius = PLAYER_RADIUS * (2.2 + beatPulse)
+    const glowAlpha = 0.12 + beatPulse * 0.15
+    const grad = ctx.createRadialGradient(sx, sy, PLAYER_RADIUS * 0.3, sx, sy, glowRadius)
+    grad.addColorStop(0, `rgba(79, 195, 247, ${glowAlpha})`)
+    grad.addColorStop(0.5, `rgba(79, 195, 247, ${glowAlpha * 0.35})`)
+    grad.addColorStop(1, 'rgba(79, 195, 247, 0)')
+    ctx.beginPath()
+    ctx.arc(sx, sy, glowRadius, 0, Math.PI * 2)
+    ctx.fillStyle = grad
+    ctx.fill()
+  }
 
   // Movement trail
   for (let i = 0; i < player.trail.length; i++) {
@@ -488,20 +524,63 @@ function drawPlayer(player: Player): void {
     }
   }
 
+  // Hit particles — red burst from pie edge on hit
+  if (player.hitFlash > HIT_FLASH_DURATION - 0.02) {
+    const dmgFraction = 1 / player.maxHp  // enemy.damage is always 1
+    const intensity = Math.min(Math.max(dmgFraction / 0.002, 1), 4)
+    const count = Math.floor(12 * intensity)
+    const biteAngle = -Math.PI / 2 + (player.hp / player.maxHp) * Math.PI * 2
+    for (let i = 0; i < count; i++) {
+      const spread = (Math.random() - 0.5) * (0.6 + intensity * 0.15)
+      const angle = biteAngle + spread
+      const dist = drawRadius * (0.5 + Math.random() * 0.5)
+      const px = player.x + Math.cos(angle) * dist
+      const py = player.y + Math.sin(angle) * dist
+      const speed = (30 + Math.random() * 50) * (0.8 + intensity * 0.2)
+      const size = (2 + Math.random() * 2) * (0.8 + intensity * 0.2)
+      spawnParticle(px, py, Math.cos(angle) * speed, Math.sin(angle) * speed,
+        255, 60 + Math.floor(Math.random() * 40), 60, 0.3 + Math.random() * 0.2, size)
+    }
+  }
+
   // HP pie chart
   const hpFraction = player.displayHp / player.maxHp
+  const actualPlayerHp = player.hp / player.maxHp
   const hpStart = -Math.PI / 2
   const hpEnd = hpStart + hpFraction * Math.PI * 2
 
-  ctx.beginPath()
-  ctx.arc(sx, sy, drawRadius, 0, Math.PI * 2)
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'
-  ctx.fill()
+  // Background — gradient
+  {
+    const pbgGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, drawRadius)
+    pbgGrad.addColorStop(0, 'rgba(0, 0, 0, 0.25)')
+    pbgGrad.addColorStop(1, 'rgba(0, 0, 0, 0.5)')
+    ctx.beginPath()
+    ctx.arc(sx, sy, drawRadius, 0, Math.PI * 2)
+    ctx.fillStyle = pbgGrad
+    ctx.fill()
+  }
 
   if (hpFraction > 0) {
+    // Red draining wedge
+    if (hpFraction > actualPlayerHp) {
+      const actualEnd = hpStart + actualPlayerHp * Math.PI * 2
+      const redGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, drawRadius)
+      redGrad.addColorStop(0, 'rgba(255, 70, 70, 0.55)')
+      redGrad.addColorStop(0.7, 'rgba(255, 40, 40, 0.4)')
+      redGrad.addColorStop(1, 'rgba(140, 20, 20, 0.3)')
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.arc(sx, sy, drawRadius, actualEnd, hpEnd)
+      ctx.closePath()
+      ctx.fillStyle = redGrad
+      ctx.fill()
+    }
+
+    // Main HP fill
+    const mainEnd = hpStart + actualPlayerHp * Math.PI * 2
     ctx.beginPath()
     ctx.moveTo(sx, sy)
-    ctx.arc(sx, sy, drawRadius, hpStart, hpEnd)
+    ctx.arc(sx, sy, drawRadius, hpStart, mainEnd)
     ctx.closePath()
     ctx.fillStyle = fillColor
     ctx.fill()
@@ -512,6 +591,18 @@ function drawPlayer(player: Player): void {
   ctx.strokeStyle = strokeColor
   ctx.lineWidth = 2.5
   ctx.stroke()
+
+  // Beat ripple — ring of light expanding from body on attack fire
+  if (player.attackTimer >= 0 && player.attackTimer < 0.15) {
+    const rippleT = player.attackTimer / 0.15
+    const rippleR = drawRadius + rippleT * drawRadius * 0.35
+    const rippleAlpha = 0.3 * (1 - rippleT)
+    ctx.beginPath()
+    ctx.arc(sx, sy, rippleR, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(79, 195, 247, ${rippleAlpha})`
+    ctx.lineWidth = 2 * (1 - rippleT)
+    ctx.stroke()
+  }
 
   // Dash charges
   const orbitR = drawRadius
@@ -605,6 +696,19 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     const hg = parseInt(enemy.color.slice(3, 5), 16)
     const hb = parseInt(enemy.color.slice(5, 7), 16)
 
+    // Red hit particles on first frame of death — full intensity burst
+    if (dt < 0.02) {
+      for (let i = 0; i < 16; i++) {
+        const angle = Math.random() * Math.PI * 2
+        const dist = r * (0.5 + Math.random() * 0.5)
+        const px = enemy.x + Math.cos(angle) * dist
+        const py = enemy.y + Math.sin(angle) * dist
+        const speed = 40 + Math.random() * 70
+        spawnParticle(px, py, Math.cos(angle) * speed, Math.sin(angle) * speed,
+          255, 60 + Math.floor(Math.random() * 40), 60, 0.3 + Math.random() * 0.2, 3 + Math.random() * 2)
+      }
+    }
+
     if (dt < deathDur) {
       const count = t < 0.1 ? 15 : 4
       for (let i = 0; i < count; i++) {
@@ -623,11 +727,38 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     }
 
     if (r > 1) {
-      ctx.globalAlpha = (1 - t) * (1 - t)
+      const dr = r * (1 - t * 0.5)
+      const deathAlpha = (1 - t) * (1 - t)
+      ctx.globalAlpha = deathAlpha
+
+      // Dark background — gradient
+      const dbgGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, dr)
+      dbgGrad.addColorStop(0, 'rgba(0, 0, 0, 0.3)')
+      dbgGrad.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
       ctx.beginPath()
-      ctx.arc(sx, sy, r * (1 - t * 0.5), 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, 0.3)`
+      ctx.arc(sx, sy, dr, 0, Math.PI * 2)
+      ctx.fillStyle = dbgGrad
       ctx.fill()
+
+      // Red drain wedge — displayHp is still draining toward 0
+      const drainFraction = enemy.displayHp / enemy.maxHp
+      if (drainFraction > 0) {
+        const drainStart = -Math.PI / 2
+        const drainEnd = drainStart + drainFraction * Math.PI * 2
+        const dRedGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, dr)
+        dRedGrad.addColorStop(0, 'rgba(255, 70, 70, 0.55)')
+        dRedGrad.addColorStop(0.7, 'rgba(255, 40, 40, 0.4)')
+        dRedGrad.addColorStop(1, 'rgba(140, 20, 20, 0.3)')
+        ctx.beginPath()
+        ctx.moveTo(sx, sy)
+        ctx.arc(sx, sy, dr, drainStart, drainEnd)
+        ctx.closePath()
+        ctx.fillStyle = dRedGrad
+        ctx.fill()
+      }
+
+      ctx.beginPath()
+      ctx.arc(sx, sy, dr, 0, Math.PI * 2)
       ctx.strokeStyle = enemy.color
       ctx.lineWidth = 1.5 * (1 - t)
       ctx.stroke()
@@ -645,29 +776,87 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   const hg = parseInt(enemy.color.slice(3, 5), 16)
   const hb = parseInt(enemy.color.slice(5, 7), 16)
 
-  const fillColor = `rgba(${hr}, ${hg}, ${hb}, 0.4)`
-  const strokeColor = enemy.color
-
   const hpFraction = enemy.displayHp / enemy.maxHp
-  const damageFraction = player.damage / enemy.maxHp
+  const damageFraction = player.damage * player.modifiers.damageMult / enemy.maxHp
   const afterHitFraction = Math.max(0, hpFraction - damageFraction)
   const startAngle = -Math.PI / 2
   const endAngle = startAngle + hpFraction * Math.PI * 2
   const afterHitEnd = startAngle + afterHitFraction * Math.PI * 2
 
-  // Dark background
-  ctx.beginPath()
-  ctx.arc(sx, sy, r, 0, Math.PI * 2)
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'
-  ctx.fill()
+  // Damaged background — dark enemy color base + inner ring marks
+  {
+    const dr = Math.floor(hr * 0.15)
+    const dg = Math.floor(hg * 0.15)
+    const db = Math.floor(hb * 0.15)
+    const bgGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
+    bgGrad.addColorStop(0, `rgba(${dr}, ${dg}, ${db}, 0.5)`)
+    bgGrad.addColorStop(0.6, `rgba(${Math.floor(dr * 0.5)}, ${Math.floor(dg * 0.5)}, ${Math.floor(db * 0.5)}, 0.45)`)
+    bgGrad.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.fillStyle = bgGrad
+    ctx.fill()
 
-  // HP pie wedge
+    // Inner ring marks — concentric arcs for "internals" feel
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.04)`
+    ctx.lineWidth = 1
+    for (let i = 1; i <= 3; i++) {
+      const ringR = r * (i * 0.25)
+      ctx.beginPath()
+      ctx.arc(sx, sy, ringR, 0, Math.PI * 2)
+      ctx.stroke()
+    }
+  }
+
+  // Hit particles — burst from the pie edge, intensity scales with damage fraction
+  if (enemy.hitFlash > HIT_FLASH_DURATION - 0.02) {
+    const hitFraction = damageFraction  // fraction of maxHp dealt
+    const intensity = Math.min(Math.max(hitFraction / 0.20, 1), 4)  // 1x at <=20%, up to 4x at 80%+
+    const count = Math.floor(6 * intensity)
+    const biteAngle = startAngle + (enemy.hp / enemy.maxHp) * Math.PI * 2
+    for (let i = 0; i < count; i++) {
+      const spread = (Math.random() - 0.5) * (0.6 + intensity * 0.15)
+      const angle = biteAngle + spread
+      const dist = r * (0.5 + Math.random() * 0.5)
+      const px = enemy.x + Math.cos(angle) * dist
+      const py = enemy.y + Math.sin(angle) * dist
+      const speed = (30 + Math.random() * 50) * (0.8 + intensity * 0.2)
+      const vx = Math.cos(angle) * speed
+      const vy = Math.sin(angle) * speed
+      const size = (2 + Math.random() * 2) * (0.8 + intensity * 0.2)
+      spawnParticle(px, py, vx, vy, 255, 60 + Math.floor(Math.random() * 40), 60, 0.3 + Math.random() * 0.2, size)
+    }
+  }
+
+  // HP pie wedge — radial gradient fill (bright center, dark edge)
+  const actualHpFraction = enemy.hp / enemy.maxHp
   if (hpFraction > 0) {
+    // Red draining wedge — the gap between displayHp (visual) and hp (actual)
+    if (hpFraction > actualHpFraction) {
+      const actualEnd = startAngle + actualHpFraction * Math.PI * 2
+      const redGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
+      redGrad.addColorStop(0, 'rgba(255, 70, 70, 0.55)')
+      redGrad.addColorStop(0.7, 'rgba(255, 40, 40, 0.4)')
+      redGrad.addColorStop(1, 'rgba(140, 20, 20, 0.3)')
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.arc(sx, sy, r, actualEnd, endAngle)
+      ctx.closePath()
+      ctx.fillStyle = redGrad
+      ctx.fill()
+    }
+
+    // Main HP fill
+    const mainEnd = startAngle + actualHpFraction * Math.PI * 2
+    const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
+    grad.addColorStop(0, `rgba(${hr}, ${hg}, ${hb}, 0.55)`)
+    grad.addColorStop(0.7, `rgba(${hr}, ${hg}, ${hb}, 0.35)`)
+    grad.addColorStop(1, `rgba(${Math.floor(hr * 0.4)}, ${Math.floor(hg * 0.4)}, ${Math.floor(hb * 0.4)}, 0.3)`)
     ctx.beginPath()
     ctx.moveTo(sx, sy)
-    ctx.arc(sx, sy, r, startAngle, endAngle)
+    ctx.arc(sx, sy, r, startAngle, mainEnd)
     ctx.closePath()
-    ctx.fillStyle = fillColor
+    ctx.fillStyle = grad
     ctx.fill()
   }
 
@@ -692,21 +881,35 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     }
   }
 
-  // Outline
+  // Chill overlay — blue tint (inside circle only)
+  if (enemy.chillStacks > 0) {
+    const intensity = enemy.chillStacks / 5
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(128, 216, 255, ${0.06 + intensity * 0.14})`
+    ctx.fill()
+  }
+
+  // Beat ripple — expanding ring when enemy fires
+  for (const rs of enemy.rings) {
+    if (rs.attackTimer >= 0 && rs.attackTimer < 0.15) {
+      const rippleT = rs.attackTimer / 0.15
+      const rippleR = r + rippleT * r * 0.35
+      const rippleAlpha = 0.3 * (1 - rippleT)
+      ctx.beginPath()
+      ctx.arc(sx, sy, rippleR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${rippleAlpha})`
+      ctx.lineWidth = 2 * (1 - rippleT)
+      ctx.stroke()
+    }
+  }
+
+  // Outline — crisp thin edge
   ctx.beginPath()
   ctx.arc(sx, sy, r, 0, Math.PI * 2)
-  ctx.strokeStyle = ringOverEnemy ? '#FFFFFF' : strokeColor
-  ctx.lineWidth = 2.5
+  ctx.strokeStyle = ringOverEnemy ? '#FFFFFF' : enemy.color
+  ctx.lineWidth = 1.5
   ctx.stroke()
-
-  // Type label
-  ctx.fillStyle = enemy.color
-  ctx.globalAlpha = 0.5
-  ctx.font = '10px monospace'
-  ctx.textAlign = 'center'
-  ctx.fillText(enemy.typeName, sx, sy + r + 12)
-  ctx.textAlign = 'left'
-  ctx.globalAlpha = 1.0
 }
 
 function drawDesignerPreview(player: Player): void {

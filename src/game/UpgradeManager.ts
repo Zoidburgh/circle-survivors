@@ -19,6 +19,7 @@ export interface UpgradeBonus {
   multiKillBonus?: boolean // 2+ kills in one beat = double XP from each
   multiCollectBonus?: boolean // 2+ orbs collected in one beat = double XP from each
   ghostDash?: boolean // invincible during dash
+  chillHit?: boolean  // ring hits slow enemies
 }
 
 export interface ActiveUpgrade {
@@ -49,6 +50,11 @@ export function hasUpgrade(id: string): boolean {
 
 export function hasBonus(key: keyof UpgradeBonus): boolean {
   return activeUpgrades.some(u => u.bonus[key])
+}
+
+/** How many ranks of Frostbite (chillHit) the player has picked */
+export function getChillRank(): number {
+  return activeUpgrades.filter(u => u.bonus.chillHit).length
 }
 
 /** Recompute final modifiers from all active upgrades (additive stacking) */

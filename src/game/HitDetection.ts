@@ -5,7 +5,7 @@ import { damageEnemy } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { getRingExpansion, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { distance } from '../utils/math.ts'
-import { HIT_FLASH_DURATION, HIT_GRACE } from '../utils/constants.ts'
+import { HIT_FLASH_DURATION, HIT_GRACE, CHILL_MAX_STACKS } from '../utils/constants.ts'
 import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playCollect } from '../audio/AudioEngine.ts'
 import { getBlockedArcs, isTargetBlocked } from './RingOcclusion.ts'
 import { spawnOrb, getOrbs, collectOrb } from '../entities/XPOrb.ts'
@@ -48,6 +48,11 @@ export function initHitDetection(): void {
           const wasDying = enemy.dying
           damageEnemy(enemy, player.damage * player.modifiers.damageMult)
           hitEnemies.add(enemy)
+          // Frostbite: apply chill stack
+          if (hasBonus('chillHit')) {
+            enemy.chillStacks = Math.min(enemy.chillStacks + 1, CHILL_MAX_STACKS)
+            enemy.chillDecayTimer = 0
+          }
           if (enemy.dying && !wasDying) killedEnemies.push(enemy)
         }
       }
