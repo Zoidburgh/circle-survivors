@@ -87,3 +87,9 @@ export function getMovementDir(): Vec2 {
 export function flush(): void {
   // Called at start of each fixed tick — nothing to reset currently
 }
+
+/** Clear all pressed keys — call when UI panels open/close */
+export function clearKeys(): void {
+  keysDown.clear()
+  spacePressed = false
+}

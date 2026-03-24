@@ -5,13 +5,14 @@ import { getSpawnPanelClick } from './render/Renderer.ts'
 import * as Audio from './audio/AudioEngine.ts'
 import { createEnemy } from './entities/Enemy.ts'
 import { ENEMY_TYPES } from './entities/EnemyTypes.ts'
-import { getPlayer, getEnemies } from './core/GameState.ts'
+import { getPlayer, getEnemies, getPhase } from './core/GameState.ts'
 import { update, render } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
 import { initDesigner } from './game/EnemyDesigner.ts'
 import { setPattern } from './audio/PatternClock.ts'
 import { SONG_DEFAULT } from './audio/SongPatterns.ts'
 import { getSpawnPos } from './game/Arena.ts'
+import { handleUpgradeClick, handleUpgradeHover } from './game/UpgradeScreen.ts'
 
 // ── Init ──
 const canvas = document.getElementById('game') as HTMLCanvasElement
@@ -50,10 +51,19 @@ window.addEventListener('keydown', e => {
 })
 
 canvas.addEventListener('click', e => {
+  // Upgrade screen takes priority
+  if (getPhase() === 'upgrading') {
+    handleUpgradeClick(e.clientX, e.clientY, canvas.width, canvas.height)
+    return
+  }
   const idx = getSpawnPanelClick(e.clientX, e.clientY)
   if (idx >= 0 && idx < ENEMY_TYPES.length) {
     spawnEnemy(ENEMY_TYPES[idx]!)
   }
+})
+
+canvas.addEventListener('mousemove', e => {
+  handleUpgradeHover(e.clientX, e.clientY, canvas.width, canvas.height)
 })
 
 // ── Start game loop ──

@@ -20,7 +20,7 @@ import { COLOR_PLAYER } from '../utils/constants.ts'
 
 const DASH_DISTANCE = 260
 const DASH_DURATION = 0.5
-export const DASH_CHARGE_TIME = 2.5  // seconds to regen one charge
+export const DASH_CHARGE_TIME = 3.0  // seconds to regen one charge
 export const DASH_MAX_CHARGES = 2
 
 export interface PlayerModifiers {
@@ -70,6 +70,9 @@ export interface Player {
   hitRadius: number
   xp: number
   speed: number
+  // Extra rings from upgrades — separate from base attack
+  extraRingTimers: number[]  // attackTimer per extra ring, -1 = idle
+  extraRingCount: number     // how many extra ring slots active (0-4)
   dashDuration: number
   dashChargeTime: number
   dashDistance: number
@@ -102,6 +105,8 @@ export function createPlayer(x: number, y: number): Player {
     hitRadius: PLAYER_RADIUS,
     xp: 0,
     speed: PLAYER_SPEED,
+    extraRingTimers: [-1, -1, -1, -1],
+    extraRingCount: 0,
     dashDuration: DASH_DURATION,
     dashChargeTime: DASH_CHARGE_TIME,
     dashDistance: DASH_DISTANCE,
@@ -146,7 +151,7 @@ export function updatePlayer(player: Player, dt: number): void {
   if (player.dashTimer >= 0) {
     player.dashTimer -= dt
     const progress = 1 - (Math.max(0, player.dashTimer) / player.dashDuration)
-    const speed = Math.sin(progress * Math.PI) * (player.dashDistance * player.modifiers.dashDistanceMult / player.dashDuration) * 1.6
+    const speed = Math.sin(progress * Math.PI) * (player.dashDistance * player.modifiers.dashDistanceMult * player.modifiers.speedMult / player.dashDuration) * 1.6
     player.x += player.dashDirX * speed * dt
     player.y += player.dashDirY * speed * dt
   } else {
@@ -176,6 +181,23 @@ export function updatePlayer(player: Player, dt: number): void {
     }
     if (player.attackTimer > ATTACK_TOTAL_TIME) {
       player.attackTimer = -1
+    }
+  }
+
+  // Extra ring attacks — separate from base, added by upgrades
+  for (let i = 0; i < player.extraRingCount; i++) {
+    const patternName = `PlayerExtra${i}`
+    if (player.extraRingTimers[i]! < 0 && shouldFire(patternName)) {
+      player.extraRingTimers[i] = 0
+    }
+    if (player.extraRingTimers[i]! >= 0) {
+      player.extraRingTimers[i]! += dt
+      if (player.extraRingTimers[i]! >= ATTACK_EXPAND_TIME && player.extraRingTimers[i]! - dt < ATTACK_EXPAND_TIME) {
+        emit('player:beat', player)
+      }
+      if (player.extraRingTimers[i]! > ATTACK_TOTAL_TIME) {
+        player.extraRingTimers[i] = -1
+      }
     }
   }
 

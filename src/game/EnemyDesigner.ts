@@ -6,6 +6,9 @@ import { getPlayer, getEnemies } from '../core/GameState.ts'
 import { createEnemy } from '../entities/Enemy.ts'
 import { getSpawnPos } from './Arena.ts'
 import { playEnemyBeatTick } from '../audio/AudioEngine.ts'
+import { clearKeys } from './InputManager.ts'
+import { UPGRADE_POOL } from './UpgradeDefinitions.ts'
+import { addUpgrade, removeUpgrade, getActiveUpgrades, applyModifiers } from './UpgradeManager.ts'
 import { ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { BEAT_SEC } from '../utils/constants.ts'
 
@@ -124,8 +127,10 @@ export interface PreviewEnemy {
 }
 let previewEnemy: PreviewEnemy | null = null
 
+let enemySectionExpanded = true
+
 export function getPreviewEnemy(): PreviewEnemy | null {
-  return visible ? previewEnemy : null
+  return visible && enemySectionExpanded ? previewEnemy : null
 }
 
 // Track which beats have fired this loop to avoid double-firing
@@ -193,6 +198,7 @@ export function getDesignedEnemies(): DesignedEnemy[] {
 export function toggleDesigner(): void {
   visible = !visible
   if (panel) panel.style.display = visible ? 'block' : 'none'
+  clearKeys()
 }
 
 const inputCSS = `
@@ -212,26 +218,42 @@ export function initDesigner(): void {
   `
 
   panel.innerHTML = `
-    <div style="color: #4FC3F7; font-size: 16px; margin-bottom: 12px; font-weight: bold;">
-      Enemy Designer
-      <span style="font-size:11px;color:#666;font-weight:normal;"> (Tab to toggle)</span>
-      <span id="ed-close" style="float:right;cursor:pointer;color:#666;font-size:18px;">✕</span>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+      <span style="color:#4FC3F7;font-size:16px;font-weight:bold;">Workshop</span>
+      <span id="ed-close" style="cursor:pointer;color:#666;font-size:18px;">✕</span>
     </div>
-    <div id="ed-list"></div>
-    <button id="ed-add" style="
-      width: 100%; padding: 10px; margin-top: 8px; cursor: pointer;
-      background: rgba(79,195,247,0.15); border: 1px solid rgba(79,195,247,0.3);
-      color: #4FC3F7; font: 13px monospace; border-radius: 4px;
-    ">+ Add Enemy Type</button>
-    <div style="display:flex;gap:6px;margin-top:6px;">
-      <button id="ed-export" style="flex:1;padding:6px;cursor:pointer;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);color:#888;font:11px monospace;border-radius:3px;">Export JSON</button>
-      <button id="ed-import" style="flex:1;padding:6px;cursor:pointer;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);color:#888;font:11px monospace;border-radius:3px;">Import JSON</button>
+
+    <!-- Enemy Designer Section -->
+    <div id="ed-enemy-header" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.1);margin-bottom:8px;">
+      <span style="color:#FF9800;font-size:13px;font-weight:bold;">Enemy Designer</span>
+      <span id="ed-enemy-toggle" style="color:#666;font-size:12px;">▼</span>
+    </div>
+    <div id="ed-enemy-body">
+      <div id="ed-list"></div>
+      <button id="ed-add" style="width:100%;padding:8px;margin-top:6px;cursor:pointer;background:rgba(79,195,247,0.15);border:1px solid rgba(79,195,247,0.3);color:#4FC3F7;font:12px monospace;border-radius:4px;">+ Add Enemy Type</button>
+      <div style="display:flex;gap:6px;margin-top:6px;">
+        <button id="ed-export" style="flex:1;padding:5px;cursor:pointer;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);color:#888;font:10px monospace;border-radius:3px;">Export</button>
+        <button id="ed-import" style="flex:1;padding:5px;cursor:pointer;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);color:#888;font:10px monospace;border-radius:3px;">Import</button>
+      </div>
+    </div>
+
+    <!-- Upgrades Section -->
+    <div id="ed-upgrade-header" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.1);margin-top:12px;margin-bottom:8px;">
+      <span style="color:#64FF78;font-size:13px;font-weight:bold;">Upgrades (Test)</span>
+      <span id="ed-upgrade-toggle" style="color:#666;font-size:12px;">▼</span>
+    </div>
+    <div id="ed-upgrade-body">
+      <div id="ed-upgrade-pool"></div>
+      <div style="margin-top:8px;border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;">
+        <span style="color:#888;font-size:11px;">Active:</span>
+        <div id="ed-upgrade-active" style="margin-top:4px;"></div>
+        <button id="ed-upgrade-clear" style="width:100%;padding:5px;margin-top:6px;cursor:pointer;background:rgba(255,80,80,0.1);border:1px solid rgba(255,80,80,0.2);color:#FF5252;font:10px monospace;border-radius:3px;">Clear All Upgrades</button>
+      </div>
     </div>
   `
 
   document.body.appendChild(panel)
 
-  // Stop game input when typing in designer
   panel.addEventListener('keydown', e => { e.stopPropagation() })
   panel.addEventListener('keyup', e => { e.stopPropagation() })
 
@@ -239,6 +261,28 @@ export function initDesigner(): void {
   panel.querySelector('#ed-add')!.addEventListener('click', () => addEnemyForm())
   panel.querySelector('#ed-export')!.addEventListener('click', exportEnemies)
   panel.querySelector('#ed-import')!.addEventListener('click', importEnemies)
+
+  // Collapsible enemy section
+  const enemyBody = panel.querySelector('#ed-enemy-body') as HTMLDivElement
+  const enemyToggle = panel.querySelector('#ed-enemy-toggle') as HTMLSpanElement
+  panel.querySelector('#ed-enemy-header')!.addEventListener('click', () => {
+    enemySectionExpanded = !enemySectionExpanded
+    enemyBody.style.display = enemySectionExpanded ? 'block' : 'none'
+    enemyToggle.textContent = enemySectionExpanded ? '▼' : '▶'
+  })
+
+  // Collapsible upgrade section
+  let upgradeSectionExpanded = true
+  const upgradeBody = panel.querySelector('#ed-upgrade-body') as HTMLDivElement
+  const upgradeToggle = panel.querySelector('#ed-upgrade-toggle') as HTMLSpanElement
+  panel.querySelector('#ed-upgrade-header')!.addEventListener('click', () => {
+    upgradeSectionExpanded = !upgradeSectionExpanded
+    upgradeBody.style.display = upgradeSectionExpanded ? 'block' : 'none'
+    upgradeToggle.textContent = upgradeSectionExpanded ? '▼' : '▶'
+  })
+
+  // Build upgrade test UI
+  buildUpgradeTestUI()
 
   window.addEventListener('keydown', e => {
     if (e.key === 'Tab') {
@@ -598,4 +642,111 @@ function rebuildPattern(): void {
     }
   }
   setPattern({ name: 'Custom', loopBeats: pat?.loopBeats ?? 8, patterns })
+}
+
+function buildUpgradeTestUI(): void {
+  const poolDiv = panel!.querySelector('#ed-upgrade-pool') as HTMLDivElement
+  const activeDiv = panel!.querySelector('#ed-upgrade-active') as HTMLDivElement
+
+  function refreshUpgradeUI(): void {
+    poolDiv.innerHTML = ''
+
+    // Split into stat and game tiers
+    const statUpgrades = UPGRADE_POOL.filter(d => (d.tier ?? 'stat') === 'stat')
+    const gameUpgrades = UPGRADE_POOL.filter(d => d.tier === 'game')
+    const active = getActiveUpgrades()
+
+    function addPoolSection(title: string, upgrades: typeof UPGRADE_POOL): void {
+      if (upgrades.length === 0) return
+      const label = document.createElement('div')
+      label.style.cssText = 'color:#888;font-size:10px;margin:6px 0 3px 0;'
+      label.textContent = title
+      poolDiv.appendChild(label)
+
+      for (const def of upgrades) {
+        // Check max stacks
+        const currentStacks = active.filter(u => u.name === def.name).length
+        const maxed = def.maxStacks !== undefined && currentStacks >= def.maxStacks
+
+        const btn = document.createElement('button')
+        btn.style.cssText = `
+          display:inline-block;padding:4px 8px;margin:2px;cursor:${maxed ? 'default' : 'pointer'};
+          background:rgba(255,255,255,${maxed ? '0.02' : '0.05'});border:1px solid ${maxed ? '#333' : def.color + '40'};
+          color:${maxed ? '#444' : def.color};font:11px monospace;border-radius:4px;
+          ${maxed ? 'text-decoration:line-through;' : ''}
+        `
+        btn.textContent = `+ ${def.name}`
+        btn.title = maxed ? `MAX (${def.maxStacks})` : def.description
+        if (!maxed) {
+          btn.addEventListener('click', () => {
+            addUpgrade({
+              id: def.id + '_' + Date.now(),
+              name: def.name,
+              description: def.description,
+              bonus: def.bonus,
+            })
+            applyModifiers(getPlayer())
+            refreshUpgradeUI()
+          })
+        }
+        poolDiv.appendChild(btn)
+      }
+    }
+
+    addPoolSection('Stat Boosts', statUpgrades)
+    addPoolSection('Game Changers', gameUpgrades)
+
+    // Active — show stacked counts
+    activeDiv.innerHTML = ''
+    const currentActive = getActiveUpgrades()
+    if (currentActive.length === 0) {
+      activeDiv.innerHTML = '<span style="color:#555;font-size:10px;">None</span>'
+      return
+    }
+
+    // Group by name
+    const counts = new Map<string, { count: number; desc: string; color: string; ids: string[] }>()
+    for (const u of currentActive) {
+      const def = UPGRADE_POOL.find(d => u.name === d.name)
+      const existing = counts.get(u.name)
+      if (existing) {
+        existing.count++
+        existing.ids.push(u.id)
+      } else {
+        counts.set(u.name, { count: 1, desc: u.description, color: def?.color ?? '#888', ids: [u.id] })
+      }
+    }
+
+    for (const [name, info] of counts) {
+      const badge = document.createElement('span')
+      badge.style.cssText = `
+        display:inline-block;padding:3px 8px;margin:2px;cursor:pointer;
+        background:${info.color}20;border:1px solid ${info.color}50;
+        color:${info.color};font:11px monospace;border-radius:4px;
+      `
+      badge.textContent = info.count > 1 ? `${name} x${info.count}` : name
+      badge.title = `${info.desc} (click to remove one)`
+      badge.addEventListener('click', () => {
+        const lastId = info.ids.pop()
+        if (lastId) {
+          removeUpgrade(lastId)
+          applyModifiers(getPlayer())
+          refreshUpgradeUI()
+        }
+      })
+      activeDiv.appendChild(badge)
+    }
+  }
+
+  // Clear all button
+  panel!.querySelector('#ed-upgrade-clear')!.addEventListener('click', () => {
+    const active = getActiveUpgrades()
+    while (active.length > 0) {
+      removeUpgrade(active[0]!.id)
+    }
+    applyModifiers(getPlayer())
+    refreshUpgradeUI()
+  })
+
+  refreshUpgradeUI()
 }

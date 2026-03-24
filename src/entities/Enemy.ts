@@ -307,7 +307,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   if (enemy.spawnTimer >= 1) {
     for (let i = 0; i < enemy.rings.length; i++) {
       const rs = enemy.rings[i]!
-      if (rs.attackTimer < 0 && shouldFire(rs.patternName)) {
+      if (shouldFire(rs.patternName)) {
         const interval = getBeatInterval(rs.patternName)
         rs.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * 0.8)
         rs.attackTimer = 0

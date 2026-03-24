@@ -1,0 +1,32 @@
+// All possible upgrades — add one at a time, test each
+
+import type { UpgradeBonus } from './UpgradeManager.ts'
+
+export interface UpgradeDef {
+  id: string
+  name: string
+  description: string
+  bonus: UpgradeBonus
+  color: string
+  tier?: 'stat' | 'game'  // stat = percentage, game = structural change
+  maxStacks?: number       // undefined = unlimited
+}
+
+export const UPGRADE_POOL: UpgradeDef[] = [
+  { id: 'ring_range_1', name: 'Wide Ring', description: '+10% ring range', bonus: { ringRadiusMult: 0.10 }, color: '#FFD740' },
+  { id: 'speed_1', name: 'Swift', description: '+10% move speed', bonus: { speedMult: 0.10 }, color: '#4FC3F7' },
+  { id: 'dash_dist_1', name: 'Long Dash', description: '+15% dash distance', bonus: { dashDistanceMult: 0.15 }, color: '#AB47BC' },
+  { id: 'dash_cd_1', name: 'Quick Reload', description: '-10% dash cooldown', bonus: { dashChargeMult: -0.10 }, color: '#CE93D8' },
+  // ── Game changers ──
+  { id: 'extra_dash', name: 'Triple Dash', description: '+1 dash charge', bonus: { extraDashCharges: 1 }, color: '#FFD740', tier: 'game', maxStacks: 1 },
+  { id: 'double_beat', name: 'Double Beat', description: '+1 off-beat ring attack', bonus: { doubleBeat: 1 }, color: '#FF5252', tier: 'game', maxStacks: 4 },
+  { id: 'multi_kill', name: 'Overkill', description: '2+ kills in one beat = 2x XP each', bonus: { multiKillBonus: true }, color: '#64FFDA', tier: 'game', maxStacks: 1 },
+  { id: 'multi_collect', name: 'Chain Harvest', description: '2+ orbs in one beat = 2x XP each', bonus: { multiCollectBonus: true }, color: '#80DEEA', tier: 'game', maxStacks: 1 },
+  { id: 'ghost_dash', name: 'Ghost Dash', description: 'Invincible during dash', bonus: { ghostDash: true }, color: '#E0E0E0', tier: 'game', maxStacks: 1 },
+]
+
+/** Pick N random non-duplicate upgrades from the pool */
+export function pickRandomUpgrades(count: number): UpgradeDef[] {
+  const shuffled = [...UPGRADE_POOL].sort(() => Math.random() - 0.5)
+  return shuffled.slice(0, Math.min(count, shuffled.length))
+}

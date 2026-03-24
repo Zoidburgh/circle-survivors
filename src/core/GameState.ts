@@ -5,12 +5,31 @@ import { SpatialGrid } from './SpatialGrid.ts'
 import { createCamera, ARENA_W, ARENA_H } from '../game/Arena.ts'
 import type { Camera } from '../game/Arena.ts'
 
+export type GamePhase = 'playing' | 'upgrading'
+
 const player: Player = createPlayer(ARENA_W / 2, ARENA_H / 2)
 const enemies: Enemy[] = []
 const grid = new SpatialGrid(150)
 const camera: Camera = createCamera()
+let phase: GamePhase = 'playing'
+let xpForNextLevel = 5
+let level = 1
 
 export function getPlayer(): Player { return player }
 export function getEnemies(): Enemy[] { return enemies }
 export function getGrid(): SpatialGrid { return grid }
 export function getCamera(): Camera { return camera }
+export function getPhase(): GamePhase { return phase }
+export function setPhase(p: GamePhase): void { phase = p }
+export function getLevel(): number { return level }
+export function getXpForNextLevel(): number { return xpForNextLevel }
+
+export function checkLevelUp(): boolean {
+  if (player.xp >= xpForNextLevel) {
+    player.xp -= xpForNextLevel
+    level++
+    xpForNextLevel = 5 // flat for testing, curve later
+    return true
+  }
+  return false
+}

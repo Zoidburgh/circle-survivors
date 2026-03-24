@@ -3,24 +3,35 @@ import { getPlayer, getGrid, getEnemies } from '../core/GameState.ts'
 import { getEffectiveRadius } from '../entities/Player.ts'
 import { damageEnemy } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
-import { getRingExpansion } from '../core/PhaseSystem.ts'
+import { getRingExpansion, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { distance } from '../utils/math.ts'
 import { HIT_FLASH_DURATION, HIT_GRACE } from '../utils/constants.ts'
 import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playCollect } from '../audio/AudioEngine.ts'
 import { getBlockedArcs, isTargetBlocked } from './RingOcclusion.ts'
 import { spawnOrb, getOrbs, collectOrb } from '../entities/XPOrb.ts'
+import { hasBonus } from './UpgradeManager.ts'
 
 export function initHitDetection(): void {
   on('player:beat', () => {
     const player = getPlayer()
     const grid = getGrid()
-    const ringRadius = getEffectiveRadius(player) * getRingExpansion(player.attackTimer)
+
+    // Find which ring timer is currently at peak (base or extra)
+    let activeTimer = player.attackTimer
+    for (let i = 0; i < player.extraRingCount; i++) {
+      const t = player.extraRingTimers[i]!
+      if (t >= 0 && Math.abs(t - ATTACK_EXPAND_TIME) < Math.abs(activeTimer - ATTACK_EXPAND_TIME)) {
+        activeTimer = t
+      }
+    }
+    const ringRadius = getEffectiveRadius(player) * getRingExpansion(activeTimer)
 
     const isDashing = player.dashTimer >= 0
     const sweepFromX = isDashing ? player.dashStartX : player.prevX
     const sweepFromY = isDashing ? player.dashStartY : player.prevY
     const steps = isDashing ? 8 : 4
     const hitEnemies = new Set<Enemy>()
+    const killedEnemies: Enemy[] = []
 
     for (let s = 0; s <= steps; s++) {
       const t = s / steps
@@ -34,32 +45,48 @@ export function initHitDetection(): void {
         if (!enemy.alive || hitEnemies.has(enemy)) continue
         const dist = distance({ x: sx, y: sy }, { x: enemy.x, y: enemy.y })
         if (Math.abs(dist - ringRadius) < enemy.radius + HIT_GRACE) {
+          const wasDying = enemy.dying
           damageEnemy(enemy, player.damage * player.modifiers.damageMult)
           hitEnemies.add(enemy)
+          if (enemy.dying && !wasDying) killedEnemies.push(enemy)
         }
       }
     }
 
-    // Check orbs along the same sweep
+    // Multi-kill XP bonus: 2+ kills in one beat = double XP per orb
+    const multiKill = killedEnemies.length >= 2 && hasBonus('multiKillBonus')
+    const orbValue = multiKill ? 2 : 1
+    for (const dead of killedEnemies) {
+      spawnOrb(dead.x, dead.y, orbValue)
+    }
+
+    // Check orbs along the same sweep — collect first, then apply XP
     const orbs = getOrbs()
-    let collectedAny = false
+    const collectedOrbs: typeof orbs[number][] = []
     for (let s = 0; s <= steps; s++) {
       const t = s / steps
       const sx = sweepFromX + (player.x - sweepFromX) * t
       const sy = sweepFromY + (player.y - sweepFromY) * t
       for (const orb of orbs) {
         if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
+        if (collectedOrbs.includes(orb)) continue
         const odx = sx - orb.x
         const ody = sy - orb.y
         const oDist = Math.sqrt(odx * odx + ody * ody)
         if (Math.abs(oDist - ringRadius) < orb.radius + HIT_GRACE) {
           collectOrb(orb)
-          player.xp += orb.value * player.modifiers.xpMult
-          collectedAny = true
+          collectedOrbs.push(orb)
         }
       }
     }
-    if (collectedAny) playCollect()
+    if (collectedOrbs.length > 0) {
+      const multiCollect = collectedOrbs.length >= 2 && hasBonus('multiCollectBonus')
+      const xpMult = player.modifiers.xpMult * (multiCollect ? 2 : 1)
+      for (const orb of collectedOrbs) {
+        player.xp += orb.value * xpMult
+      }
+      playCollect()
+    }
 
     playMiss()
     if (hitEnemies.size > 0) {
@@ -81,6 +108,9 @@ export function initHitDetection(): void {
       { x: enemy.x, y: enemy.y }
     )
     if (Math.abs(dist - ringRadius) < player.hitRadius) {
+      // Ghost dash — invincible while dashing
+      if (player.dashTimer >= 0 && hasBonus('ghostDash')) return
+
       const arcs = getBlockedArcs(enemy.x, enemy.y, ringRadius, getEnemies(), enemy)
       const blocked = isTargetBlocked(enemy.x, enemy.y, player.x, player.y, arcs)
       if (!blocked) {
@@ -92,8 +122,8 @@ export function initHitDetection(): void {
     }
   })
 
-  on('enemy:killed', (enemy) => {
+  on('enemy:killed', () => {
     playKill()
-    spawnOrb(enemy.x, enemy.y)
+    // Orbs now spawned in player:beat handler for multi-kill tracking
   })
 }

@@ -11,6 +11,7 @@ import { ARENA_W, ARENA_H } from '../game/Arena.ts'
 import { getBlockedArcs } from '../game/RingOcclusion.ts'
 import type { BlockedArc } from '../game/RingOcclusion.ts'
 import { getEnemies } from '../core/GameState.ts'
+import { hasBonus } from '../game/UpgradeManager.ts'
 import { getOrbs } from '../entities/XPOrb.ts'
 import { getBeatName } from '../audio/AudioEngine.ts'
 import { BEAT_SEC } from '../utils/constants.ts'
@@ -160,6 +161,11 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   }
 
   drawRing(player.x, player.y, player.ring, player.attackTimer, getEffectiveRadius(player))
+
+  // Extra rings from upgrades
+  for (let i = 0; i < player.extraRingCount; i++) {
+    drawRing(player.x, player.y, player.ring, player.extraRingTimers[i]!, getEffectiveRadius(player))
+  }
 
   drawXPOrbs(player)
   drawParticles()
@@ -398,17 +404,30 @@ function drawXPOrbs(player: Player): void {
     const distToPlayer = Math.sqrt((orb.x - player.x) ** 2 + (orb.y - player.y) ** 2)
     const ringOver = playerRadius > 0 && Math.abs(distToPlayer - playerRadius) < r
 
+    // Double XP orbs are gold, normal are teal
+    const isDouble = orb.value >= 2
+    const orbR = isDouble ? 100 : 100
+    const orbG = isDouble ? 215 : 255
+    const orbB = isDouble ? 50 : 200
+
     // Glow
     ctx.beginPath()
-    ctx.arc(sx, sy, r + 4, 0, Math.PI * 2)
-    ctx.fillStyle = ringOver ? 'rgba(255, 255, 255, 0.25)' : 'rgba(100, 255, 200, 0.12)'
+    ctx.arc(sx, sy, r + (isDouble ? 6 : 4), 0, Math.PI * 2)
+    ctx.fillStyle = ringOver ? 'rgba(255, 255, 255, 0.25)' : `rgba(${orbR}, ${orbG}, ${orbB}, ${isDouble ? 0.2 : 0.12})`
     ctx.fill()
 
     // Orb body
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.fillStyle = 'rgba(100, 255, 200, 0.7)'
+    ctx.fillStyle = `rgba(${orbR}, ${orbG}, ${orbB}, 0.8)`
     ctx.fill()
+
+    // Double orbs get a bright outline
+    if (isDouble) {
+      ctx.strokeStyle = `rgba(${orbR}, ${orbG}, ${orbB}, 0.6)`
+      ctx.lineWidth = 2
+      ctx.stroke()
+    }
 
     // White outline when ring is over
     if (ringOver) {
@@ -435,10 +454,16 @@ function drawPlayer(player: Player): void {
     ctx.fill()
   }
 
+  // Ghost dash — semi-transparent + white shimmer
+  const isGhostDashing = player.dashTimer >= 0 && hasBonus('ghostDash')
+  if (isGhostDashing) {
+    ctx.globalAlpha = 0.4 + Math.sin(performance.now() / 50) * 0.15
+  }
+
   // Hit shrink + color fade
   let drawRadius = PLAYER_RADIUS
-  let fillColor = 'rgba(79, 195, 247, 0.15)'
-  let strokeColor = COLOR_PLAYER
+  let fillColor = isGhostDashing ? 'rgba(255, 255, 255, 0.2)' : 'rgba(79, 195, 247, 0.15)'
+  let strokeColor = isGhostDashing ? '#FFFFFF' : COLOR_PLAYER
   if (player.hitFlash > 0) {
     const t = player.hitFlash / HIT_FLASH_DURATION // 1 = just hit, 0 = recovered
     drawRadius = PLAYER_RADIUS * (0.85 + 0.15 * (1 - t)) // shrinks to 90% then bounces back
@@ -557,6 +582,11 @@ function drawPlayer(player: Player): void {
     ctx.arc(sx, sy + PLAYER_RADIUS + 10, 3, 0, Math.PI * 2)
     ctx.fillStyle = `rgba(255, 255, 255, ${beatGlow})`
     ctx.fill()
+  }
+
+  // Reset ghost dash alpha
+  if (isGhostDashing) {
+    ctx.globalAlpha = 1
   }
 }
 
