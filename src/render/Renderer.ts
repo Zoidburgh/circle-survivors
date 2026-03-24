@@ -45,6 +45,75 @@ interface Particle {
 const particles: Particle[] = []
 const MAX_PARTICLES = PARTICLE_CAP
 let lastDt = 0.016
+let borderWaveIntensity = 0
+let playerGlowIntensity = 0
+let dashSweepIntensity = 0
+let dashSweepStartX = 0
+let dashSweepStartY = 0
+let dashSweepEndX = 0
+let dashSweepEndY = 0
+let dashSweepRadius = 0
+
+// Death ripples
+interface DeathRipple {
+  x: number; y: number
+  r: number; g: number; b: number
+  startRadius: number
+  maxRadius: number
+  timer: number
+  delay: number
+  duration: number
+}
+const deathRipples: DeathRipple[] = []
+
+function spawnDeathRipples(x: number, y: number, radius: number, color: string): void {
+  const r = parseInt(color.slice(1, 3), 16)
+  const g = parseInt(color.slice(3, 5), 16)
+  const b = parseInt(color.slice(5, 7), 16)
+  for (let i = 0; i < 3; i++) {
+    deathRipples.push({
+      x, y, r, g, b,
+      startRadius: radius,
+      maxRadius: radius * (5.5 + i * 2),
+      timer: 0,
+      delay: i * 0.06,
+      duration: 0.4 + i * 0.1,
+    })
+  }
+}
+
+function updateAndDrawDeathRipples(dt: number): void {
+  for (let i = deathRipples.length - 1; i >= 0; i--) {
+    const rip = deathRipples[i]!
+    rip.timer += dt
+    if (rip.timer < rip.delay) continue
+    const elapsed = rip.timer - rip.delay
+    if (elapsed >= rip.duration) {
+      deathRipples.splice(i, 1)
+      continue
+    }
+    const t = elapsed / rip.duration
+    const eased = 1 - (1 - t) * (1 - t)  // ease-out
+    const radius = rip.startRadius + (rip.maxRadius - rip.startRadius) * eased
+    const alpha = (1 - t) * (1 - t)  // fade out
+    const sx = rip.x - camX
+    const sy = rip.y - camY
+
+    // Outer glow
+    ctx.beginPath()
+    ctx.arc(sx, sy, radius, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.035})`
+    ctx.lineWidth = 6 * (1 - t)
+    ctx.stroke()
+
+    // Core ring
+    ctx.beginPath()
+    ctx.arc(sx, sy, radius, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.1})`
+    ctx.lineWidth = 2 * (1 - t)
+    ctx.stroke()
+  }
+}
 
 function spawnParticle(
   x: number, y: number,
@@ -140,7 +209,8 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   ctx.fillRect(0, 0, width, height)
 
   drawGrid()
-  drawArenaBorder()
+  drawArenaBorder(player)
+  updateAndDrawDeathRipples(lastDt)
 
   // Clip rings and particles to arena bounds
   ctx.save()
@@ -158,6 +228,52 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       }
     }
     drawEnemy(enemy, player)
+  }
+
+  // Dash sweep band — snap on at explosion, smooth fade out
+  {
+    const pastPeak = player.attackTimer - ATTACK_EXPAND_TIME
+    if (player.dashTimer >= 0 && pastPeak >= 0 && pastPeak < 0.03) {
+      // Snap: capture sweep state at explosion
+      dashSweepIntensity = 1
+      dashSweepStartX = player.dashStartX
+      dashSweepStartY = player.dashStartY
+      dashSweepEndX = player.x
+      dashSweepEndY = player.y
+      dashSweepRadius = getEffectiveRadius(player) * getRingExpansion(player.attackTimer)
+    } else {
+      dashSweepIntensity *= 0.92
+      if (dashSweepIntensity < 0.005) dashSweepIntensity = 0
+    }
+
+    if (dashSweepIntensity > 0.005) {
+      const fade = dashSweepIntensity
+      const grace = 8
+      const fillSteps = 20
+      for (let s = 0; s < fillSteps; s++) {
+        const t = s / fillSteps
+        const sx = dashSweepStartX + (dashSweepEndX - dashSweepStartX) * t - camX
+        const sy = dashSweepStartY + (dashSweepEndY - dashSweepStartY) * t - camY
+        ctx.beginPath()
+        ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
+        ctx.strokeStyle = `rgba(255, 80, 80, ${0.04 * fade})`
+        ctx.lineWidth = grace * 2
+        ctx.stroke()
+      }
+      for (const edgeR of [dashSweepRadius + grace, Math.max(0, dashSweepRadius - grace)]) {
+        ctx.beginPath()
+        for (let s = 0; s <= fillSteps; s++) {
+          const t = s / fillSteps
+          const sx = dashSweepStartX + (dashSweepEndX - dashSweepStartX) * t - camX
+          const sy = dashSweepStartY + (dashSweepEndY - dashSweepStartY) * t - camY
+          if (s === 0) ctx.moveTo(sx + edgeR, sy)
+          ctx.arc(sx, sy, edgeR, 0, Math.PI * 2)
+        }
+        ctx.strokeStyle = `rgba(255, 80, 80, ${0.18 * fade})`
+        ctx.lineWidth = 1
+        ctx.stroke()
+      }
+    }
   }
 
   drawRing(player.x, player.y, player.ring, player.attackTimer, getEffectiveRadius(player))
@@ -195,12 +311,29 @@ function drawGrid(): void {
   ctx.stroke()
 }
 
-function drawArenaBorder(): void {
+function drawArenaBorder(player: Player): void {
   const x = -camX
   const y = -camY
   const w = ARENA_W
   const h = ARENA_H
   const buffer = ARENA_BUFFER
+
+  // Beat pulse — swells on ring fire
+  const beatPulse = player.attackTimer >= 0
+    ? getRingExpansion(player.attackTimer) * 0.6
+    : 0
+
+  // Wave intensity — ramps up before explosion, decays after
+  const timeToPeak = ATTACK_EXPAND_TIME - player.attackTimer
+  if (player.attackTimer >= 0 && timeToPeak >= -0.04 && timeToPeak < 0.08) {
+    // Ramp from 0→1 over 0.08s, peaking 0.04s after explosion
+    const ramp = 1 - (Math.max(0, timeToPeak) / 0.08)
+    const target = ramp * ramp  // ease-in curve
+    if (target > borderWaveIntensity) borderWaveIntensity = target
+  } else {
+    borderWaveIntensity *= 0.92
+    if (borderWaveIntensity < 0.005) borderWaveIntensity = 0
+  }
 
   // Dark buffer — gradient edges that make the arena pop
   // Top
@@ -238,22 +371,126 @@ function drawArenaBorder(): void {
   ctx.fillRect(x - buffer, y + h, buffer, buffer)
   ctx.fillRect(x + w, y + h, buffer, buffer)
 
-  // Arena border — layered glow from soft outer to bright inner
-  ctx.strokeStyle = 'rgba(79, 195, 247, 0.03)'
+  // Arena border — layered glow with beat pulse
+  ctx.strokeStyle = `rgba(79, 195, 247, ${0.03 + beatPulse * 0.04})`
   ctx.lineWidth = 30
   ctx.strokeRect(x - 10, y - 10, w + 20, h + 20)
 
-  ctx.strokeStyle = 'rgba(79, 195, 247, 0.06)'
+  ctx.strokeStyle = `rgba(79, 195, 247, ${0.06 + beatPulse * 0.06})`
   ctx.lineWidth = 18
   ctx.strokeRect(x - 4, y - 4, w + 8, h + 8)
 
-  ctx.strokeStyle = 'rgba(79, 195, 247, 0.12)'
+  ctx.strokeStyle = `rgba(79, 195, 247, ${0.12 + beatPulse * 0.1})`
   ctx.lineWidth = 8
   ctx.strokeRect(x, y, w, h)
 
-  ctx.strokeStyle = 'rgba(79, 195, 247, 0.4)'
+  ctx.strokeStyle = `rgba(79, 195, 247, ${0.4 + beatPulse * 0.25})`
   ctx.lineWidth = 2
   ctx.strokeRect(x, y, w, h)
+
+  // Waveform line — spikes on beat, flattens out smoothly
+  if (borderWaveIntensity > 0.005) {
+    const baseAmp = borderWaveIntensity * 11
+    const freq = 0.25
+    const alpha = Math.min(borderWaveIntensity * 1.5, 0.85)
+    const step = 5
+    const t = performance.now() * 0.005
+
+    // White→cyan color blend: white at peak, fades to cyan
+    const whiteBlend = Math.min(borderWaveIntensity * 0.6, 0.4)  // subtle white shift at peak
+    const cr = Math.floor(79 + (255 - 79) * whiteBlend)
+    const cg = Math.floor(195 + (255 - 195) * whiteBlend)
+    const cb = Math.floor(247 + (255 - 247) * whiteBlend)
+
+    // Line thickness pulse: thick at impact, thins as it decays
+    const coreWidth = 1 + borderWaveIntensity * 2
+    const midWidth = 3 + borderWaveIntensity * 3
+    const outerWidth = 6 + borderWaveIntensity * 6
+
+    // Player position relative to arena for proximity-based amplitude
+    const px = player.x
+    const py = player.y
+
+    const vary = (i: number, seed: number) => {
+      const h = Math.sin(i * 0.73 + seed * 3.17) * 0.5 + 0.5
+      return 0.3 + h * 0.7
+    }
+
+    // Proximity multiplier: stronger near player, weaker far side
+    const proximityH = (posX: number, edgeY: number) => {
+      const dx = posX - px
+      const dy = edgeY - py
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      const maxDist = Math.sqrt(ARENA_W * ARENA_W + ARENA_H * ARENA_H)
+      return 0.3 + 0.7 * (1 - dist / maxDist)
+    }
+
+    const proximityV = (edgeX: number, posY: number) => {
+      const dx = edgeX - px
+      const dy = posY - py
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      const maxDist = Math.sqrt(ARENA_W * ARENA_W + ARENA_H * ARENA_H)
+      return 0.3 + 0.7 * (1 - dist / maxDist)
+    }
+
+    const drawWaveH = (startX: number, baseY: number, len: number, seed: number) => {
+      ctx.beginPath()
+      const p0 = proximityH(startX, baseY)
+      const w0 = Math.sin(0 * freq + t + seed) * baseAmp * p0 * vary(0, seed)
+      ctx.moveTo(startX, baseY + w0)
+      for (let i = step; i <= len; i += step) {
+        const prox = proximityH(startX + i, baseY)
+        const wave = Math.sin(i * freq + t + seed) * baseAmp * prox * vary(i, seed)
+        const prevProx = proximityH(startX + i - step, baseY)
+        const prevWave = Math.sin((i - step) * freq + t + seed) * baseAmp * prevProx * vary(i - step, seed)
+        const cpx = startX + i - step * 0.5
+        const cpy = baseY + (prevWave + wave) * 0.5
+        ctx.quadraticCurveTo(startX + i - step, baseY + prevWave, cpx, cpy)
+      }
+      ctx.stroke()
+    }
+
+    const drawWaveV = (baseX: number, startY: number, len: number, seed: number) => {
+      ctx.beginPath()
+      const p0 = proximityV(baseX, startY)
+      const w0 = Math.sin(0 * freq + t + seed) * baseAmp * p0 * vary(0, seed)
+      ctx.moveTo(baseX + w0, startY)
+      for (let i = step; i <= len; i += step) {
+        const prox = proximityV(baseX, startY + i)
+        const wave = Math.sin(i * freq + t + seed) * baseAmp * prox * vary(i, seed)
+        const prevProx = proximityV(baseX, startY + i - step)
+        const prevWave = Math.sin((i - step) * freq + t + seed) * baseAmp * prevProx * vary(i - step, seed)
+        const cpx = baseX + (prevWave + wave) * 0.5
+        const cpy = startY + i - step * 0.5
+        ctx.quadraticCurveTo(baseX + prevWave, startY + i - step, cpx, cpy)
+      }
+      ctx.stroke()
+    }
+
+    // Outer glow pass
+    ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.15})`
+    ctx.lineWidth = outerWidth
+    drawWaveH(x, y, w, 0)
+    drawWaveH(x, y + h, w, 2)
+    drawWaveV(x, y, h, 4)
+    drawWaveV(x + w, y, h, 6)
+
+    // Mid glow pass
+    ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.35})`
+    ctx.lineWidth = midWidth
+    drawWaveH(x, y, w, 0)
+    drawWaveH(x, y + h, w, 2)
+    drawWaveV(x, y, h, 4)
+    drawWaveV(x + w, y, h, 6)
+
+    // Sharp core
+    ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha})`
+    ctx.lineWidth = coreWidth
+    drawWaveH(x, y, w, 0)
+    drawWaveH(x, y + h, w, 2)
+    drawWaveV(x, y, h, 4)
+    drawWaveV(x + w, y, h, 6)
+  }
 }
 
 /** Normalize, split wrapping arcs, merge overlaps, return sorted non-overlapping arcs */
@@ -398,10 +635,13 @@ function drawXPOrbs(player: Player): void {
       const t = Math.min(orb.deathTimer / 0.2, 1)
       const r = orb.baseRadius * (1 - t * 0.5)
 
-      // Spawn particles on first frame
+      // Spawn particles + ripple on first frame
       if (orb.deathTimer < 0.02) {
         spawnRingParticles(orb.x, orb.y, r * 0.5, 100, 255, 200, 20, 120, 0.4, 4)
         spawnRingParticles(orb.x, orb.y, r * 0.3, 255, 255, 255, 12, 80, 0.3, 3)
+        // Mini ripple — same color as orb
+        const orbColor = orb.value >= 2 ? '#64D732' : '#64FFc8'
+        spawnDeathRipples(orb.x, orb.y, r * 2.5, orbColor)
       }
 
       ctx.globalAlpha = (1 - t) * (1 - t)
@@ -426,13 +666,13 @@ function drawXPOrbs(player: Player): void {
     const orbB = isDouble ? 50 : 200
 
     // Soft outer glow
-    const glowR = r + (isDouble ? 8 : 5)
+    const glowR = r + (isDouble ? 6 : 4)
     const glowGrad = ctx.createRadialGradient(sx, sy, r * 0.5, sx, sy, glowR)
     if (ringOver) {
-      glowGrad.addColorStop(0, 'rgba(255, 255, 255, 0.3)')
+      glowGrad.addColorStop(0, 'rgba(255, 255, 255, 0.2)')
       glowGrad.addColorStop(1, 'rgba(255, 255, 255, 0)')
     } else {
-      glowGrad.addColorStop(0, `rgba(${orbR}, ${orbG}, ${orbB}, ${isDouble ? 0.25 : 0.15})`)
+      glowGrad.addColorStop(0, `rgba(${orbR}, ${orbG}, ${orbB}, ${isDouble ? 0.18 : 0.1})`)
       glowGrad.addColorStop(1, `rgba(${orbR}, ${orbG}, ${orbB}, 0)`)
     }
     ctx.beginPath()
@@ -440,11 +680,11 @@ function drawXPOrbs(player: Player): void {
     ctx.fillStyle = glowGrad
     ctx.fill()
 
-    // Orb body — radial gradient (bright white center → color at edge)
+    // Orb body — radial gradient (brighter center in orb color, darker edge)
     const bodyGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
-    bodyGrad.addColorStop(0, `rgba(255, 255, 255, 0.9)`)
-    bodyGrad.addColorStop(0.35, `rgba(${Math.min(255, orbR + 80)}, ${Math.min(255, orbG + 40)}, ${Math.min(255, orbB + 40)}, 0.8)`)
-    bodyGrad.addColorStop(1, `rgba(${orbR}, ${orbG}, ${orbB}, 0.7)`)
+    bodyGrad.addColorStop(0, `rgba(${Math.min(255, orbR + 80)}, ${Math.min(255, orbG + 40)}, ${Math.min(255, orbB + 40)}, 0.75)`)
+    bodyGrad.addColorStop(0.6, `rgba(${orbR}, ${orbG}, ${orbB}, 0.6)`)
+    bodyGrad.addColorStop(1, `rgba(${orbR}, ${orbG}, ${orbB}, 0.5)`)
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
     ctx.fillStyle = bodyGrad
@@ -463,14 +703,21 @@ function drawPlayer(player: Player): void {
 
   // Glow aura — soft radial gradient behind player, pulses on beat
   {
-    const beatPulse = player.attackTimer >= 0
-      ? getRingExpansion(player.attackTimer) * 0.35
-      : 0
-    const glowRadius = PLAYER_RADIUS * (2.2 + beatPulse)
-    const glowAlpha = 0.12 + beatPulse * 0.15
+    // Gradual buildup following ring expansion, smooth fast decay after
+    if (player.attackTimer >= 0) {
+      const buildup = Math.min(player.attackTimer / ATTACK_EXPAND_TIME, 1)
+      const target = buildup * buildup * 0.5  // ease-in, gradual
+      if (target > playerGlowIntensity) playerGlowIntensity = target
+    } else {
+      playerGlowIntensity *= 0.9  // smooth decay
+      if (playerGlowIntensity < 0.005) playerGlowIntensity = 0
+    }
+    const beatPulse = playerGlowIntensity
+    const glowRadius = PLAYER_RADIUS * (2.5 + beatPulse * 0.8)
+    const glowAlpha = 0.18 + beatPulse * 0.22
     const grad = ctx.createRadialGradient(sx, sy, PLAYER_RADIUS * 0.3, sx, sy, glowRadius)
     grad.addColorStop(0, `rgba(79, 195, 247, ${glowAlpha})`)
-    grad.addColorStop(0.5, `rgba(79, 195, 247, ${glowAlpha * 0.35})`)
+    grad.addColorStop(0.4, `rgba(79, 195, 247, ${glowAlpha * 0.4})`)
     grad.addColorStop(1, 'rgba(79, 195, 247, 0)')
     ctx.beginPath()
     ctx.arc(sx, sy, glowRadius, 0, Math.PI * 2)
@@ -696,7 +943,10 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     const hg = parseInt(enemy.color.slice(3, 5), 16)
     const hb = parseInt(enemy.color.slice(5, 7), 16)
 
-    // Red hit particles on first frame of death — full intensity burst
+    // Death ripples + red hit particles on first frame
+    if (dt < 0.02) {
+      spawnDeathRipples(enemy.x, enemy.y, r, enemy.color)
+    }
     if (dt < 0.02) {
       for (let i = 0; i < 16; i++) {
         const angle = Math.random() * Math.PI * 2

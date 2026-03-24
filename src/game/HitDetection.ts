@@ -30,6 +30,7 @@ export function initHitDetection(): void {
     const sweepFromX = isDashing ? player.dashStartX : player.prevX
     const sweepFromY = isDashing ? player.dashStartY : player.prevY
     const steps = isDashing ? 8 : 4
+    const grace = isDashing ? HIT_GRACE + 6 : HIT_GRACE
     const hitEnemies = new Set<Enemy>()
     const killedEnemies: Enemy[] = []
 
@@ -44,7 +45,7 @@ export function initHitDetection(): void {
         const enemy = entity as Enemy
         if (!enemy.alive || hitEnemies.has(enemy)) continue
         const dist = distance({ x: sx, y: sy }, { x: enemy.x, y: enemy.y })
-        if (Math.abs(dist - ringRadius) < enemy.radius + HIT_GRACE) {
+        if (Math.abs(dist - ringRadius) < enemy.radius + grace) {
           const wasDying = enemy.dying
           damageEnemy(enemy, player.damage * player.modifiers.damageMult)
           hitEnemies.add(enemy)
@@ -78,7 +79,7 @@ export function initHitDetection(): void {
         const odx = sx - orb.x
         const ody = sy - orb.y
         const oDist = Math.sqrt(odx * odx + ody * ody)
-        if (Math.abs(oDist - ringRadius) < orb.radius + HIT_GRACE) {
+        if (Math.abs(oDist - ringRadius) < orb.radius + grace) {
           collectOrb(orb)
           collectedOrbs.push(orb)
         }
