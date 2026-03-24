@@ -1099,9 +1099,9 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     // Main HP fill
     const mainEnd = startAngle + actualHpFraction * Math.PI * 2
     const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
-    grad.addColorStop(0, `rgba(${hr}, ${hg}, ${hb}, 0.55)`)
-    grad.addColorStop(0.7, `rgba(${hr}, ${hg}, ${hb}, 0.35)`)
-    grad.addColorStop(1, `rgba(${Math.floor(hr * 0.4)}, ${Math.floor(hg * 0.4)}, ${Math.floor(hb * 0.4)}, 0.3)`)
+    grad.addColorStop(0, `rgba(${hr}, ${hg}, ${hb}, 0.7)`)
+    grad.addColorStop(0.7, `rgba(${hr}, ${hg}, ${hb}, 0.5)`)
+    grad.addColorStop(1, `rgba(${Math.floor(hr * 0.5)}, ${Math.floor(hg * 0.5)}, ${Math.floor(hb * 0.5)}, 0.4)`)
     ctx.beginPath()
     ctx.moveTo(sx, sy)
     ctx.arc(sx, sy, r, startAngle, mainEnd)
