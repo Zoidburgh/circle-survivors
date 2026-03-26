@@ -47,22 +47,28 @@ export function update(dt: number): void {
     updateEnemy(enemy, player, dt, grid)
   }
 
-  updateOrbs(dt, player.x, player.y, enemies)
+  updateOrbs(dt)
 
   // Multi-pass separation — resolve congestion (3 iterations)
   const orbs = getOrbs()
   for (let pass = 0; pass < 3; pass++) {
-    // Enemy-enemy (use grid for O(n))
+    // Build grid with enemies + orbs
     grid.clear()
     for (const enemy of enemies) {
       if (enemy.alive && !enemy.dying) grid.insert(enemy)
     }
+    for (const orb of orbs) {
+      if (orb.alive && !orb.dying) grid.insert(orb)
+    }
+
+    // Enemy-enemy separation (grid-accelerated)
     for (const enemy of enemies) {
       if (!enemy.alive || enemy.dying) continue
       const nearby = grid.query(enemy)
       for (const other of nearby) {
+        if (!('hp' in other)) continue  // skip orbs
         const oe = other as typeof enemy
-        if (oe === enemy || !oe.alive || oe.dying) continue
+        if (!oe.alive || oe.dying) continue
         const minDist = enemy.radius + oe.radius
         const dx = enemy.x - oe.x
         const dy = enemy.y - oe.y
@@ -77,44 +83,59 @@ export function update(dt: number): void {
           oe.y -= ny * overlap
         }
       }
-      // Clamp enemy
       const ec = clampToArena(enemy.x, enemy.y, enemy.radius)
       enemy.x = ec.x
       enemy.y = ec.y
     }
 
-    // Orb-orb + orb-enemy
+    // Player pushes orbs first
     for (const orb of orbs) {
       if (!orb.alive || orb.dying) continue
-      for (const other of orbs) {
-        if (other === orb || !other.alive || other.dying) continue
+      const pdx = orb.x - player.x
+      const pdy = orb.y - player.y
+      const pDist = Math.sqrt(pdx * pdx + pdy * pdy)
+      const pMin = orb.radius + PLAYER_RADIUS
+      if (pDist < pMin && pDist > 0.1) {
+        const overlap = pMin - pDist
+        orb.x += (pdx / pDist) * overlap
+        orb.y += (pdy / pDist) * overlap
+      }
+    }
+
+    // Rebuild grid with updated positions for orb queries
+    grid.clear()
+    for (const enemy of enemies) {
+      if (enemy.alive && !enemy.dying) grid.insert(enemy)
+    }
+    for (const orb of orbs) {
+      if (orb.alive && !orb.dying) grid.insert(orb)
+    }
+
+    // Orb separation (grid-accelerated)
+    for (const orb of orbs) {
+      if (!orb.alive || orb.dying) continue
+      const nearby = grid.query(orb)
+      for (const other of nearby) {
+        if (other === orb) continue
+        const isEnemy = 'hp' in other
         const minDist = orb.radius + other.radius
         const dx = orb.x - other.x
         const dy = orb.y - other.y
         const dist = Math.sqrt(dx * dx + dy * dy)
         if (dist < minDist && dist > 0.1) {
-          const overlap = (minDist - dist) * 0.5
           const nx = dx / dist
           const ny = dy / dist
-          orb.x += nx * overlap
-          orb.y += ny * overlap
-          other.x -= nx * overlap
-          other.y -= ny * overlap
+          if (isEnemy) {
+            const overlap = minDist - dist
+            orb.x += nx * overlap
+            orb.y += ny * overlap
+          } else {
+            const overlap = (minDist - dist) * 0.5
+            orb.x += nx * overlap
+            orb.y += ny * overlap
+          }
         }
       }
-      for (const enemy of enemies) {
-        if (!enemy.alive || enemy.dying) continue
-        const minDist = orb.radius + enemy.radius
-        const dx = orb.x - enemy.x
-        const dy = orb.y - enemy.y
-        const dist = Math.sqrt(dx * dx + dy * dy)
-        if (dist < minDist && dist > 0.1) {
-          const overlap = minDist - dist
-          orb.x += (dx / dist) * overlap
-          orb.y += (dy / dist) * overlap
-        }
-      }
-      // Clamp orb
       const oc = clampToArena(orb.x, orb.y, orb.radius)
       orb.x = oc.x
       orb.y = oc.y
@@ -151,6 +172,14 @@ export function update(dt: number): void {
   }
 
   cleanupOrbs()
+
+  // Prune dead enemies (swap-and-pop)
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    if (!enemies[i]!.alive) {
+      enemies[i] = enemies[enemies.length - 1]!
+      enemies.pop()
+    }
+  }
 
   // Check for level up
   tryTriggerUpgrade()

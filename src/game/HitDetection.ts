@@ -68,25 +68,25 @@ export function initHitDetection(): void {
 
     // Check orbs along the same sweep — collect first, then apply XP
     const orbs = getOrbs()
-    const collectedOrbs: typeof orbs[number][] = []
+    const collectedOrbs = new Set<typeof orbs[number]>()
     for (let s = 0; s <= steps; s++) {
       const t = s / steps
       const sx = sweepFromX + (player.x - sweepFromX) * t
       const sy = sweepFromY + (player.y - sweepFromY) * t
       for (const orb of orbs) {
         if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
-        if (collectedOrbs.includes(orb)) continue
+        if (collectedOrbs.has(orb)) continue
         const odx = sx - orb.x
         const ody = sy - orb.y
         const oDist = Math.sqrt(odx * odx + ody * ody)
         if (Math.abs(oDist - ringRadius) < orb.radius + grace) {
           collectOrb(orb)
-          collectedOrbs.push(orb)
+          collectedOrbs.add(orb)
         }
       }
     }
-    if (collectedOrbs.length > 0) {
-      const multiCollect = collectedOrbs.length >= 2 && hasBonus('multiCollectBonus')
+    if (collectedOrbs.size > 0) {
+      const multiCollect = collectedOrbs.size >= 2 && hasBonus('multiCollectBonus')
       const xpMult = player.modifiers.xpMult * (multiCollect ? 2 : 1)
       for (const orb of collectedOrbs) {
         player.xp += orb.value * xpMult

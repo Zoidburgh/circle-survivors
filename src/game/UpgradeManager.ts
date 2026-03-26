@@ -30,6 +30,25 @@ export interface ActiveUpgrade {
 }
 
 const activeUpgrades: ActiveUpgrade[] = []
+const bonusFlags = new Set<keyof UpgradeBonus>()
+const bonusCounts = new Map<keyof UpgradeBonus, number>()
+const upgradeIdCounts = new Map<string, number>()
+
+function rebuildBonusCache(): void {
+  bonusFlags.clear()
+  bonusCounts.clear()
+  upgradeIdCounts.clear()
+  for (const u of activeUpgrades) {
+    // Track ID counts for maxStacks
+    upgradeIdCounts.set(u.id, (upgradeIdCounts.get(u.id) ?? 0) + 1)
+    for (const key of Object.keys(u.bonus) as (keyof UpgradeBonus)[]) {
+      if (u.bonus[key]) {
+        bonusFlags.add(key)
+        bonusCounts.set(key, (bonusCounts.get(key) ?? 0) + 1)
+      }
+    }
+  }
+}
 
 export function getActiveUpgrades(): ActiveUpgrade[] {
   return activeUpgrades
@@ -37,24 +56,36 @@ export function getActiveUpgrades(): ActiveUpgrade[] {
 
 export function addUpgrade(upgrade: ActiveUpgrade): void {
   activeUpgrades.push(upgrade)
+  rebuildBonusCache()
 }
 
 export function removeUpgrade(id: string): void {
   const idx = activeUpgrades.findIndex(u => u.id === id)
-  if (idx >= 0) activeUpgrades.splice(idx, 1)
+  if (idx >= 0) {
+    activeUpgrades.splice(idx, 1)
+    rebuildBonusCache()
+  }
 }
 
 export function hasUpgrade(id: string): boolean {
-  return activeUpgrades.some(u => u.id === id)
+  return (upgradeIdCounts.get(id) ?? 0) > 0
+}
+
+export function getUpgradeCount(id: string): number {
+  return upgradeIdCounts.get(id) ?? 0
 }
 
 export function hasBonus(key: keyof UpgradeBonus): boolean {
-  return activeUpgrades.some(u => u.bonus[key])
+  return bonusFlags.has(key)
+}
+
+export function getBonusCount(key: keyof UpgradeBonus): number {
+  return bonusCounts.get(key) ?? 0
 }
 
 /** How many ranks of Frostbite (chillHit) the player has picked */
 export function getChillRank(): number {
-  return activeUpgrades.filter(u => u.bonus.chillHit).length
+  return bonusCounts.get('chillHit') ?? 0
 }
 
 /** Recompute final modifiers from all active upgrades (additive stacking) */

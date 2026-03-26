@@ -53,6 +53,9 @@ export interface Enemy {
   lungeDirY: number
   chillStacks: number
   chillDecayTimer: number
+  cr: number  // parsed color components (avoid per-frame parseInt)
+  cg: number
+  cb: number
 }
 
 export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
@@ -103,6 +106,9 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     lungeDirY: 0,
     chillStacks: 0,
     chillDecayTimer: 0,
+    cr: parseInt(type.color.slice(1, 3), 16),
+    cg: parseInt(type.color.slice(3, 5), 16),
+    cb: parseInt(type.color.slice(5, 7), 16),
   }
 }
 

@@ -979,9 +979,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     const deathDur = 0.3
     const t = Math.min(dt / deathDur, 1)
 
-    const hr = parseInt(enemy.color.slice(1, 3), 16)
-    const hg = parseInt(enemy.color.slice(3, 5), 16)
-    const hb = parseInt(enemy.color.slice(5, 7), 16)
+    const hr = enemy.cr, hg = enemy.cg, hb = enemy.cb
 
     // Death ripples + red hit particles on first frame
     if (dt < 0.02) {
@@ -1062,9 +1060,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   const distToPlayer = Math.sqrt((enemy.x - player.x) ** 2 + (enemy.y - player.y) ** 2)
   const ringOverEnemy = playerRadius > 0 && Math.abs(distToPlayer - playerRadius) < r
 
-  const hr = parseInt(enemy.color.slice(1, 3), 16)
-  const hg = parseInt(enemy.color.slice(3, 5), 16)
-  const hb = parseInt(enemy.color.slice(5, 7), 16)
+  const hr = enemy.cr, hg = enemy.cg, hb = enemy.cb
 
   const hpFraction = enemy.displayHp / enemy.maxHp
   const damageFraction = player.damage * player.modifiers.damageMult / enemy.maxHp
@@ -1102,19 +1098,33 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   if (enemy.hitFlash > HIT_FLASH_DURATION - 0.02) {
     const hitFraction = damageFraction  // fraction of maxHp dealt
     const intensity = Math.min(Math.max(hitFraction / 0.20, 1), 4)  // 1x at <=20%, up to 4x at 80%+
-    const count = Math.floor(6 * intensity)
-    const biteAngle = startAngle + (enemy.hp / enemy.maxHp) * Math.PI * 2
+    const count = Math.floor(12 * intensity)
+    // Only the fresh bite — from actual HP to where displayHp is (the red drain wedge)
+    const damageArcStart = startAngle + (enemy.hp / enemy.maxHp) * Math.PI * 2
+    const damageArcEnd = damageArcStart + damageFraction * Math.PI * 2
+    const arcSpan = damageArcEnd - damageArcStart
     for (let i = 0; i < count; i++) {
-      const spread = (Math.random() - 0.5) * (0.6 + intensity * 0.15)
-      const angle = biteAngle + spread
-      const dist = r * (0.5 + Math.random() * 0.5)
+      const angle = damageArcStart + Math.random() * arcSpan
+      const dist = Math.random() * r
       const px = enemy.x + Math.cos(angle) * dist
       const py = enemy.y + Math.sin(angle) * dist
-      const speed = (30 + Math.random() * 50) * (0.8 + intensity * 0.2)
-      const vx = Math.cos(angle) * speed
-      const vy = Math.sin(angle) * speed
+      const speed = (60 + Math.random() * 120) * (0.8 + intensity * 0.2)
+      const outAngle = Math.atan2(py - enemy.y, px - enemy.x)
+      const vx = Math.cos(outAngle) * speed
+      const vy = Math.sin(outAngle) * speed
       const size = (2 + Math.random() * 2) * (0.8 + intensity * 0.2)
       spawnParticle(px, py, vx, vy, 255, 60 + Math.floor(Math.random() * 40), 60, 0.3 + Math.random() * 0.2, size)
+    }
+    // Blood spray from center — enemy colored
+    const sprayCount = Math.floor(6 * intensity)
+    for (let i = 0; i < sprayCount; i++) {
+      const angle = Math.random() * Math.PI * 2
+      const speed = 40 + Math.random() * 100 * intensity
+      const sizeScale = r / 44  // scale relative to default enemy radius
+      const size = (1.5 + Math.random() * 2) * (0.8 + intensity * 0.2) * sizeScale
+      spawnParticle(enemy.x, enemy.y,
+        Math.cos(angle) * speed, Math.sin(angle) * speed,
+        200 + Math.floor(Math.random() * 55), 20 + Math.floor(Math.random() * 30), 20, 0.3 + Math.random() * 0.3, size)
     }
   }
 

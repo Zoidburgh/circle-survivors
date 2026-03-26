@@ -1,5 +1,6 @@
 // All possible upgrades — add one at a time, test each
 
+import { getUpgradeCount } from './UpgradeManager.ts'
 import type { UpgradeBonus } from './UpgradeManager.ts'
 
 export interface UpgradeDef {
@@ -26,8 +27,12 @@ export const UPGRADE_POOL: UpgradeDef[] = [
   { id: 'chill_hit', name: 'Frostbite', description: 'Ring hits slow enemies (10%/stack, 5 max)', bonus: { chillHit: true }, color: '#80D8FF', tier: 'game', maxStacks: 2 },
 ]
 
-/** Pick N random non-duplicate upgrades from the pool */
+/** Pick N random upgrades from the pool, excluding already-maxed */
 export function pickRandomUpgrades(count: number): UpgradeDef[] {
-  const shuffled = [...UPGRADE_POOL].sort(() => Math.random() - 0.5)
+  const available = UPGRADE_POOL.filter(def => {
+    if (def.maxStacks == null) return true
+    return getUpgradeCount(def.id) < def.maxStacks
+  })
+  const shuffled = available.sort(() => Math.random() - 0.5)
   return shuffled.slice(0, Math.min(count, shuffled.length))
 }
