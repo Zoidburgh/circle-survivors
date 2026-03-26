@@ -47,6 +47,7 @@ const MAX_PARTICLES = PARTICLE_CAP
 let lastDt = 0.016
 let borderWaveIntensity = 0
 let playerGlowIntensity = 0
+let outerPulseIntensity = 0
 let dashSweepIntensity = 0
 let dashSweepStartX = 0
 let dashSweepStartY = 0
@@ -99,7 +100,19 @@ function updateAndDrawDeathRipples(dt: number): void {
     const sx = rip.x - camX
     const sy = rip.y - camY
 
-    // Outer glow
+    // Soft radial glow behind the ring
+    const glowWidth = 12 * (1 - t)
+    const glowGrad = ctx.createRadialGradient(sx, sy, Math.max(0, radius - glowWidth), sx, sy, radius + glowWidth)
+    glowGrad.addColorStop(0, `rgba(${rip.r}, ${rip.g}, ${rip.b}, 0)`)
+    glowGrad.addColorStop(0.4, `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.04})`)
+    glowGrad.addColorStop(0.6, `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.04})`)
+    glowGrad.addColorStop(1, `rgba(${rip.r}, ${rip.g}, ${rip.b}, 0)`)
+    ctx.beginPath()
+    ctx.arc(sx, sy, radius + glowWidth, 0, Math.PI * 2)
+    ctx.fillStyle = glowGrad
+    ctx.fill()
+
+    // Outer stroke
     ctx.beginPath()
     ctx.arc(sx, sy, radius, 0, Math.PI * 2)
     ctx.strokeStyle = `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.035})`
@@ -208,7 +221,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   ctx.fillStyle = '#0D0A1A'
   ctx.fillRect(0, 0, width, height)
 
-  drawGrid()
+  drawGrid(player)
   drawArenaBorder(player)
   updateAndDrawDeathRipples(lastDt)
 
@@ -293,22 +306,18 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   drawHUD(player, enemies, fps)
 }
 
-function drawGrid(): void {
+function drawGrid(player: Player): void {
   const cellSize = GRID_CELL_PX
-  ctx.strokeStyle = `rgba(26, 21, 53, ${GRID_ALPHA * 2.5})`
-  ctx.lineWidth = 1
-  const startX = Math.floor(camX / cellSize) * cellSize
-  const startY = Math.floor(camY / cellSize) * cellSize
-  ctx.beginPath()
-  for (let x = startX; x < camX + width + cellSize; x += cellSize) {
-    ctx.moveTo(x - camX, 0)
-    ctx.lineTo(x - camX, height)
-  }
-  for (let y = startY; y < camY + height + cellSize; y += cellSize) {
-    ctx.moveTo(0, y - camY)
-    ctx.lineTo(width, y - camY)
-  }
-  ctx.stroke()
+
+  // Radial floor gradient — subtle darkening toward arena edges
+  const arenaCx = ARENA_W / 2 - camX
+  const arenaCy = ARENA_H / 2 - camY
+  const floorGrad = ctx.createRadialGradient(arenaCx, arenaCy, 0, arenaCx, arenaCy, Math.max(ARENA_W, ARENA_H) * 0.6)
+  floorGrad.addColorStop(0, 'rgba(20, 16, 40, 0.15)')
+  floorGrad.addColorStop(1, 'rgba(0, 0, 0, 0.25)')
+  ctx.fillStyle = floorGrad
+  ctx.fillRect(0, 0, width, height)
+
 }
 
 function drawArenaBorder(player: Player): void {
@@ -490,6 +499,37 @@ function drawArenaBorder(player: Player): void {
     drawWaveH(x, y + h, w, 2)
     drawWaveV(x, y, h, 4)
     drawWaveV(x + w, y, h, 6)
+  }
+
+  // Outer pulse — only outside the arena, clip out the arena rect
+  {
+    // Smooth follower — eases toward borderWaveIntensity, no harsh flash
+    const target = borderWaveIntensity
+    if (target > outerPulseIntensity) {
+      outerPulseIntensity += (target - outerPulseIntensity) * 0.15  // slow rise
+    } else {
+      outerPulseIntensity += (target - outerPulseIntensity) * 0.08  // slower fall
+    }
+    const pulseAlpha = 0.05 + outerPulseIntensity * 0.18
+    const cx = x + w / 2
+    const cy = y + h / 2
+    const innerR = Math.min(w, h) / 2
+    const outerR = Math.max(width, height)
+
+    ctx.save()
+    // Clip to outside arena only — draw screen rect, cut out arena
+    ctx.beginPath()
+    ctx.rect(0, 0, width, height)
+    ctx.rect(x + w, y, -w, h)  // counter-clockwise = cut out
+    ctx.clip('evenodd')
+
+    const grad = ctx.createRadialGradient(cx, cy, innerR, cx, cy, outerR)
+    grad.addColorStop(0, `rgba(79, 195, 247, ${pulseAlpha})`)
+    grad.addColorStop(0.4, `rgba(79, 195, 247, ${pulseAlpha * 0.4})`)
+    grad.addColorStop(1, 'rgba(79, 195, 247, 0)')
+    ctx.fillStyle = grad
+    ctx.fillRect(0, 0, width, height)
+    ctx.restore()
   }
 }
 
