@@ -104,8 +104,8 @@ function updateAndDrawDeathRipples(dt: number): void {
     const glowWidth = 12 * (1 - t)
     const glowGrad = ctx.createRadialGradient(sx, sy, Math.max(0, radius - glowWidth), sx, sy, radius + glowWidth)
     glowGrad.addColorStop(0, `rgba(${rip.r}, ${rip.g}, ${rip.b}, 0)`)
-    glowGrad.addColorStop(0.4, `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.04})`)
-    glowGrad.addColorStop(0.6, `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.04})`)
+    glowGrad.addColorStop(0.4, `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.007})`)
+    glowGrad.addColorStop(0.6, `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.007})`)
     glowGrad.addColorStop(1, `rgba(${rip.r}, ${rip.g}, ${rip.b}, 0)`)
     ctx.beginPath()
     ctx.arc(sx, sy, radius + glowWidth, 0, Math.PI * 2)
@@ -677,11 +677,11 @@ function drawXPOrbs(player: Player): void {
 
       // Spawn particles + ripple on first frame
       if (orb.deathTimer < 0.02) {
-        spawnRingParticles(orb.x, orb.y, r * 0.5, 100, 255, 200, 20, 120, 0.4, 4)
-        spawnRingParticles(orb.x, orb.y, r * 0.3, 255, 255, 255, 12, 80, 0.3, 3)
+        spawnRingParticles(orb.x, orb.y, r * 0.5, 100, 255, 200, 10, 80, 0.3, 3)
+        spawnRingParticles(orb.x, orb.y, r * 0.3, 255, 255, 255, 6, 50, 0.2, 2)
         // Mini ripple — same color as orb
         const orbColor = orb.value >= 2 ? '#64D732' : '#64FFc8'
-        spawnDeathRipples(orb.x, orb.y, r * 2.5, orbColor)
+        spawnDeathRipples(orb.x, orb.y, r * 1.5, orbColor)
       }
 
       ctx.globalAlpha = (1 - t) * (1 - t)
