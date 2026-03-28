@@ -1,19 +1,38 @@
 import * as Input from '../game/InputManager.ts'
 import * as Renderer from '../render/Renderer.ts'
 import { updatePlayer } from '../entities/Player.ts'
-import { updateEnemy, updateDeath } from '../entities/Enemy.ts'
+import { createEnemy, updateEnemy, updateDeath } from '../entities/Enemy.ts'
+import type { Enemy } from '../entities/Enemy.ts'
 import { advanceGlobalTime } from './RhythmClock.ts'
 import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
 import { advancePatternClock } from '../audio/PatternClock.ts'
 import { getPlayer, getEnemies, getGrid, getCamera, getPhase, getXpForNextLevel } from './GameState.ts'
 import { updateOrbs, cleanupOrbs, getOrbs } from '../entities/XPOrb.ts'
-import { updateCamera, clampToArena } from '../game/Arena.ts'
+import { updateCamera, clampToArena, getArenaShape, setArenaShape } from '../game/Arena.ts'
 import { PLAYER_RADIUS } from '../utils/constants.ts'
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
+import { on } from './EventBus.ts'
+import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
 
 let fps = 0
 let frameCount = 0
+let arenaToggleLock = false
 let lastFpsTime = performance.now()
+
+// Totem spawn handler
+on('totem:spawn', (totemEnemy: Enemy) => {
+  const typeName = totemEnemy.totemSpawn
+  if (!typeName) return
+  const type = ENEMY_TYPES.find(t => t.name === typeName)
+  if (!type) return
+  // Spawn at a random offset from the totem
+  const angle = Math.random() * Math.PI * 2
+  const dist = totemEnemy.radius + (type.radius ?? 40) + 10
+  const sx = totemEnemy.x + Math.cos(angle) * dist
+  const sy = totemEnemy.y + Math.sin(angle) * dist
+  const enemies = getEnemies()
+  enemies.push(createEnemy(sx, sy, type))
+})
 
 export function update(dt: number): void {
   const phase = getPhase()
@@ -29,6 +48,14 @@ export function update(dt: number): void {
   const cam = getCamera()
 
   Input.flush()
+
+  // Toggle arena shape with G key
+  if (Input.isKeyDown('g') && !arenaToggleLock) {
+    arenaToggleLock = true
+    setArenaShape(getArenaShape() === 'rect' ? 'circle' : 'rect')
+  }
+  if (!Input.isKeyDown('g')) arenaToggleLock = false
+
   advanceGlobalTime(dt)
   advancePatternClock(dt)
   updatePreviewEnemy(dt)
@@ -61,9 +88,9 @@ export function update(dt: number): void {
       if (orb.alive && !orb.dying) grid.insert(orb)
     }
 
-    // Enemy-enemy separation (grid-accelerated)
+    // Enemy-enemy separation (grid-accelerated) — immovable enemies act as walls
     for (const enemy of enemies) {
-      if (!enemy.alive || enemy.dying) continue
+      if (!enemy.alive || enemy.dying || enemy.immovable) continue
       const nearby = grid.query(enemy)
       for (const other of nearby) {
         if (!('hp' in other)) continue  // skip orbs
@@ -74,13 +101,20 @@ export function update(dt: number): void {
         const dy = enemy.y - oe.y
         const dist = Math.sqrt(dx * dx + dy * dy)
         if (dist < minDist && dist > 0.1) {
-          const overlap = (minDist - dist) * 0.5
           const nx = dx / dist
           const ny = dy / dist
-          enemy.x += nx * overlap
-          enemy.y += ny * overlap
-          oe.x -= nx * overlap
-          oe.y -= ny * overlap
+          if (oe.immovable) {
+            // This enemy yields fully to immovable other
+            const overlap = minDist - dist
+            enemy.x += nx * overlap
+            enemy.y += ny * overlap
+          } else {
+            const overlap = (minDist - dist) * 0.5
+            enemy.x += nx * overlap
+            enemy.y += ny * overlap
+            oe.x -= nx * overlap
+            oe.y -= ny * overlap
+          }
         }
       }
       const ec = clampToArena(enemy.x, enemy.y, enemy.radius)

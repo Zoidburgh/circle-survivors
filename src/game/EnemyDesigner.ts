@@ -365,12 +365,25 @@ function addEnemyForm(existing?: DesignedEnemy): void {
           <option value="lunge" ${existing?.movePattern === 'lunge' ? 'selected' : ''}>Lunge — sits still, dashes on beat</option>
           <option value="bounce" ${existing?.movePattern === 'bounce' ? 'selected' : ''}>Bounce — ricochets off walls and bodies</option>
           <option value="stationary" ${existing?.movePattern === 'stationary' ? 'selected' : ''}>Stationary — turret</option>
+          <option value="immovable" ${existing?.movePattern === 'immovable' ? 'selected' : ''}>Immovable — wall, can't be pushed</option>
         </select>
       </div>
       <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:14px;">
         <input id="ed-blocks-${id}" type="checkbox" ${existing?.blocksRings ? 'checked' : ''}>
         <span style="${labelCSS} margin:0;">Shield</span>
       </label>
+      <div style="margin-top:6px;">
+        <span style="${labelCSS}">Drop</span>
+        <select id="ed-drop-${id}" style="width:100%;padding:4px 6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
+          <option value="xp" ${(existing?.dropType ?? 'xp') === 'xp' ? 'selected' : ''}>XP Orb</option>
+          <option value="hp" ${existing?.dropType === 'hp' ? 'selected' : ''}>HP Orb</option>
+          <option value="none" ${existing?.dropType === 'none' ? 'selected' : ''}>None</option>
+        </select>
+      </div>
+      <div style="margin-top:6px;">
+        <span style="${labelCSS}">Totem Spawn</span>
+        <input id="ed-totem-${id}" type="text" value="${existing?.totemSpawn ?? ''}" placeholder="enemy name" style="width:100%;padding:4px 6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
+      </div>
     </div>
 
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
@@ -550,12 +563,14 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const radius = parseInt((div.querySelector(`#ed-radius-${id}`) as HTMLInputElement).value) || 40
     const key = (div.querySelector(`#ed-key-${id}`) as HTMLInputElement).value || (id + 1).toString()
     const blocksRings = (div.querySelector(`#ed-blocks-${id}`) as HTMLInputElement).checked
+    const totemSpawn = (div.querySelector(`#ed-totem-${id}`) as HTMLInputElement).value.trim()
+    const dropType = (div.querySelector(`#ed-drop-${id}`) as HTMLSelectElement).value as 'xp' | 'hp' | 'none'
     const movePattern = (div.querySelector(`#ed-move-${id}`) as HTMLSelectElement).value as import('../entities/EnemyTypes.ts').MovePattern
     const rings: RingConfig[] = readRingForms()
     const sound = (rings[0]?.sound ?? 'pop') as SoundName
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
-    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, movePattern }
+    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, movePattern, totemSpawn, dropType }
   }
 
 

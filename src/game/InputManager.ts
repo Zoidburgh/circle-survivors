@@ -34,6 +34,12 @@ export function init(canvas: HTMLCanvasElement): void {
     if (e.button === 2) rightClick = false
   })
   canvas.addEventListener('contextmenu', e => e.preventDefault())
+  window.addEventListener('blur', () => {
+    keysDown.clear()
+    leftClick = false
+    rightClick = false
+    spacePressed = false
+  })
 }
 
 export function isKeyDown(key: string): boolean {

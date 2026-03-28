@@ -1,4 +1,4 @@
-export type MovePattern = 'pursue' | 'orbit' | 'zigzag' | 'stationary' | 'bounce' | 'lunge'
+export type MovePattern = 'pursue' | 'orbit' | 'zigzag' | 'stationary' | 'bounce' | 'lunge' | 'immovable'
 
 export interface RingConfig {
   ringRadius: number
@@ -18,6 +18,8 @@ export interface EnemyType {
   rings?: RingConfig[]
   blocksRings?: boolean
   movePattern?: MovePattern
+  totemSpawn?: string          // if set, this is a totem — name of enemy type it spawns on player hit
+  dropType?: 'xp' | 'hp' | 'none'  // what orb to drop on kill (default: 'xp')
 }
 
 export const ENEMY_TYPES: EnemyType[] = [

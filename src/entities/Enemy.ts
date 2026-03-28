@@ -3,7 +3,7 @@ import { createRing } from './Ring.ts'
 import { ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { shouldFire, getBeatInterval, getLoopPosition } from '../audio/PatternClock.ts'
 import { playWindup } from '../audio/AudioEngine.ts'
-import { clampToArena } from '../game/Arena.ts'
+import { clampToArena, getArenaShape, ARENA_CX, ARENA_CY } from '../game/Arena.ts'
 import { emit } from '../core/EventBus.ts'
 import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
@@ -56,6 +56,9 @@ export interface Enemy {
   cr: number  // parsed color components (avoid per-frame parseInt)
   cg: number
   cb: number
+  immovable: boolean   // derived from movePattern === 'immovable'
+  totemSpawn: string    // empty = not a totem, otherwise enemy type name to spawn
+  dropType: 'xp' | 'hp' | 'none'
 }
 
 export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
@@ -109,6 +112,9 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     cr: parseInt(type.color.slice(1, 3), 16),
     cg: parseInt(type.color.slice(3, 5), 16),
     cb: parseInt(type.color.slice(5, 7), 16),
+    immovable: (type.movePattern ?? 'pursue') === 'immovable',
+    totemSpawn: type.totemSpawn ?? '',
+    dropType: type.dropType ?? 'xp',
   }
 }
 
@@ -140,6 +146,32 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     const drainRate = enemy.dying ? HP_DRAIN_SPEED * 4 : HP_DRAIN_SPEED * 2
     enemy.displayHp -= (enemy.displayHp - enemy.hp) * drainRate * dt
     if (enemy.displayHp - enemy.hp < 0.01) enemy.displayHp = enemy.hp
+  }
+
+  // Immovable enemies skip all movement and separation
+  if (enemy.immovable) {
+    // Still update rings
+    if (enemy.spawnTimer >= 1) {
+      for (let i = 0; i < enemy.rings.length; i++) {
+        const rs = enemy.rings[i]!
+        if (shouldFire(rs.patternName)) {
+          const interval = getBeatInterval(rs.patternName)
+          rs.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * 0.8)
+          rs.attackTimer = 0
+          playWindup(rs.expandTime, false)
+        }
+        if (rs.attackTimer >= 0) {
+          rs.attackTimer += dt
+          if (rs.attackTimer >= rs.expandTime && rs.attackTimer - dt < rs.expandTime) {
+            emit('enemy:beat', enemy, i)
+          }
+          if (rs.attackTimer > rs.expandTime + 0.05) {
+            rs.attackTimer = -1
+          }
+        }
+      }
+    }
+    return
   }
 
   // Movement
@@ -316,9 +348,25 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   const clamped = clampToArena(enemy.x, enemy.y, enemy.radius)
   enemy.x = clamped.x
   enemy.y = clamped.y
-  if (isBounce) {
-    if (clamped.x !== prevX) enemy.bounceVx = -enemy.bounceVx
-    if (clamped.y !== prevY) enemy.bounceVy = -enemy.bounceVy
+  if (isBounce && (clamped.x !== prevX || clamped.y !== prevY)) {
+    if (getArenaShape() === 'circle') {
+      // Reflect off circle wall normal
+      const nx = (enemy.x - ARENA_CX)
+      const ny = (enemy.y - ARENA_CY)
+      const nLen = Math.sqrt(nx * nx + ny * ny)
+      if (nLen > 0.1) {
+        const nnx = nx / nLen
+        const nny = ny / nLen
+        const dot = enemy.bounceVx * nnx + enemy.bounceVy * nny
+        if (dot > 0) {
+          enemy.bounceVx -= 2 * dot * nnx
+          enemy.bounceVy -= 2 * dot * nny
+        }
+      }
+    } else {
+      if (clamped.x !== prevX) enemy.bounceVx = -enemy.bounceVx
+      if (clamped.y !== prevY) enemy.bounceVy = -enemy.bounceVy
+    }
     // Normalize back to constant speed
     const bSpeed = Math.sqrt(enemy.bounceVx * enemy.bounceVx + enemy.bounceVy * enemy.bounceVy)
     if (bSpeed > 0.1) {

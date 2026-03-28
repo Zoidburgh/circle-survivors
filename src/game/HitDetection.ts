@@ -1,4 +1,4 @@
-import { on } from '../core/EventBus.ts'
+import { on, emit } from '../core/EventBus.ts'
 import { getPlayer, getGrid, getEnemies } from '../core/GameState.ts'
 import { getEffectiveRadius } from '../entities/Player.ts'
 import { damageEnemy } from '../entities/Enemy.ts'
@@ -8,7 +8,7 @@ import { distance } from '../utils/math.ts'
 import { HIT_FLASH_DURATION, HIT_GRACE, CHILL_MAX_STACKS } from '../utils/constants.ts'
 import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playCollect } from '../audio/AudioEngine.ts'
 import { getBlockedArcs, isTargetBlocked } from './RingOcclusion.ts'
-import { spawnOrb, getOrbs, collectOrb } from '../entities/XPOrb.ts'
+import { spawnOrb, getOrbs, collectOrb, ORB_HP_HEAL, ORB_HP_DROP_CHANCE } from '../entities/XPOrb.ts'
 import { hasBonus } from './UpgradeManager.ts'
 
 export function initHitDetection(): void {
@@ -54,6 +54,10 @@ export function initHitDetection(): void {
             enemy.chillStacks = Math.min(enemy.chillStacks + 1, CHILL_MAX_STACKS)
             enemy.chillDecayTimer = 0
           }
+          // Totem: spawn enemy on hit
+          if (enemy.totemSpawn) {
+            emit('totem:spawn', enemy)
+          }
           if (enemy.dying && !wasDying) killedEnemies.push(enemy)
         }
       }
@@ -63,7 +67,8 @@ export function initHitDetection(): void {
     const multiKill = killedEnemies.length >= 2 && hasBonus('multiKillBonus')
     const orbValue = multiKill ? 2 : 1
     for (const dead of killedEnemies) {
-      spawnOrb(dead.x, dead.y, orbValue)
+      if (dead.dropType === 'none') continue
+      spawnOrb(dead.x, dead.y, orbValue, dead.dropType)
     }
 
     // Check orbs along the same sweep — collect first, then apply XP
@@ -89,7 +94,11 @@ export function initHitDetection(): void {
       const multiCollect = collectedOrbs.size >= 2 && hasBonus('multiCollectBonus')
       const xpMult = player.modifiers.xpMult * (multiCollect ? 2 : 1)
       for (const orb of collectedOrbs) {
-        player.xp += orb.value * xpMult
+        if (orb.orbType === 'hp') {
+          player.hp = Math.min(player.hp + ORB_HP_HEAL * orb.value, player.maxHp)
+        } else {
+          player.xp += orb.value * xpMult
+        }
       }
       playCollect()
     }

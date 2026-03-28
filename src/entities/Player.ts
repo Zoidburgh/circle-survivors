@@ -5,7 +5,7 @@ import { shouldFire } from '../audio/PatternClock.ts'
 import * as Input from '../game/InputManager.ts'
 import { emit } from '../core/EventBus.ts'
 import { playDash, playWindup } from '../audio/AudioEngine.ts'
-import { clampToArena, ARENA_W, ARENA_H } from '../game/Arena.ts'
+import { clampToArena, ARENA_W, ARENA_H, getArenaShape, ARENA_CX, ARENA_CY, ARENA_RADIUS } from '../game/Arena.ts'
 import {
   PLAYER_SPEED,
   PLAYER_TEMPO,
@@ -135,14 +135,6 @@ export function updatePlayer(player: Player, dt: number): void {
     }
   }
 
-  // Movement trail
-  player.trailTimer -= dt
-  if (player.trailTimer <= 0) {
-    player.trail.push({ x: player.x, y: player.y })
-    if (player.trail.length > 8) player.trail.shift()
-    player.trailTimer = 0.03
-  }
-
   // Store previous position for sweep hit detection
   player.prevX = player.x
   player.prevY = player.y
@@ -163,10 +155,72 @@ export function updatePlayer(player: Player, dt: number): void {
     }
   }
 
-  // Clamp to arena
-  const clamped = clampToArena(player.x, player.y, PLAYER_RADIUS)
-  player.x = clamped.x
-  player.y = clamped.y
+  // Clamp to arena — wall slide preserves tangential movement
+  if (getArenaShape() === 'circle') {
+    const dx = player.x - ARENA_CX
+    const dy = player.y - ARENA_CY
+    const dist = Math.sqrt(dx * dx + dy * dy)
+    const maxDist = ARENA_RADIUS - PLAYER_RADIUS
+    if (dist > maxDist && dist > 0.1) {
+      // How far past the wall
+      const overshoot = dist - maxDist
+      const nx = dx / dist
+      const ny = dy / dist
+      // Tangent direction (perpendicular to normal, CCW)
+      const tx = -ny
+      const ty = nx
+      // Project overshoot onto tangent — this is the wall-slide distance
+      // Use the pre-clamp movement direction for the projection
+      const moveX = player.x - player.prevX
+      const moveY = player.y - player.prevY
+      const tangentDot = moveX * tx + moveY * ty
+      // Clamp to wall
+      player.x = ARENA_CX + nx * maxDist
+      player.y = ARENA_CY + ny * maxDist
+      // Slide along wall
+      player.x += tx * tangentDot * 0.8
+      player.y += ty * tangentDot * 0.8
+      // Re-clamp in case slide pushed past
+      const dx2 = player.x - ARENA_CX
+      const dy2 = player.y - ARENA_CY
+      const dist2 = Math.sqrt(dx2 * dx2 + dy2 * dy2)
+      if (dist2 > maxDist) {
+        player.x = ARENA_CX + (dx2 / dist2) * maxDist
+        player.y = ARENA_CY + (dy2 / dist2) * maxDist
+      }
+    }
+  } else {
+    const clamped = clampToArena(player.x, player.y, PLAYER_RADIUS)
+    player.x = clamped.x
+    player.y = clamped.y
+  }
+
+  // Movement trail — distance-based, collapses when stationary
+  const dir = Input.getMovementDir()
+  const isMoving = dir.x !== 0 || dir.y !== 0 || player.dashTimer >= 0
+  const lastTrail = player.trail[player.trail.length - 1]
+  const trailDx = lastTrail ? player.x - lastTrail.x : 999
+  const trailDy = lastTrail ? player.y - lastTrail.y : 999
+  const trailDist = Math.sqrt(trailDx * trailDx + trailDy * trailDy)
+  if (trailDist > 12) {
+    player.trail.push({ x: player.x, y: player.y })
+    if (player.trail.length > 8) player.trail.shift()
+    player.trailTimer = 0.04
+  } else if (isMoving && player.trail.length < 8) {
+    // Seed trail quickly when starting to move
+    player.trailTimer -= dt
+    if (player.trailTimer <= 0) {
+      player.trail.push({ x: player.x, y: player.y })
+      player.trailTimer = 0.03
+    }
+  } else if (!isMoving) {
+    // Collapse when stationary
+    player.trailTimer -= dt
+    if (player.trailTimer <= 0 && player.trail.length > 0) {
+      player.trail.shift()
+      player.trailTimer = 0.04
+    }
+  }
 
   // Beat detection — pattern driven
   if (player.attackTimer < 0 && shouldFire('Player')) {
