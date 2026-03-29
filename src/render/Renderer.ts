@@ -851,9 +851,9 @@ function drawPlayer(player: Player): void {
   let strokeColor = isGhostDashing ? '#FFFFFF' : COLOR_PLAYER
   if (player.hitFlash > 0) {
     const t = player.hitFlash / HIT_FLASH_DURATION // 1 = just hit, 0 = recovered
-    drawRadius = PLAYER_RADIUS * (0.85 + 0.15 * (1 - t)) // shrinks to 90% then bounces back
-    fillColor = `rgba(${Math.floor(255 - 176 * (1 - t))}, ${Math.floor(50 + 145 * (1 - t))}, ${Math.floor(50 + 197 * (1 - t))}, ${0.15 + 0.35 * t})`
-    strokeColor = `rgb(${Math.floor(255 - 176 * (1 - t))}, ${Math.floor(50 + 145 * (1 - t))}, ${Math.floor(50 + 197 * (1 - t))})`
+    drawRadius = PLAYER_RADIUS * (0.7 + 0.3 * (1 - t)) // shrinks to 70% then bounces back
+    fillColor = `rgba(255, ${Math.floor(30 + 225 * (1 - t))}, ${Math.floor(30 + 217 * (1 - t))}, ${0.2 + 0.5 * t})`
+    strokeColor = `rgb(255, ${Math.floor(30 + 225 * (1 - t))}, ${Math.floor(30 + 217 * (1 - t))})`
   }
 
   // Dash trail — interpolate from current pos back to dash start
@@ -1034,9 +1034,16 @@ function drawPlayer(player: Player): void {
 }
 
 function drawEnemy(enemy: Enemy, player: Player): void {
-  const sx = enemy.x - camX
-  const sy = enemy.y - camY
+  let sx = enemy.x - camX
+  let sy = enemy.y - camY
   let r = enemy.radius
+
+  // Hit jitter — random position offset while flash is active
+  if (enemy.hitFlash > 0) {
+    const jitterStrength = 4 * (enemy.hitFlash / HIT_FLASH_DURATION)
+    sx += (Math.random() - 0.5) * 2 * jitterStrength
+    sy += (Math.random() - 0.5) * 2 * jitterStrength
+  }
 
   // Death animation
   if (enemy.dying) {
@@ -1133,6 +1140,15 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   const startAngle = -Math.PI / 2
   const endAngle = startAngle + hpFraction * Math.PI * 2
   const afterHitEnd = startAngle + afterHitFraction * Math.PI * 2
+
+  // White flash on hit — drawn under pie so blood/drain show on top
+  if (enemy.hitFlash > 0) {
+    const flashT = enemy.hitFlash / HIT_FLASH_DURATION
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(255, 255, 255, ${0.95 * flashT})`
+    ctx.fill()
+  }
 
   // Damaged background — dark enemy color base + inner ring marks
   {

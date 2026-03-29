@@ -30,7 +30,7 @@ export const PLAYER_MAX_HP = 1000
 export const PLAYER_BASE_DAMAGE = 1
 
 // ── Gameplay tuning ──
-export const HIT_FLASH_DURATION = 0.15
+export const HIT_FLASH_DURATION = 0.38
 export const SPAWN_ANIM_DURATION = 0.4
 export const HP_DRAIN_SPEED = 8
 export const PARTICLE_CAP = 2000
