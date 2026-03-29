@@ -67,6 +67,12 @@ export function removeUpgrade(id: string): void {
   }
 }
 
+/** Clear all upgrades — call on run restart */
+export function resetUpgrades(): void {
+  activeUpgrades.length = 0
+  rebuildBonusCache()
+}
+
 export function hasUpgrade(id: string): boolean {
   return (upgradeIdCounts.get(id) ?? 0) > 0
 }

@@ -22,6 +22,11 @@ export interface EnemyType {
   dropType?: 'xp' | 'hp' | 'none'  // what orb to drop on kill (default: 'xp')
 }
 
+/** Look up an enemy type by name */
+export function getEnemyType(name: string): EnemyType | undefined {
+  return ENEMY_TYPES.find(t => t.name === name)
+}
+
 export const ENEMY_TYPES: EnemyType[] = [
   {
     name: 'Offbeat',

@@ -7,7 +7,7 @@ import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
 import { getPattern, getLoopPosition, getLoopLength } from '../audio/PatternClock.ts'
 import { getPreviewEnemy } from '../game/EnemyDesigner.ts'
 import type { Camera } from '../game/Arena.ts'
-import { ARENA_W, ARENA_H, ARENA_RADIUS, ARENA_CX, ARENA_CY, getArenaShape } from '../game/Arena.ts'
+import { ARENA_W, ARENA_H, ARENA_RADIUS, ARENA_CX, ARENA_CY, PILL_R, PILL_HALF_W, getArenaShape, getHexVertices } from '../game/Arena.ts'
 import { getBlockedArcs } from '../game/RingOcclusion.ts'
 import type { BlockedArc } from '../game/RingOcclusion.ts'
 import { getEnemies } from '../core/GameState.ts'
@@ -206,6 +206,57 @@ function resize(): void {
   canvas.height = height
 }
 
+/** Clear all renderer state — call on run restart */
+/** Draw a hex path (for clip, border, buffer) centered at screen coords */
+function hexPath(cx: number, cy: number, r: number): void {
+  const verts = getHexVertices(cx + camX, cy + camY, r)  // world coords
+  ctx.beginPath()
+  for (let i = 0; i < verts.length; i++) {
+    const vx = verts[i]!.x - camX
+    const vy = verts[i]!.y - camY
+    if (i === 0) ctx.moveTo(vx, vy)
+    else ctx.lineTo(vx, vy)
+  }
+  ctx.closePath()
+}
+
+/** Draw hex path in screen-space directly (no camera offset needed) */
+function hexPathScreen(cx: number, cy: number, r: number): void {
+  ctx.beginPath()
+  for (let i = 0; i < 6; i++) {
+    const angle = i * Math.PI / 3
+    const vx = cx + Math.cos(angle) * r
+    const vy = cy + Math.sin(angle) * r
+    if (i === 0) ctx.moveTo(vx, vy)
+    else ctx.lineTo(vx, vy)
+  }
+  ctx.closePath()
+}
+
+/** Add a pill/stadium subpath (no beginPath — caller controls that) */
+function pillPath(cx: number, cy: number, halfW: number, r: number, ccw = false): void {
+  if (ccw) {
+    // Reverse winding for even-odd clip cutout
+    ctx.moveTo(cx + halfW, cy + r)
+    ctx.arc(cx + halfW, cy, r, Math.PI / 2, -Math.PI / 2, true)
+    ctx.arc(cx - halfW, cy, r, -Math.PI / 2, Math.PI / 2, true)
+  } else {
+    ctx.moveTo(cx - halfW, cy + r)
+    ctx.arc(cx - halfW, cy, r, Math.PI / 2, -Math.PI / 2)
+    ctx.arc(cx + halfW, cy, r, -Math.PI / 2, Math.PI / 2)
+  }
+  ctx.closePath()
+}
+
+export function resetRenderer(): void {
+  particles.length = 0
+  deathRipples.length = 0
+  borderWaveIntensity = 0
+  playerGlowIntensity = 0
+  outerPulseIntensity = 0
+  dashSweepIntensity = 0
+}
+
 export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0, dt = 0.016, cam?: Camera): void {
   lastDt = dt
   if (cam) {
@@ -227,10 +278,17 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
 
   // Clip rings and particles to arena bounds
   ctx.save()
-  ctx.beginPath()
-  if (getArenaShape() === 'circle') {
+  const shape = getArenaShape()
+  if (shape === 'pill') {
+    ctx.beginPath()
+    pillPath(ARENA_CX - camX, ARENA_CY - camY, PILL_HALF_W, PILL_R)
+  } else if (shape === 'hex') {
+    hexPath(ARENA_CX - camX, ARENA_CY - camY, ARENA_RADIUS)
+  } else if (shape === 'circle') {
+    ctx.beginPath()
     ctx.arc(ARENA_CX - camX, ARENA_CY - camY, ARENA_RADIUS, 0, Math.PI * 2)
   } else {
+    ctx.beginPath()
     ctx.rect(-camX, -camY, ARENA_W, ARENA_H)
   }
   ctx.clip()
@@ -349,20 +407,35 @@ function drawArenaBorder(player: Player): void {
     if (borderWaveIntensity < 0.005) borderWaveIntensity = 0
   }
 
-  const isCircle = getArenaShape() === 'circle'
+  const arenaShape = getArenaShape()
+  const isRound = arenaShape !== 'rect'
   const acx = ARENA_CX - camX  // arena center in screen coords
   const acy = ARENA_CY - camY
 
   // Dark buffer zone
-  if (isCircle) {
-    // Radial buffer around circle edge
-    const bufGrad = ctx.createRadialGradient(acx, acy, ARENA_RADIUS, acx, acy, ARENA_RADIUS + buffer)
+  if (isRound) {
+    const pillExtent = PILL_HALF_W + PILL_R
+    const bufInner = arenaShape === 'pill' ? pillExtent : ARENA_RADIUS * 0.85
+    const bufOuter = arenaShape === 'pill' ? pillExtent + buffer : ARENA_RADIUS + buffer
+    const bufGrad = ctx.createRadialGradient(acx, acy, bufInner, acx, acy, bufOuter)
     bufGrad.addColorStop(0, 'rgba(0, 0, 0, 0.3)')
     bufGrad.addColorStop(1, 'rgba(0, 0, 0, 0.85)')
     ctx.save()
     ctx.beginPath()
     ctx.rect(0, 0, width, height)
-    ctx.arc(acx, acy, ARENA_RADIUS, 0, Math.PI * 2, true)
+    if (arenaShape === 'pill') {
+      pillPath(acx, acy, PILL_HALF_W, PILL_R, true)
+    } else if (arenaShape === 'hex') {
+      const verts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
+      for (let i = verts.length - 1; i >= 0; i--) {
+        const vx = verts[i]!.x - camX, vy = verts[i]!.y - camY
+        if (i === verts.length - 1) ctx.moveTo(vx, vy)
+        else ctx.lineTo(vx, vy)
+      }
+      ctx.closePath()
+    } else {
+      ctx.arc(acx, acy, ARENA_RADIUS, 0, Math.PI * 2, true)
+    }
     ctx.clip('evenodd')
     ctx.fillStyle = bufGrad
     ctx.fillRect(0, 0, width, height)
@@ -404,7 +477,14 @@ function drawArenaBorder(player: Player): void {
   const drawBorder = (alpha: number, lw: number, offset = 0) => {
     ctx.strokeStyle = `rgba(79, 195, 247, ${alpha})`
     ctx.lineWidth = lw
-    if (isCircle) {
+    if (arenaShape === 'pill') {
+      ctx.beginPath()
+      pillPath(acx, acy, PILL_HALF_W, PILL_R + offset)
+      ctx.stroke()
+    } else if (arenaShape === 'hex') {
+      hexPathScreen(acx, acy, ARENA_RADIUS + offset)
+      ctx.stroke()
+    } else if (arenaShape === 'circle') {
       ctx.beginPath()
       ctx.arc(acx, acy, ARENA_RADIUS + offset, 0, Math.PI * 2)
       ctx.stroke()
@@ -442,8 +522,116 @@ function drawArenaBorder(player: Player): void {
       return 0.3 + h * 0.7
     }
 
-    if (isCircle) {
-      // Circular waveform — one continuous wave around the edge
+    if (arenaShape === 'pill') {
+      // Pill waveform — traces stadium perimeter
+      const proximity = (wx: number, wy: number) => {
+        const dx = wx - px
+        const dy = wy - py
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        return 0.3 + 0.7 * Math.max(0, 1 - dist / ((PILL_HALF_W + PILL_R) * 1.5))
+      }
+      const drawPillWave = () => {
+        ctx.beginPath()
+        let totalLen = 0
+        let first = true
+        let prevSx = 0, prevSy = 0
+        const addPoint = (wx: number, wy: number, nx: number, ny: number) => {
+          const prox = proximity(wx + camX, wy + camY)
+          const wave = Math.sin(totalLen * freq + t) * baseAmp * prox * vary(Math.floor(totalLen), 0)
+          const sx = wx + nx * wave
+          const sy = wy + ny * wave
+          if (first) { ctx.moveTo(sx, sy); first = false }
+          else {
+            const cpx = (prevSx + sx) / 2
+            const cpy = (prevSy + sy) / 2
+            ctx.quadraticCurveTo(prevSx, prevSy, cpx, cpy)
+          }
+          prevSx = sx; prevSy = sy
+          totalLen += step
+        }
+        // Top edge
+        for (let i = -PILL_HALF_W; i <= PILL_HALF_W; i += step) addPoint(acx + i, acy - PILL_R, 0, -1)
+        // Right cap
+        const capSteps = Math.ceil(Math.PI * PILL_R / step)
+        for (let s = 0; s <= capSteps; s++) {
+          const a = -Math.PI / 2 + (s / capSteps) * Math.PI
+          addPoint(acx + PILL_HALF_W + Math.cos(a) * PILL_R, acy + Math.sin(a) * PILL_R, Math.cos(a), Math.sin(a))
+        }
+        // Bottom edge
+        for (let i = PILL_HALF_W; i >= -PILL_HALF_W; i -= step) addPoint(acx + i, acy + PILL_R, 0, 1)
+        // Left cap
+        for (let s = 0; s <= capSteps; s++) {
+          const a = Math.PI / 2 + (s / capSteps) * Math.PI
+          addPoint(acx - PILL_HALF_W + Math.cos(a) * PILL_R, acy + Math.sin(a) * PILL_R, Math.cos(a), Math.sin(a))
+        }
+        ctx.closePath()
+        ctx.stroke()
+      }
+      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.15})`
+      ctx.lineWidth = outerWidth
+      drawPillWave()
+      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.35})`
+      ctx.lineWidth = midWidth
+      drawPillWave()
+      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha})`
+      ctx.lineWidth = coreWidth
+      drawPillWave()
+    } else if (arenaShape === 'hex') {
+      // Hex waveform — wave along each of the 6 edges
+      const verts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
+      const drawHexWave = () => {
+        ctx.beginPath()
+        let totalLen = 0
+        let first = true
+        let prevSx = 0, prevSy = 0
+        for (let e = 0; e < 6; e++) {
+          const v0 = verts[e]!
+          const v1 = verts[(e + 1) % 6]!
+          const ex = (v1.x - v0.x)
+          const ey = (v1.y - v0.y)
+          const edgeLen = Math.sqrt(ex * ex + ey * ey)
+          const enx = ey / edgeLen
+          const eny = -ex / edgeLen
+          const edgeSteps = Math.ceil(edgeLen / step)
+          for (let s = 0; s <= edgeSteps; s++) {
+            const frac = s / edgeSteps
+            const wx = v0.x + ex * frac - camX
+            const wy = v0.y + ey * frac - camY
+            const edgePx = v0.x + ex * frac
+            const edgePy = v0.y + ey * frac
+            const dx = edgePx - px
+            const dy = edgePy - py
+            const dist = Math.sqrt(dx * dx + dy * dy)
+            const prox = 0.3 + 0.7 * (1 - dist / (ARENA_RADIUS * 2))
+            const wave = Math.sin(totalLen * freq + t) * baseAmp * prox * vary(Math.floor(totalLen), e)
+            const sx = wx + enx * wave
+            const sy = wy + eny * wave
+            if (first) { ctx.moveTo(sx, sy); first = false }
+            else {
+              const cpx = (prevSx + sx) / 2
+              const cpy = (prevSy + sy) / 2
+              ctx.quadraticCurveTo(prevSx, prevSy, cpx, cpy)
+            }
+            prevSx = sx
+            prevSy = sy
+            totalLen += step
+          }
+        }
+        ctx.closePath()
+        ctx.stroke()
+      }
+
+      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.15})`
+      ctx.lineWidth = outerWidth
+      drawHexWave()
+      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.35})`
+      ctx.lineWidth = midWidth
+      drawHexWave()
+      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha})`
+      ctx.lineWidth = coreWidth
+      drawHexWave()
+    } else if (arenaShape === 'circle') {
+      // Circular waveform
       const circumference = Math.PI * 2 * ARENA_RADIUS
       const angleStep = (step / circumference) * Math.PI * 2
       const proximity = (angle: number) => {
@@ -553,16 +741,26 @@ function drawArenaBorder(player: Player): void {
       outerPulseIntensity += (target - outerPulseIntensity) * 0.08  // slower fall
     }
     const pulseAlpha = 0.05 + outerPulseIntensity * 0.18
-    const pcx = isCircle ? acx : x + w / 2
-    const pcy = isCircle ? acy : y + h / 2
-    const innerR = isCircle ? ARENA_RADIUS : Math.min(w, h) / 2
+    const pcx = isRound ? acx : x + w / 2
+    const pcy = isRound ? acy : y + h / 2
+    const innerR = arenaShape === 'pill' ? PILL_HALF_W + PILL_R : isRound ? ARENA_RADIUS : Math.min(w, h) / 2
     const outerR = Math.max(width, height)
 
     ctx.save()
     // Clip to outside arena only
     ctx.beginPath()
     ctx.rect(0, 0, width, height)
-    if (isCircle) {
+    if (arenaShape === 'pill') {
+      pillPath(acx, acy, PILL_HALF_W, PILL_R, true)
+    } else if (arenaShape === 'hex') {
+      const verts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
+      for (let i = verts.length - 1; i >= 0; i--) {
+        const vx = verts[i]!.x - camX, vy = verts[i]!.y - camY
+        if (i === verts.length - 1) ctx.moveTo(vx, vy)
+        else ctx.lineTo(vx, vy)
+      }
+      ctx.closePath()
+    } else if (arenaShape === 'circle') {
       ctx.arc(acx, acy, ARENA_RADIUS, 0, Math.PI * 2, true)
     } else {
       ctx.rect(x + w, y, -w, h)
@@ -820,10 +1018,17 @@ function drawPlayer(player: Player): void {
 
   // Movement trail — clipped to arena
   ctx.save()
-  ctx.beginPath()
-  if (getArenaShape() === 'circle') {
+  const trailShape = getArenaShape()
+  if (trailShape === 'pill') {
+    ctx.beginPath()
+    pillPath(ARENA_CX - camX, ARENA_CY - camY, PILL_HALF_W, PILL_R)
+  } else if (trailShape === 'hex') {
+    hexPath(ARENA_CX - camX, ARENA_CY - camY, ARENA_RADIUS)
+  } else if (trailShape === 'circle') {
+    ctx.beginPath()
     ctx.arc(ARENA_CX - camX, ARENA_CY - camY, ARENA_RADIUS, 0, Math.PI * 2)
   } else {
+    ctx.beginPath()
     ctx.rect(-camX, -camY, ARENA_W, ARENA_H)
   }
   ctx.clip()

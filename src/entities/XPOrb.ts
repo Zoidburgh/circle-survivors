@@ -80,3 +80,8 @@ export function cleanupOrbs(): void {
     }
   }
 }
+
+/** Clear all orbs — call on run restart */
+export function resetOrbs(): void {
+  orbs.length = 0
+}

@@ -3,7 +3,7 @@
 
 import { ARENA_BUFFER, CAMERA_LEAD_AMOUNT } from '../utils/constants.ts'
 
-export type ArenaShape = 'rect' | 'circle'
+export type ArenaShape = 'rect' | 'circle' | 'hex' | 'pill'
 
 // ── Configuration ──
 let arenaShape: ArenaShape = 'rect'
@@ -13,8 +13,102 @@ export const ARENA_RADIUS = 1000  // for circle mode
 export const ARENA_CX = ARENA_W / 2  // center X (used by both modes)
 export const ARENA_CY = ARENA_H / 2  // center Y (used by both modes)
 
+// ── Pill geometry ──
+// Horizontal stadium: two semicircles (radius PILL_R) connected by straight top/bottom edges
+export const PILL_R = 550       // cap radius
+export const PILL_HALF_W = 500  // half-length of straight section
+// Total width = PILL_HALF_W * 2 + PILL_R * 2 = 2100, height = PILL_R * 2 = 1100
+
 export function getArenaShape(): ArenaShape { return arenaShape }
 export function setArenaShape(shape: ArenaShape): void { arenaShape = shape }
+
+// ── Hex geometry ──
+// Regular hexagon with flat top/bottom, circumradius = ARENA_RADIUS
+// Width = 2R, Height = R√3 ≈ 1.73R — wider than tall for landscape screens
+const HEX_AXES = [
+  { nx: 0, ny: 1 },                                                    // top/bottom flat edges
+  { nx: Math.sin(Math.PI / 3), ny: Math.cos(Math.PI / 3) },            // upper-right/lower-left edges
+  { nx: -Math.sin(Math.PI / 3), ny: Math.cos(Math.PI / 3) },           // upper-left/lower-right edges
+]
+const HEX_INRADIUS_FACTOR = Math.cos(Math.PI / 6)  // √3/2 ≈ 0.866
+
+/** Get hex vertices for rendering (flat-top orientation) */
+export function getHexVertices(cx: number, cy: number, r: number): { x: number; y: number }[] {
+  const verts: { x: number; y: number }[] = []
+  for (let i = 0; i < 6; i++) {
+    const angle = i * Math.PI / 3  // flat-top: vertices at 0°, 60°, 120°...
+    verts.push({ x: cx + Math.cos(angle) * r, y: cy + Math.sin(angle) * r })
+  }
+  return verts
+}
+
+/** Clamp point to inside hex. Returns clamped position. */
+function clampToHex(x: number, y: number, entityRadius: number): { x: number; y: number } {
+  let rx = x - ARENA_CX
+  let ry = y - ARENA_CY
+  const inradius = ARENA_RADIUS * HEX_INRADIUS_FACTOR - entityRadius
+  for (const axis of HEX_AXES) {
+    const dot = rx * axis.nx + ry * axis.ny
+    if (dot > inradius) {
+      rx -= (dot - inradius) * axis.nx
+      ry -= (dot - inradius) * axis.ny
+    } else if (dot < -inradius) {
+      rx -= (dot + inradius) * axis.nx
+      ry -= (dot + inradius) * axis.ny
+    }
+  }
+  return { x: ARENA_CX + rx, y: ARENA_CY + ry }
+}
+
+/** Check if point is inside hex */
+function isInHex(x: number, y: number): boolean {
+  const rx = x - ARENA_CX
+  const ry = y - ARENA_CY
+  const inradius = ARENA_RADIUS * HEX_INRADIUS_FACTOR
+  for (const axis of HEX_AXES) {
+    const dot = rx * axis.nx + ry * axis.ny
+    if (Math.abs(dot) > inradius) return false
+  }
+  return true
+}
+
+// ── Pill geometry helpers ──
+/** Clamp to pill (stadium) shape — straight section + semicircle caps */
+function clampToPill(x: number, y: number, entityRadius: number): { x: number; y: number } {
+  const rx = x - ARENA_CX
+  const ry = y - ARENA_CY
+  const maxR = PILL_R - entityRadius
+  // Clamp x to within the total pill width
+  const clampedRx = Math.max(-PILL_HALF_W - maxR, Math.min(PILL_HALF_W + maxR, rx))
+  if (Math.abs(clampedRx) <= PILL_HALF_W) {
+    // In the straight section — just clamp y
+    const clampedRy = Math.max(-maxR, Math.min(maxR, ry))
+    return { x: ARENA_CX + clampedRx, y: ARENA_CY + clampedRy }
+  }
+  // In a cap — clamp to semicircle
+  const capCx = clampedRx > 0 ? PILL_HALF_W : -PILL_HALF_W
+  const dx = clampedRx - capCx
+  const dy = ry
+  const dist = Math.sqrt(dx * dx + dy * dy)
+  if (dist > maxR && dist > 0.1) {
+    return {
+      x: ARENA_CX + capCx + (dx / dist) * maxR,
+      y: ARENA_CY + (dy / dist) * maxR,
+    }
+  }
+  return { x: ARENA_CX + clampedRx, y: ARENA_CY + ry }
+}
+
+function isInPill(x: number, y: number): boolean {
+  const rx = x - ARENA_CX
+  const ry = y - ARENA_CY
+  if (Math.abs(rx) <= PILL_HALF_W) {
+    return Math.abs(ry) <= PILL_R
+  }
+  const capCx = rx > 0 ? PILL_HALF_W : -PILL_HALF_W
+  const dx = rx - capCx
+  return dx * dx + ry * ry <= PILL_R * PILL_R
+}
 
 export interface Camera {
   x: number  // world position of camera center
@@ -52,16 +146,23 @@ export function updateCamera(
   const halfW = screenW / 2
   const halfH = screenH / 2
 
-  if (arenaShape === 'circle') {
-    // Clamp camera center so it doesn't show too far beyond arena edge
-    const dx = cam.x - ARENA_CX
-    const dy = cam.y - ARENA_CY
-    const dist = Math.sqrt(dx * dx + dy * dy)
-    const maxDist = Math.max(0, ARENA_RADIUS + ARENA_BUFFER - Math.min(halfW, halfH))
-    if (dist > maxDist && dist > 0.1) {
-      cam.x = ARENA_CX + (dx / dist) * maxDist
-      cam.y = ARENA_CY + (dy / dist) * maxDist
-    }
+  if (arenaShape === 'pill') {
+    // Clamp X and Y independently — pill is wider than tall
+    const pillLeft = ARENA_CX - PILL_HALF_W - PILL_R
+    const pillRight = ARENA_CX + PILL_HALF_W + PILL_R
+    const pillTop = ARENA_CY - PILL_R
+    const pillBot = ARENA_CY + PILL_R
+    cam.x = Math.max(pillLeft + halfW - ARENA_BUFFER, Math.min(pillRight - halfW + ARENA_BUFFER, cam.x))
+    cam.y = Math.max(pillTop + halfH - ARENA_BUFFER, Math.min(pillBot - halfH + ARENA_BUFFER, cam.y))
+  } else if (arenaShape === 'hex') {
+    // Hex: width = 2R, height = R*√3 — clamp independently
+    const hexHalfW = ARENA_RADIUS
+    const hexHalfH = ARENA_RADIUS * Math.cos(Math.PI / 6)
+    cam.x = Math.max(ARENA_CX - hexHalfW + halfW - ARENA_BUFFER, Math.min(ARENA_CX + hexHalfW - halfW + ARENA_BUFFER, cam.x))
+    cam.y = Math.max(ARENA_CY - hexHalfH + halfH - ARENA_BUFFER, Math.min(ARENA_CY + hexHalfH - halfH + ARENA_BUFFER, cam.y))
+  } else if (arenaShape === 'circle') {
+    cam.x = Math.max(ARENA_CX - ARENA_RADIUS + halfW - ARENA_BUFFER, Math.min(ARENA_CX + ARENA_RADIUS - halfW + ARENA_BUFFER, cam.x))
+    cam.y = Math.max(ARENA_CY - ARENA_RADIUS + halfH - ARENA_BUFFER, Math.min(ARENA_CY + ARENA_RADIUS - halfH + ARENA_BUFFER, cam.y))
   } else {
     cam.x = Math.max(halfW - ARENA_BUFFER, Math.min(ARENA_W + ARENA_BUFFER - halfW, cam.x))
     cam.y = Math.max(halfH - ARENA_BUFFER, Math.min(ARENA_H + ARENA_BUFFER - halfH, cam.y))
@@ -70,6 +171,12 @@ export function updateCamera(
 
 /** Clamp a position inside the arena */
 export function clampToArena(x: number, y: number, radius: number): { x: number; y: number } {
+  if (arenaShape === 'pill') {
+    return clampToPill(x, y, radius)
+  }
+  if (arenaShape === 'hex') {
+    return clampToHex(x, y, radius)
+  }
   if (arenaShape === 'circle') {
     const dx = x - ARENA_CX
     const dy = y - ARENA_CY
@@ -93,11 +200,22 @@ export function clampToArena(x: number, y: number, radius: number): { x: number;
 export function getSpawnPos(playerX: number, playerY: number, minDist = 250): { x: number; y: number } {
   for (let attempt = 0; attempt < 20; attempt++) {
     let x: number, y: number
-    if (arenaShape === 'circle') {
+    if (arenaShape === 'pill') {
+      // Random point in pill shape
+      const rx = (Math.random() - 0.5) * 2 * (PILL_HALF_W + PILL_R * 0.7)
+      const ry = (Math.random() - 0.5) * 2 * PILL_R * 0.7
+      const c = clampToPill(ARENA_CX + rx, ARENA_CY + ry, 40)
+      x = c.x; y = c.y
+    } else if (arenaShape === 'circle' || arenaShape === 'hex') {
       const angle = Math.random() * Math.PI * 2
-      const dist = Math.random() * (ARENA_RADIUS - 80)
+      const dist = Math.random() * (ARENA_RADIUS * 0.8)
       x = ARENA_CX + Math.cos(angle) * dist
       y = ARENA_CY + Math.sin(angle) * dist
+      // For hex, clamp inside
+      if (arenaShape === 'hex') {
+        const c = clampToHex(x, y, 40)
+        x = c.x; y = c.y
+      }
     } else {
       const margin = 80
       x = margin + Math.random() * (ARENA_W - margin * 2)
@@ -110,15 +228,20 @@ export function getSpawnPos(playerX: number, playerY: number, minDist = 250): { 
     }
   }
   // Fallback
-  if (arenaShape === 'circle') {
+  if (arenaShape === 'pill') {
+    return { x: ARENA_CX, y: ARENA_CY + (Math.random() - 0.5) * PILL_R }
+  }
+  if (arenaShape === 'circle' || arenaShape === 'hex') {
     const angle = Math.random() * Math.PI * 2
-    return { x: ARENA_CX + Math.cos(angle) * ARENA_RADIUS * 0.7, y: ARENA_CY + Math.sin(angle) * ARENA_RADIUS * 0.7 }
+    return { x: ARENA_CX + Math.cos(angle) * ARENA_RADIUS * 0.5, y: ARENA_CY + Math.sin(angle) * ARENA_RADIUS * 0.5 }
   }
   return { x: 80 + Math.random() * 100, y: 80 + Math.random() * 100 }
 }
 
 /** Check if a point is inside the arena */
 export function isInArena(x: number, y: number): boolean {
+  if (arenaShape === 'pill') return isInPill(x, y)
+  if (arenaShape === 'hex') return isInHex(x, y)
   if (arenaShape === 'circle') {
     const dx = x - ARENA_CX
     const dy = y - ARENA_CY

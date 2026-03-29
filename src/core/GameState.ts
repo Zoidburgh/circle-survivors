@@ -1,4 +1,4 @@
-import { createPlayer } from '../entities/Player.ts'
+import { createPlayer, resetPlayer } from '../entities/Player.ts'
 import type { Player } from '../entities/Player.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { SpatialGrid } from './SpatialGrid.ts'
@@ -33,4 +33,19 @@ export function checkLevelUp(): boolean {
     return true
   }
   return false
+}
+
+/** Reset all game state for a new run */
+export function resetGameState(): void {
+  resetPlayer(player)
+  enemies.length = 0
+  grid.clear()
+  const cam = camera
+  cam.x = ARENA_W / 2
+  cam.y = ARENA_H / 2
+  cam.targetX = ARENA_W / 2
+  cam.targetY = ARENA_H / 2
+  phase = 'playing'
+  xpForNextLevel = 5
+  level = 1
 }

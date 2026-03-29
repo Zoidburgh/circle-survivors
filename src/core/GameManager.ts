@@ -12,7 +12,7 @@ import { updateCamera, clampToArena, getArenaShape, setArenaShape } from '../gam
 import { PLAYER_RADIUS } from '../utils/constants.ts'
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on } from './EventBus.ts'
-import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
+import { getEnemyType } from '../entities/EnemyTypes.ts'
 
 let fps = 0
 let frameCount = 0
@@ -23,7 +23,7 @@ let lastFpsTime = performance.now()
 on('totem:spawn', (totemEnemy: Enemy) => {
   const typeName = totemEnemy.totemSpawn
   if (!typeName) return
-  const type = ENEMY_TYPES.find(t => t.name === typeName)
+  const type = getEnemyType(typeName)
   if (!type) return
   // Spawn at a random offset from the totem
   const angle = Math.random() * Math.PI * 2
@@ -52,7 +52,9 @@ export function update(dt: number): void {
   // Toggle arena shape with G key
   if (Input.isKeyDown('g') && !arenaToggleLock) {
     arenaToggleLock = true
-    setArenaShape(getArenaShape() === 'rect' ? 'circle' : 'rect')
+    const shapes = ['rect', 'circle', 'hex', 'pill'] as const
+    const cur = shapes.indexOf(getArenaShape())
+    setArenaShape(shapes[(cur + 1) % shapes.length]!)
   }
   if (!Input.isKeyDown('g')) arenaToggleLock = false
 

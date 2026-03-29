@@ -349,7 +349,8 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   enemy.x = clamped.x
   enemy.y = clamped.y
   if (isBounce && (clamped.x !== prevX || clamped.y !== prevY)) {
-    if (getArenaShape() === 'circle') {
+    const shape = getArenaShape()
+    if (shape === 'circle') {
       // Reflect off circle wall normal
       const nx = (enemy.x - ARENA_CX)
       const ny = (enemy.y - ARENA_CY)
@@ -359,6 +360,20 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
         const nny = ny / nLen
         const dot = enemy.bounceVx * nnx + enemy.bounceVy * nny
         if (dot > 0) {
+          enemy.bounceVx -= 2 * dot * nnx
+          enemy.bounceVy -= 2 * dot * nny
+        }
+      }
+    } else if (shape === 'hex' || shape === 'pill') {
+      // Reflect off hex edge — use displacement as wall normal
+      const dnx = enemy.x - prevX
+      const dny = enemy.y - prevY
+      const dLen = Math.sqrt(dnx * dnx + dny * dny)
+      if (dLen > 0.01) {
+        const nnx = dnx / dLen
+        const nny = dny / dLen
+        const dot = enemy.bounceVx * nnx + enemy.bounceVy * nny
+        if (dot < 0) {
           enemy.bounceVx -= 2 * dot * nnx
           enemy.bounceVy -= 2 * dot * nny
         }

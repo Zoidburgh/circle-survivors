@@ -114,6 +114,34 @@ export function createPlayer(x: number, y: number): Player {
   }
 }
 
+/** Reset player to initial state — call on run restart */
+export function resetPlayer(player: Player): void {
+  player.x = ARENA_W / 2
+  player.y = ARENA_H / 2
+  player.hp = PLAYER_MAX_HP
+  player.maxHp = PLAYER_MAX_HP
+  player.displayHp = PLAYER_MAX_HP
+  player.damage = PLAYER_BASE_DAMAGE
+  player.facingAngle = 0
+  player.attackTimer = -1
+  player.hitFlash = 0
+  player.dashTimer = -1
+  player.dashDirX = 0
+  player.dashDirY = 0
+  player.dashMaxCharges = DASH_MAX_CHARGES
+  player.dashSlots = Array(DASH_MAX_CHARGES).fill(0)
+  player.trail = []
+  player.trailTimer = 0
+  player.prevX = ARENA_W / 2
+  player.prevY = ARENA_H / 2
+  player.dashStartX = ARENA_W / 2
+  player.dashStartY = ARENA_H / 2
+  player.xp = 0
+  player.extraRingTimers = [-1, -1, -1, -1]
+  player.extraRingCount = 0
+  player.modifiers = createDefaultModifiers()
+}
+
 export function getEffectiveRadius(player: Player): number {
   return player.ring.radius * player.modifiers.ringRadiusMult
 }
