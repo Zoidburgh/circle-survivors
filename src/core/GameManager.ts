@@ -12,6 +12,7 @@ import { updateCamera, clampToArena, getArenaShape, setArenaShape } from '../gam
 import { PLAYER_RADIUS } from '../utils/constants.ts'
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on } from './EventBus.ts'
+import { perfStart, perfEnd } from '../render/Renderer.ts'
 import { getEnemyType } from '../entities/EnemyTypes.ts'
 
 let fps = 0
@@ -52,7 +53,7 @@ export function update(dt: number): void {
   // Toggle arena shape with G key
   if (Input.isKeyDown('g') && !arenaToggleLock) {
     arenaToggleLock = true
-    const shapes = ['rect', 'circle', 'hex', 'pill'] as const
+    const shapes = ['rect', 'circle', 'hex', 'pill', 'cross'] as const
     const cur = shapes.indexOf(getArenaShape())
     setArenaShape(shapes[(cur + 1) % shapes.length]!)
   }
@@ -85,6 +86,7 @@ export function update(dt: number): void {
   updateOrbs(dt)
 
   // Multi-pass separation — resolve congestion (3 iterations)
+  perfStart('separation')
   const orbs = getOrbs()
   for (let pass = 0; pass < 3; pass++) {
     // Build grid with enemies + orbs
@@ -204,6 +206,7 @@ export function update(dt: number): void {
     player.y = pc.y
   }
 
+  perfEnd('separation')
   cleanupOrbs()
 
   // Prune dead enemies (swap-and-pop)

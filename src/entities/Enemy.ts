@@ -364,7 +364,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
           enemy.bounceVy -= 2 * dot * nny
         }
       }
-    } else if (shape === 'hex' || shape === 'pill') {
+    } else if (shape === 'hex' || shape === 'pill' || shape === 'cross') {
       // Reflect off hex edge — use displacement as wall normal
       const dnx = enemy.x - prevX
       const dny = enemy.y - prevY

@@ -7,7 +7,7 @@ import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
 import { getPattern, getLoopPosition, getLoopLength } from '../audio/PatternClock.ts'
 import { getPreviewEnemy } from '../game/EnemyDesigner.ts'
 import type { Camera } from '../game/Arena.ts'
-import { ARENA_W, ARENA_H, ARENA_RADIUS, ARENA_CX, ARENA_CY, PILL_R, PILL_HALF_W, getArenaShape, getHexVertices } from '../game/Arena.ts'
+import { ARENA_W, ARENA_H, ARENA_RADIUS, ARENA_CX, ARENA_CY, PILL_R, PILL_HALF_W, CROSS_HW, CROSS_HE, getArenaShape, getHexVertices, getCrossVertices } from '../game/Arena.ts'
 import { getBlockedArcs } from '../game/RingOcclusion.ts'
 import type { BlockedArc } from '../game/RingOcclusion.ts'
 import { getEnemies } from '../core/GameState.ts'
@@ -54,6 +54,32 @@ let dashSweepStartY = 0
 let dashSweepEndX = 0
 let dashSweepEndY = 0
 let dashSweepRadius = 0
+const crossWavePts: number[] = []  // reused per frame for cross waveform
+
+// ── Perf tracking ──
+const perfTimers: Record<string, number> = {}
+let perfDisplay: Record<string, number> = {}
+let perfAccum: Record<string, number> = {}
+let perfFrames = 0
+
+export function perfStart(label: string): void {
+  perfTimers[label] = performance.now()
+}
+export function perfEnd(label: string): void {
+  const start = perfTimers[label]
+  if (start !== undefined) {
+    perfAccum[label] = (perfAccum[label] ?? 0) + (performance.now() - start)
+  }
+}
+function perfFlush(): void {
+  perfFrames++
+  if (perfFrames >= 60) {
+    perfDisplay = { ...perfAccum }
+    for (const k of Object.keys(perfAccum)) perfAccum[k] = 0
+    perfFrames = 0
+  }
+}
+export function getPerfDisplay(): Record<string, number> { return perfDisplay }
 
 // Death ripples
 interface DeathRipple {
@@ -233,6 +259,39 @@ function hexPathScreen(cx: number, cy: number, r: number): void {
   ctx.closePath()
 }
 
+/** Add a cross subpath from world-space vertices (no beginPath) */
+function crossPath(cx: number, cy: number, ccw = false): void {
+  const verts = getCrossVertices(cx + camX, cy + camY)
+  const len = verts.length
+  for (let i = 0; i < len; i++) {
+    const idx = ccw ? len - 1 - i : i
+    const vx = verts[idx]!.x - camX
+    const vy = verts[idx]!.y - camY
+    if (i === 0) ctx.moveTo(vx, vy)
+    else ctx.lineTo(vx, vy)
+  }
+  ctx.closePath()
+}
+
+/** Add a cross subpath at screen coords with offset */
+function crossPathScreen(cx: number, cy: number, offset = 0): void {
+  const hw = CROSS_HW + offset, he = CROSS_HE + offset
+  const pts = [
+    [cx - hw, cy - he], [cx + hw, cy - he],
+    [cx + hw, cy - hw], [cx + he, cy - hw],
+    [cx + he, cy + hw], [cx + hw, cy + hw],
+    [cx + hw, cy + he], [cx - hw, cy + he],
+    [cx - hw, cy + hw], [cx - he, cy + hw],
+    [cx - he, cy - hw], [cx - hw, cy - hw],
+  ]
+  ctx.beginPath()
+  for (let i = 0; i < pts.length; i++) {
+    if (i === 0) ctx.moveTo(pts[i]![0]!, pts[i]![1]!)
+    else ctx.lineTo(pts[i]![0]!, pts[i]![1]!)
+  }
+  ctx.closePath()
+}
+
 /** Add a pill/stadium subpath (no beginPath — caller controls that) */
 function pillPath(cx: number, cy: number, halfW: number, r: number, ccw = false): void {
   if (ccw) {
@@ -272,14 +331,23 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   ctx.fillStyle = '#0D0A1A'
   ctx.fillRect(0, 0, width, height)
 
+  perfStart('grid')
   drawGrid(player)
+  perfEnd('grid')
   drawArenaBorder(player)
+  perfStart('ripples')
   updateAndDrawDeathRipples(lastDt)
+  perfEnd('ripples')
 
   // Clip rings and particles to arena bounds
+  perfStart('clip')
   ctx.save()
   const shape = getArenaShape()
-  if (shape === 'pill') {
+  if (shape === 'cross') {
+    // Use bounding box clip instead of 12-vertex polygon — polygon clips kill GPU perf
+    ctx.beginPath()
+    ctx.rect(ARENA_CX - CROSS_HE - camX, ARENA_CY - CROSS_HE - camY, CROSS_HE * 2, CROSS_HE * 2)
+  } else if (shape === 'pill') {
     ctx.beginPath()
     pillPath(ARENA_CX - camX, ARENA_CY - camY, PILL_HALF_W, PILL_R)
   } else if (shape === 'hex') {
@@ -292,7 +360,9 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     ctx.rect(-camX, -camY, ARENA_W, ARENA_H)
   }
   ctx.clip()
+  perfEnd('clip')
 
+  perfStart('enemies')
   for (const enemy of enemies) {
     if (!enemy.alive && !enemy.dying) continue
     if (!enemy.dying) {
@@ -305,14 +375,18 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     drawEnemy(enemy, player)
   }
 
+  perfEnd('enemies')
+
   // Dash sweep band — snap on at explosion, smooth fade out
   {
     const pastPeak = player.attackTimer - ATTACK_EXPAND_TIME
     if (player.dashTimer >= 0 && pastPeak >= 0 && pastPeak < 0.03) {
       // Snap: capture sweep state at explosion
       dashSweepIntensity = 1
-      dashSweepStartX = player.dashStartX
-      dashSweepStartY = player.dashStartY
+      // Match the 30% cap from HitDetection
+      const capT = 0.55
+      dashSweepStartX = player.dashStartX + (player.x - player.dashStartX) * capT
+      dashSweepStartY = player.dashStartY + (player.y - player.dashStartY) * capT
       dashSweepEndX = player.x
       dashSweepEndY = player.y
       dashSweepRadius = getEffectiveRadius(player) * getRingExpansion(player.attackTimer)
@@ -341,7 +415,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
           const t = s / fillSteps
           const sx = dashSweepStartX + (dashSweepEndX - dashSweepStartX) * t - camX
           const sy = dashSweepStartY + (dashSweepEndY - dashSweepStartY) * t - camY
-          if (s === 0) ctx.moveTo(sx + edgeR, sy)
+          ctx.moveTo(sx + edgeR, sy)
           ctx.arc(sx, sy, edgeR, 0, Math.PI * 2)
         }
         ctx.strokeStyle = `rgba(255, 80, 80, ${0.18 * fade})`
@@ -366,6 +440,24 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   drawDesignerPreview(player)
   drawSpawnPanel()
   drawHUD(player, enemies, fps)
+  perfFlush()
+
+  // Perf overlay — below HUD info
+  const perf = perfDisplay
+  const perfKeys = Object.keys(perf)
+  if (perfKeys.length > 0) {
+    const perfY = 140
+    ctx.fillStyle = 'rgba(0,0,0,0.6)'
+    ctx.fillRect(width - 180, perfY, 180, perfKeys.length * 14 + 8)
+    ctx.font = '11px monospace'
+    let py = perfY + 14
+    for (const k of perfKeys) {
+      const ms = perf[k]! / 60
+      ctx.fillStyle = ms > 2 ? '#FF5252' : ms > 1 ? '#FFD740' : '#888'
+      ctx.fillText(`${k}: ${ms.toFixed(2)}ms`, width - 174, py)
+      py += 14
+    }
+  }
 }
 
 function drawGrid(player: Player): void {
@@ -412,18 +504,22 @@ function drawArenaBorder(player: Player): void {
   const acx = ARENA_CX - camX  // arena center in screen coords
   const acy = ARENA_CY - camY
 
+  perfStart('buf_zone')
   // Dark buffer zone
   if (isRound) {
     const pillExtent = PILL_HALF_W + PILL_R
-    const bufInner = arenaShape === 'pill' ? pillExtent : ARENA_RADIUS * 0.85
-    const bufOuter = arenaShape === 'pill' ? pillExtent + buffer : ARENA_RADIUS + buffer
+    const shapeExtent = arenaShape === 'pill' ? pillExtent : arenaShape === 'cross' ? CROSS_HE : ARENA_RADIUS
+    const bufInner = shapeExtent * 0.85
+    const bufOuter = shapeExtent + buffer
     const bufGrad = ctx.createRadialGradient(acx, acy, bufInner, acx, acy, bufOuter)
     bufGrad.addColorStop(0, 'rgba(0, 0, 0, 0.3)')
     bufGrad.addColorStop(1, 'rgba(0, 0, 0, 0.85)')
     ctx.save()
     ctx.beginPath()
     ctx.rect(0, 0, width, height)
-    if (arenaShape === 'pill') {
+    if (arenaShape === 'cross') {
+      crossPath(acx, acy, true)
+    } else if (arenaShape === 'pill') {
       pillPath(acx, acy, PILL_HALF_W, PILL_R, true)
     } else if (arenaShape === 'hex') {
       const verts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
@@ -473,11 +569,16 @@ function drawArenaBorder(player: Player): void {
     ctx.fillRect(x + w, y + h, buffer, buffer)
   }
 
+  perfEnd('buf_zone')
+  perfStart('glow')
   // Arena border — layered glow with beat pulse
   const drawBorder = (alpha: number, lw: number, offset = 0) => {
     ctx.strokeStyle = `rgba(79, 195, 247, ${alpha})`
     ctx.lineWidth = lw
-    if (arenaShape === 'pill') {
+    if (arenaShape === 'cross') {
+      crossPathScreen(acx, acy, offset)
+      ctx.stroke()
+    } else if (arenaShape === 'pill') {
       ctx.beginPath()
       pillPath(acx, acy, PILL_HALF_W, PILL_R + offset)
       ctx.stroke()
@@ -497,6 +598,8 @@ function drawArenaBorder(player: Player): void {
   drawBorder(0.12 + beatPulse * 0.1, 8, 0)
   drawBorder(0.4 + beatPulse * 0.25, 2, 0)
 
+  perfEnd('glow')
+  perfStart('waveform')
   // Waveform line — spikes on beat, flattens out smoothly
   if (borderWaveIntensity > 0.005) {
     const baseAmp = borderWaveIntensity * 11
@@ -522,7 +625,53 @@ function drawArenaBorder(player: Player): void {
       return 0.3 + h * 0.7
     }
 
-    if (arenaShape === 'pill') {
+    if (arenaShape === 'cross') {
+      // Cross waveform — compute points once, stroke 3 times
+      const crossStep = 12
+      const verts = getCrossVertices(ARENA_CX, ARENA_CY)
+      crossWavePts.length = 0
+      let totalLen = 0
+      for (let e = 0; e < 12; e++) {
+        const v0 = verts[e]!
+        const v1 = verts[(e + 1) % 12]!
+        const edx = v1.x - v0.x, edy = v1.y - v0.y
+        const edgeLen = Math.sqrt(edx * edx + edy * edy)
+        if (edgeLen < 1) continue
+        const enx = edy / edgeLen, eny = -edx / edgeLen
+        const midX = v0.x + edx * 0.5, midY = v0.y + edy * 0.5
+        const pdx = midX - px, pdy = midY - py
+        const prox = 0.3 + 0.7 * Math.max(0, 1 - Math.sqrt(pdx * pdx + pdy * pdy) / (CROSS_HE * 2))
+        const edgeSteps = Math.ceil(edgeLen / crossStep)
+        for (let s = 0; s <= edgeSteps; s++) {
+          const frac = s / edgeSteps
+          const wx = v0.x + edx * frac - camX
+          const wy = v0.y + edy * frac - camY
+          const wave = Math.sin(totalLen * freq + t) * baseAmp * prox * vary(Math.floor(totalLen), e)
+          crossWavePts.push(wx + enx * wave, wy + eny * wave)
+          totalLen += crossStep
+        }
+      }
+      // Stroke the same path 3 times with different styles
+      const strokeCrossWave = (lw: number, style: string) => {
+        ctx.beginPath()
+        for (let i = 0; i < crossWavePts.length; i += 2) {
+          const sx = crossWavePts[i]!, sy = crossWavePts[i + 1]!
+          if (i === 0) ctx.moveTo(sx, sy)
+          else {
+            const cpx = (crossWavePts[i - 2]! + sx) / 2
+            const cpy = (crossWavePts[i - 1]! + sy) / 2
+            ctx.quadraticCurveTo(crossWavePts[i - 2]!, crossWavePts[i - 1]!, cpx, cpy)
+          }
+        }
+        ctx.closePath()
+        ctx.lineWidth = lw
+        ctx.strokeStyle = style
+        ctx.stroke()
+      }
+      strokeCrossWave(outerWidth, `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.15})`)
+      strokeCrossWave(midWidth, `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.35})`)
+      strokeCrossWave(coreWidth, `rgba(${cr}, ${cg}, ${cb}, ${alpha})`)
+    } else if (arenaShape === 'pill') {
       // Pill waveform — traces stadium perimeter
       const proximity = (wx: number, wy: number) => {
         const dx = wx - px
@@ -731,6 +880,8 @@ function drawArenaBorder(player: Player): void {
     }
   }
 
+  perfEnd('waveform')
+  perfStart('outer_pulse')
   // Outer pulse — only outside the arena, clip out the arena rect
   {
     // Smooth follower — eases toward borderWaveIntensity, no harsh flash
@@ -743,14 +894,16 @@ function drawArenaBorder(player: Player): void {
     const pulseAlpha = 0.05 + outerPulseIntensity * 0.18
     const pcx = isRound ? acx : x + w / 2
     const pcy = isRound ? acy : y + h / 2
-    const innerR = arenaShape === 'pill' ? PILL_HALF_W + PILL_R : isRound ? ARENA_RADIUS : Math.min(w, h) / 2
+    const innerR = arenaShape === 'pill' ? PILL_HALF_W + PILL_R : arenaShape === 'cross' ? CROSS_HE : isRound ? ARENA_RADIUS : Math.min(w, h) / 2
     const outerR = Math.max(width, height)
 
     ctx.save()
     // Clip to outside arena only
     ctx.beginPath()
     ctx.rect(0, 0, width, height)
-    if (arenaShape === 'pill') {
+    if (arenaShape === 'cross') {
+      crossPath(acx, acy, true)
+    } else if (arenaShape === 'pill') {
       pillPath(acx, acy, PILL_HALF_W, PILL_R, true)
     } else if (arenaShape === 'hex') {
       const verts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
@@ -775,6 +928,7 @@ function drawArenaBorder(player: Player): void {
     ctx.fillRect(0, 0, width, height)
     ctx.restore()
   }
+  perfEnd('outer_pulse')
 }
 
 /** Normalize, split wrapping arcs, merge overlaps, return sorted non-overlapping arcs */
@@ -1019,7 +1173,10 @@ function drawPlayer(player: Player): void {
   // Movement trail — clipped to arena
   ctx.save()
   const trailShape = getArenaShape()
-  if (trailShape === 'pill') {
+  if (trailShape === 'cross') {
+    ctx.beginPath()
+    ctx.rect(ARENA_CX - CROSS_HE - camX, ARENA_CY - CROSS_HE - camY, CROSS_HE * 2, CROSS_HE * 2)
+  } else if (trailShape === 'pill') {
     ctx.beginPath()
     pillPath(ARENA_CX - camX, ARENA_CY - camY, PILL_HALF_W, PILL_R)
   } else if (trailShape === 'hex') {

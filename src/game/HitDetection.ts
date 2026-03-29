@@ -28,8 +28,15 @@ export function initHitDetection(): void {
     const ringRadius = getEffectiveRadius(player) * getRingExpansion(activeTimer)
 
     const isDashing = player.dashTimer >= 0
-    const sweepFromX = isDashing ? player.dashStartX : player.prevX
-    const sweepFromY = isDashing ? player.dashStartY : player.prevY
+    // Cap dash sweep to last 30% of dash path — prevents full backtrack
+    const DASH_SWEEP_CAP = 0.45
+    const dashCapT = isDashing ? 1 - DASH_SWEEP_CAP : 0
+    const sweepFromX = isDashing
+      ? player.dashStartX + (player.x - player.dashStartX) * dashCapT
+      : player.prevX
+    const sweepFromY = isDashing
+      ? player.dashStartY + (player.y - player.dashStartY) * dashCapT
+      : player.prevY
     const steps = isDashing ? 8 : 4
     const grace = isDashing ? HIT_GRACE + 6 : HIT_GRACE
     const hitEnemies = new Set<Enemy>()

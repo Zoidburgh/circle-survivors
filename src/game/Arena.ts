@@ -3,7 +3,7 @@
 
 import { ARENA_BUFFER, CAMERA_LEAD_AMOUNT } from '../utils/constants.ts'
 
-export type ArenaShape = 'rect' | 'circle' | 'hex' | 'pill'
+export type ArenaShape = 'rect' | 'circle' | 'hex' | 'pill' | 'cross'
 
 // ── Configuration ──
 let arenaShape: ArenaShape = 'rect'
@@ -18,6 +18,66 @@ export const ARENA_CY = ARENA_H / 2  // center Y (used by both modes)
 export const PILL_R = 550       // cap radius
 export const PILL_HALF_W = 500  // half-length of straight section
 // Total width = PILL_HALF_W * 2 + PILL_R * 2 = 2100, height = PILL_R * 2 = 1100
+
+// ── Cross geometry ──
+// Plus/cross shape: two overlapping rectangles centered on ARENA_CX/CY
+export const CROSS_HW = 350   // half-width of each arm
+export const CROSS_HE = 1000  // half-extent from center to arm tip
+// Total: 2000x2000, arm width 700px
+
+/** Get the 12 vertices of the cross outline (clockwise) */
+export function getCrossVertices(cx: number, cy: number): { x: number; y: number }[] {
+  const hw = CROSS_HW, he = CROSS_HE
+  return [
+    { x: cx - hw, y: cy - he },  // top arm, top-left
+    { x: cx + hw, y: cy - he },  // top arm, top-right
+    { x: cx + hw, y: cy - hw },  // inner corner, top-right
+    { x: cx + he, y: cy - hw },  // right arm, top
+    { x: cx + he, y: cy + hw },  // right arm, bottom
+    { x: cx + hw, y: cy + hw },  // inner corner, bottom-right
+    { x: cx + hw, y: cy + he },  // bottom arm, bottom-right
+    { x: cx - hw, y: cy + he },  // bottom arm, bottom-left
+    { x: cx - hw, y: cy + hw },  // inner corner, bottom-left
+    { x: cx - he, y: cy + hw },  // left arm, bottom
+    { x: cx - he, y: cy - hw },  // left arm, top
+    { x: cx - hw, y: cy - hw },  // inner corner, top-left
+  ]
+}
+
+function isInCross(x: number, y: number): boolean {
+  const rx = Math.abs(x - ARENA_CX)
+  const ry = Math.abs(y - ARENA_CY)
+  // In horizontal arm OR vertical arm
+  return (rx <= CROSS_HE && ry <= CROSS_HW) || (rx <= CROSS_HW && ry <= CROSS_HE)
+}
+
+function clampToCross(x: number, y: number, entityRadius: number): { x: number; y: number } {
+  const hw = CROSS_HW - entityRadius
+  const he = CROSS_HE - entityRadius
+  const rx = x - ARENA_CX
+  const ry = y - ARENA_CY
+
+  // Check if already inside
+  const inH = Math.abs(rx) <= he && Math.abs(ry) <= hw  // horizontal arm
+  const inV = Math.abs(rx) <= hw && Math.abs(ry) <= he  // vertical arm
+  if (inH || inV) return { x, y }
+
+  // Outside: find closest point in the cross
+  // Clamp to horizontal arm
+  const hx = Math.max(-he, Math.min(he, rx))
+  const hy = Math.max(-hw, Math.min(hw, ry))
+  const hDist = (rx - hx) * (rx - hx) + (ry - hy) * (ry - hy)
+
+  // Clamp to vertical arm
+  const vx = Math.max(-hw, Math.min(hw, rx))
+  const vy = Math.max(-he, Math.min(he, ry))
+  const vDist = (rx - vx) * (rx - vx) + (ry - vy) * (ry - vy)
+
+  if (hDist <= vDist) {
+    return { x: ARENA_CX + hx, y: ARENA_CY + hy }
+  }
+  return { x: ARENA_CX + vx, y: ARENA_CY + vy }
+}
 
 export function getArenaShape(): ArenaShape { return arenaShape }
 export function setArenaShape(shape: ArenaShape): void { arenaShape = shape }
@@ -146,8 +206,10 @@ export function updateCamera(
   const halfW = screenW / 2
   const halfH = screenH / 2
 
-  if (arenaShape === 'pill') {
-    // Clamp X and Y independently — pill is wider than tall
+  if (arenaShape === 'cross') {
+    cam.x = Math.max(ARENA_CX - CROSS_HE + halfW - ARENA_BUFFER, Math.min(ARENA_CX + CROSS_HE - halfW + ARENA_BUFFER, cam.x))
+    cam.y = Math.max(ARENA_CY - CROSS_HE + halfH - ARENA_BUFFER, Math.min(ARENA_CY + CROSS_HE - halfH + ARENA_BUFFER, cam.y))
+  } else if (arenaShape === 'pill') {
     const pillLeft = ARENA_CX - PILL_HALF_W - PILL_R
     const pillRight = ARENA_CX + PILL_HALF_W + PILL_R
     const pillTop = ARENA_CY - PILL_R
@@ -171,6 +233,9 @@ export function updateCamera(
 
 /** Clamp a position inside the arena */
 export function clampToArena(x: number, y: number, radius: number): { x: number; y: number } {
+  if (arenaShape === 'cross') {
+    return clampToCross(x, y, radius)
+  }
   if (arenaShape === 'pill') {
     return clampToPill(x, y, radius)
   }
@@ -200,7 +265,18 @@ export function clampToArena(x: number, y: number, radius: number): { x: number;
 export function getSpawnPos(playerX: number, playerY: number, minDist = 250): { x: number; y: number } {
   for (let attempt = 0; attempt < 20; attempt++) {
     let x: number, y: number
-    if (arenaShape === 'pill') {
+    if (arenaShape === 'cross') {
+      // Random point in one of the two arms
+      if (Math.random() < 0.5) {
+        // Horizontal arm
+        x = ARENA_CX + (Math.random() - 0.5) * 2 * (CROSS_HE - 40)
+        y = ARENA_CY + (Math.random() - 0.5) * 2 * (CROSS_HW - 40)
+      } else {
+        // Vertical arm
+        x = ARENA_CX + (Math.random() - 0.5) * 2 * (CROSS_HW - 40)
+        y = ARENA_CY + (Math.random() - 0.5) * 2 * (CROSS_HE - 40)
+      }
+    } else if (arenaShape === 'pill') {
       // Random point in pill shape
       const rx = (Math.random() - 0.5) * 2 * (PILL_HALF_W + PILL_R * 0.7)
       const ry = (Math.random() - 0.5) * 2 * PILL_R * 0.7
@@ -228,6 +304,9 @@ export function getSpawnPos(playerX: number, playerY: number, minDist = 250): { 
     }
   }
   // Fallback
+  if (arenaShape === 'cross') {
+    return { x: ARENA_CX, y: ARENA_CY }
+  }
   if (arenaShape === 'pill') {
     return { x: ARENA_CX, y: ARENA_CY + (Math.random() - 0.5) * PILL_R }
   }
@@ -240,6 +319,7 @@ export function getSpawnPos(playerX: number, playerY: number, minDist = 250): { 
 
 /** Check if a point is inside the arena */
 export function isInArena(x: number, y: number): boolean {
+  if (arenaShape === 'cross') return isInCross(x, y)
   if (arenaShape === 'pill') return isInPill(x, y)
   if (arenaShape === 'hex') return isInHex(x, y)
   if (arenaShape === 'circle') {
