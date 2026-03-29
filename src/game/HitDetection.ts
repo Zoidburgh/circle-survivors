@@ -8,7 +8,8 @@ import { distance } from '../utils/math.ts'
 import { HIT_FLASH_DURATION, HIT_GRACE, CHILL_MAX_STACKS } from '../utils/constants.ts'
 import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playCollect } from '../audio/AudioEngine.ts'
 import { getBlockedArcs, isTargetBlocked } from './RingOcclusion.ts'
-import { spawnOrb, getOrbs, collectOrb, ORB_HP_HEAL, ORB_HP_DROP_CHANCE } from '../entities/XPOrb.ts'
+import { spawnOrb, collectOrb, ORB_HP_HEAL } from '../entities/XPOrb.ts'
+import type { XPOrb } from '../entities/XPOrb.ts'
 import { hasBonus } from './UpgradeManager.ts'
 
 export function initHitDetection(): void {
@@ -42,6 +43,7 @@ export function initHitDetection(): void {
       const ringEntity = { x: sx, y: sy, radius: ringRadius }
       const nearby = grid.query(ringEntity)
       for (const entity of nearby) {
+        if (!('hp' in entity)) continue  // skip orbs
         const enemy = entity as Enemy
         if (!enemy.alive || hitEnemies.has(enemy)) continue
         const dist = distance({ x: sx, y: sy }, { x: enemy.x, y: enemy.y })
@@ -71,14 +73,17 @@ export function initHitDetection(): void {
       spawnOrb(dead.x, dead.y, orbValue, dead.dropType)
     }
 
-    // Check orbs along the same sweep — collect first, then apply XP
-    const orbs = getOrbs()
-    const collectedOrbs = new Set<typeof orbs[number]>()
+    // Check orbs along the same sweep (grid-accelerated)
+    const collectedOrbs = new Set<XPOrb>()
     for (let s = 0; s <= steps; s++) {
       const t = s / steps
       const sx = sweepFromX + (player.x - sweepFromX) * t
       const sy = sweepFromY + (player.y - sweepFromY) * t
-      for (const orb of orbs) {
+      const ringEntity = { x: sx, y: sy, radius: ringRadius }
+      const nearbyOrbs = grid.query(ringEntity)
+      for (const entity of nearbyOrbs) {
+        if ('hp' in entity) continue  // skip enemies
+        const orb = entity as XPOrb
         if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
         if (collectedOrbs.has(orb)) continue
         const odx = sx - orb.x

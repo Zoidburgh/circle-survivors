@@ -59,15 +59,21 @@ export function update(dt: number): void {
   advanceGlobalTime(dt)
   advancePatternClock(dt)
   updatePreviewEnemy(dt)
-  updatePlayer(player, dt)
 
-  const dir = Input.getMovementDir()
-  updateCamera(cam, player.x, player.y, dir.x, dir.y, window.innerWidth, window.innerHeight, dt)
-
+  // Build grid before player update so beat hit-detection can query enemies + orbs
   grid.clear()
   for (const enemy of enemies) {
     if (enemy.alive) grid.insert(enemy)
   }
+  const allOrbs = getOrbs()
+  for (const orb of allOrbs) {
+    if (orb.alive && !orb.dying) grid.insert(orb)
+  }
+
+  updatePlayer(player, dt)
+
+  const dir = Input.getMovementDir()
+  updateCamera(cam, player.x, player.y, dir.x, dir.y, window.innerWidth, window.innerHeight, dt)
 
   for (const enemy of enemies) {
     updateDeath(enemy, dt)
@@ -122,7 +128,7 @@ export function update(dt: number): void {
       enemy.y = ec.y
     }
 
-    // Player pushes orbs first
+    // Player pushes orbs
     for (const orb of orbs) {
       if (!orb.alive || orb.dying) continue
       const pdx = orb.x - player.x
@@ -136,16 +142,7 @@ export function update(dt: number): void {
       }
     }
 
-    // Rebuild grid with updated positions for orb queries
-    grid.clear()
-    for (const enemy of enemies) {
-      if (enemy.alive && !enemy.dying) grid.insert(enemy)
-    }
-    for (const orb of orbs) {
-      if (orb.alive && !orb.dying) grid.insert(orb)
-    }
-
-    // Orb separation (grid-accelerated)
+    // Orb separation (grid-accelerated, uses same grid build from top of pass)
     for (const orb of orbs) {
       if (!orb.alive || orb.dying) continue
       const nearby = grid.query(orb)

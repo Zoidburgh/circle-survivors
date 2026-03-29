@@ -10,6 +10,7 @@ export class SpatialGrid {
   private cellSize: number
   private keysBuffer: number[] = []
   private queryBuffer: GridEntity[] = []
+  private querySet = new Set<GridEntity>()
 
   constructor(cellSize: number) {
     this.cellSize = cellSize
@@ -39,13 +40,16 @@ export class SpatialGrid {
 
   query(e: GridEntity): GridEntity[] {
     this.queryBuffer.length = 0
+    this.querySet.clear()
+    this.querySet.add(e)  // exclude self
     this.computeKeys(e)
     for (let i = 0; i < this.keysBuffer.length; i++) {
       const cell = this.cells.get(this.keysBuffer[i]!)
       if (cell) {
         for (let j = 0; j < cell.length; j++) {
           const x = cell[j]!
-          if (x !== e && !this.queryBuffer.includes(x)) {
+          if (!this.querySet.has(x)) {
+            this.querySet.add(x)
             this.queryBuffer.push(x)
           }
         }
