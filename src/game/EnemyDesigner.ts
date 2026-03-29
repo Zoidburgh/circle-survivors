@@ -68,13 +68,22 @@ function resolveNameConflict(name: string): string {
 
 function exportEnemies(): void {
   const data: SaveData = { version: SAVE_VERSION, enemies: designedEnemies }
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'circle-survivors-enemies.json'
-  a.click()
-  URL.revokeObjectURL(url)
+  const json = JSON.stringify(data, null, 2)
+  // Save to project folder via dev server
+  fetch('/api/save-enemies', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: json,
+  }).catch(() => {
+    // Fallback: download if dev server unavailable (production)
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'circle-survivors-enemies.json'
+    a.click()
+    URL.revokeObjectURL(url)
+  })
 }
 
 function importEnemies(): void {
@@ -259,7 +268,7 @@ export function initDesigner(): void {
 
   panel.querySelector('#ed-close')!.addEventListener('click', toggleDesigner)
   panel.querySelector('#ed-add')!.addEventListener('click', () => addEnemyForm())
-  panel.querySelector('#ed-export')!.addEventListener('click', exportEnemies)
+  panel.querySelector('#ed-export')!.addEventListener('click', () => exportEnemies())
   panel.querySelector('#ed-import')!.addEventListener('click', importEnemies)
 
   // Collapsible enemy section
@@ -628,6 +637,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     div.style.borderColor = 'rgba(100,255,120,0.5)'
     setTimeout(() => div.style.borderColor = 'rgba(255,255,255,0.1)', 400)
     saveToStorage()
+    exportEnemies()  // auto-save to project folder
   })
 
   // Spawn

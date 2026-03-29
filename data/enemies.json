@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "enemies": [
+    {
+      "name": "Enemy3",
+      "color": "#ffeb3b",
+      "hp": 10,
+      "moveSpeed": 100,
+      "radius": 70,
+      "ringRadius": 120,
+      "key": "2",
+      "role": "pop",
+      "sound": "pop",
+      "beats": [],
+      "rings": [],
+      "blocksRings": true,
+      "movePattern": "zigzag"
+    },
+    {
+      "name": "Enemy5",
+      "color": "#ab47bc",
+      "hp": 2,
+      "moveSpeed": 300,
+      "radius": 40,
+      "ringRadius": 140,
+      "key": "5",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0.5,
+        2,
+        4.5,
+        6
+      ],
+      "rings": [
+        {
+          "ringRadius": 140,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            2,
+            4.5,
+            6
+          ]
+        }
+      ],
+      "blocksRings": false,
+      "movePattern": "bounce"
+    },
+    {
+      "name": "Enemy6",
+      "color": "#4fc3f7",
+      "hp": 10,
+      "moveSpeed": 50,
+      "radius": 60,
+      "ringRadius": 300,
+      "key": "6",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0.5,
+        1.5,
+        2.5,
+        3.5,
+        4.5,
+        5.5,
+        6.5,
+        7.5
+      ],
+      "rings": [
+        {
+          "ringRadius": 300,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ]
+        }
+      ],
+      "blocksRings": true,
+      "movePattern": "pursue",
+      "immovable": false,
+      "totemSpawn": ""
+    },
+    {
+      "name": "Test_Save",
+      "color": "#ab47bc",
+      "hp": 2,
+      "moveSpeed": 50,
+      "radius": 40,
+      "ringRadius": 140,
+      "key": "5",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0.5,
+        1.5,
+        2.5,
+        3.5,
+        4.5,
+        5.5,
+        6.5,
+        7.5
+      ],
+      "rings": [
+        {
+          "ringRadius": 140,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ]
+        }
+      ],
+      "blocksRings": false,
+      "movePattern": "pursue",
+      "totemSpawn": "Enemy3",
+      "dropType": "xp"
+    }
+  ]
+}
