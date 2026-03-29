@@ -40,7 +40,7 @@ window.addEventListener('keydown', e => {
     }
   }
   if (e.key === '0') {
-    for (let i = 0; i < 100; i++) {
+    for (let i = 0; i < 10; i++) {
       const type = ENEMY_TYPES[Math.floor(Math.random() * ENEMY_TYPES.length)]!
       spawnEnemy(type)
     }

@@ -405,7 +405,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
         const sy = dashSweepStartY + (dashSweepEndY - dashSweepStartY) * t - camY
         ctx.beginPath()
         ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 80, 80, ${0.04 * fade})`
+        ctx.strokeStyle = `rgba(255, 80, 80, ${0.06 * fade})`
         ctx.lineWidth = grace * 2
         ctx.stroke()
       }
@@ -418,7 +418,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
           ctx.moveTo(sx + edgeR, sy)
           ctx.arc(sx, sy, edgeR, 0, Math.PI * 2)
         }
-        ctx.strokeStyle = `rgba(255, 80, 80, ${0.18 * fade})`
+        ctx.strokeStyle = `rgba(255, 80, 80, ${0.25 * fade})`
         ctx.lineWidth = 1
         ctx.stroke()
       }

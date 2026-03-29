@@ -350,6 +350,11 @@ function addEnemyForm(existing?: DesignedEnemy): void {
   header.addEventListener('click', () => {
     expanded = !expanded
     body.style.display = expanded ? 'block' : 'none'
+    if (expanded) {
+      updatePreview()
+    } else {
+      previewEnemy = null
+    }
   })
 
   body.innerHTML = `
@@ -634,6 +639,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     // Collapse
     expanded = false
     body.style.display = 'none'
+    previewEnemy = null
     div.style.borderColor = 'rgba(100,255,120,0.5)'
     setTimeout(() => div.style.borderColor = 'rgba(255,255,255,0.1)', 400)
     saveToStorage()
