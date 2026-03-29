@@ -891,7 +891,7 @@ function drawPlayer(player: Player): void {
       const speed = (30 + Math.random() * 50) * (0.8 + intensity * 0.2)
       const size = (2 + Math.random() * 2) * (0.8 + intensity * 0.2)
       spawnParticle(px, py, Math.cos(angle) * speed, Math.sin(angle) * speed,
-        255, 60 + Math.floor(Math.random() * 40), 60, 0.3 + Math.random() * 0.2, size)
+        255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, size)
     }
   }
 
@@ -1065,7 +1065,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         const py = enemy.y + Math.sin(angle) * dist
         const speed = 40 + Math.random() * 70
         spawnParticle(px, py, Math.cos(angle) * speed, Math.sin(angle) * speed,
-          255, 60 + Math.floor(Math.random() * 40), 60, 0.3 + Math.random() * 0.2, 3 + Math.random() * 2)
+          255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, 3 + Math.random() * 2)
       }
     }
 
@@ -1194,7 +1194,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const vx = Math.cos(outAngle) * speed
       const vy = Math.sin(outAngle) * speed
       const size = (2 + Math.random() * 2) * (0.8 + intensity * 0.2)
-      spawnParticle(px, py, vx, vy, 255, 60 + Math.floor(Math.random() * 40), 60, 0.3 + Math.random() * 0.2, size)
+      spawnParticle(px, py, vx, vy, 255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, size)
     }
     // Blood spray from center — enemy colored
     const sprayCount = Math.floor(6 * intensity)
@@ -1205,7 +1205,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const size = (1.5 + Math.random() * 2) * (0.8 + intensity * 0.2) * sizeScale
       spawnParticle(enemy.x, enemy.y,
         Math.cos(angle) * speed, Math.sin(angle) * speed,
-        200 + Math.floor(Math.random() * 55), 20 + Math.floor(Math.random() * 30), 20, 0.3 + Math.random() * 0.3, size)
+        230 + Math.floor(Math.random() * 25), 40 + Math.floor(Math.random() * 40), 40, 0.4 + Math.random() * 0.3, size)
     }
   }
 
