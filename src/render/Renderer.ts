@@ -54,7 +54,7 @@ let dashSweepStartY = 0
 let dashSweepEndX = 0
 let dashSweepEndY = 0
 let dashSweepRadius = 0
-const crossWavePts: number[] = []  // reused per frame for cross waveform
+const wavePts: number[] = []  // reused per frame for all waveforms
 
 // ── Perf tracking ──
 const perfTimers: Record<string, number> = {}
@@ -71,15 +71,49 @@ export function perfEnd(label: string): void {
     perfAccum[label] = (perfAccum[label] ?? 0) + (performance.now() - start)
   }
 }
+const perfFrame: Record<string, number> = {}
+
 function perfFlush(): void {
+  // Capture this frame's values (delta from last accumulation)
+  const snapshot: Record<string, number> = {}
+  for (const k of Object.keys(perfAccum)) {
+    snapshot[k] = (perfAccum[k] ?? 0) - (perfFrame[k] ?? 0)
+    perfFrame[k] = perfAccum[k] ?? 0
+  }
+  perfLog.push(snapshot)
+  if (perfLog.length > MAX_LOG_FRAMES) perfLog.shift()
+
   perfFrames++
   if (perfFrames >= 60) {
     perfDisplay = { ...perfAccum }
-    for (const k of Object.keys(perfAccum)) perfAccum[k] = 0
+    for (const k of Object.keys(perfAccum)) {
+      perfAccum[k] = 0
+      perfFrame[k] = 0
+    }
     perfFrames = 0
   }
 }
 export function getPerfDisplay(): Record<string, number> { return perfDisplay }
+
+// Perf log — stores per-frame snapshots for export
+const perfLog: Record<string, number>[] = []
+const MAX_LOG_FRAMES = 600  // ~10 seconds at 60fps
+
+export function exportPerfLog(): void {
+  const csv = ['frame,' + Object.keys(perfLog[0] ?? {}).join(',')]
+  for (let i = 0; i < perfLog.length; i++) {
+    const row = perfLog[i]!
+    csv.push(i + ',' + Object.values(row).map(v => v.toFixed(3)).join(','))
+  }
+  const blob = new Blob([csv.join('\n')], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'perf-log.csv'
+  a.click()
+  URL.revokeObjectURL(url)
+  console.log('Perf log exported:', perfLog.length, 'frames')
+}
 
 // Death ripples
 interface DeathRipple {
@@ -93,7 +127,10 @@ interface DeathRipple {
 }
 const deathRipples: DeathRipple[] = []
 
+const MAX_RIPPLES = 30
+
 function spawnDeathRipples(x: number, y: number, radius: number, color: string): void {
+  if (deathRipples.length >= MAX_RIPPLES) return
   const r = parseInt(color.slice(1, 3), 16)
   const g = parseInt(color.slice(3, 5), 16)
   const b = parseInt(color.slice(5, 7), 16)
@@ -101,7 +138,7 @@ function spawnDeathRipples(x: number, y: number, radius: number, color: string):
     deathRipples.push({
       x, y, r, g, b,
       startRadius: radius,
-      maxRadius: radius * (5.5 + i * 2),
+      maxRadius: radius + 150 + i * 80,
       timer: 0,
       delay: i * 0.06,
       duration: 0.4 + i * 0.1,
@@ -116,40 +153,24 @@ function updateAndDrawDeathRipples(dt: number): void {
     if (rip.timer < rip.delay) continue
     const elapsed = rip.timer - rip.delay
     if (elapsed >= rip.duration) {
-      deathRipples.splice(i, 1)
+      // Swap-and-pop instead of splice
+      deathRipples[i] = deathRipples[deathRipples.length - 1]!
+      deathRipples.pop()
       continue
     }
     const t = elapsed / rip.duration
-    const eased = 1 - (1 - t) * (1 - t)  // ease-out
+    const eased = 1 - (1 - t) * (1 - t)
     const radius = rip.startRadius + (rip.maxRadius - rip.startRadius) * eased
-    const alpha = (1 - t) * (1 - t)  // fade out
+    const alpha = (1 - t) * (1 - t)
     const sx = rip.x - camX
     const sy = rip.y - camY
+    const lw = 6 * (1 - t)
 
-    // Soft radial glow behind the ring
-    const glowWidth = 12 * (1 - t)
-    const glowGrad = ctx.createRadialGradient(sx, sy, Math.max(0, radius - glowWidth), sx, sy, radius + glowWidth)
-    glowGrad.addColorStop(0, `rgba(${rip.r}, ${rip.g}, ${rip.b}, 0)`)
-    glowGrad.addColorStop(0.4, `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.007})`)
-    glowGrad.addColorStop(0.6, `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.007})`)
-    glowGrad.addColorStop(1, `rgba(${rip.r}, ${rip.g}, ${rip.b}, 0)`)
-    ctx.beginPath()
-    ctx.arc(sx, sy, radius + glowWidth, 0, Math.PI * 2)
-    ctx.fillStyle = glowGrad
-    ctx.fill()
-
-    // Outer stroke
+    // Single combined stroke
     ctx.beginPath()
     ctx.arc(sx, sy, radius, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.035})`
-    ctx.lineWidth = 6 * (1 - t)
-    ctx.stroke()
-
-    // Core ring
-    ctx.beginPath()
-    ctx.arc(sx, sy, radius, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.1})`
-    ctx.lineWidth = 2 * (1 - t)
+    ctx.strokeStyle = `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.2})`
+    ctx.lineWidth = lw
     ctx.stroke()
   }
 }
@@ -170,8 +191,9 @@ function spawnRingParticles(
   count: number, speed: number, lifetime: number, size: number,
   blocked: BlockedArc[] = []
 ): void {
+  const angleOffset = Math.random() * Math.PI * 2  // random rotation per burst
   for (let i = 0; i < count; i++) {
-    const angle = Math.random() * Math.PI * 2
+    const angle = angleOffset + (i / count) * Math.PI * 2 + (Math.random() - 0.5) * (Math.PI * 2 / count) * 0.3
     // Skip if in a blocked arc
     if (blocked.length > 0) {
       let skip = false
@@ -208,7 +230,8 @@ function updateParticles(dt: number): void {
 
 function drawParticles(): void {
   for (const p of particles) {
-    const alpha = 1 - p.life
+    const t = 1 - p.life
+    const alpha = t * t  // ease-out: stays visible longer, fades smoothly at end
     const sx = p.x - camX
     const sy = p.y - camY
     ctx.fillStyle = `rgba(${p.r}, ${p.g}, ${p.b}, ${alpha})`
@@ -317,6 +340,7 @@ export function resetRenderer(): void {
 }
 
 export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0, dt = 0.016, cam?: Camera): void {
+  perfStart('R_TOTAL')
   lastDt = dt
   if (cam) {
     camX = cam.x - width / 2
@@ -334,6 +358,18 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfStart('grid')
   drawGrid(player)
   perfEnd('grid')
+
+  // Cross corner mask — paint concave corners before border effects so glow renders on top
+  if (getArenaShape() === 'cross') {
+    const cx = ARENA_CX - camX, cy = ARENA_CY - camY
+    const hw = CROSS_HW, he = CROSS_HE
+    ctx.fillStyle = '#0D0A1A'
+    ctx.fillRect(cx - he, cy - he, he - hw, he - hw)
+    ctx.fillRect(cx + hw, cy - he, he - hw, he - hw)
+    ctx.fillRect(cx - he, cy + hw, he - hw, he - hw)
+    ctx.fillRect(cx + hw, cy + hw, he - hw, he - hw)
+  }
+
   drawArenaBorder(player)
   perfStart('ripples')
   updateAndDrawDeathRipples(lastDt)
@@ -344,12 +380,13 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   ctx.save()
   const shape = getArenaShape()
   if (shape === 'cross') {
-    // Use bounding box clip instead of 12-vertex polygon — polygon clips kill GPU perf
+    // Use bounding box clip (fast) — we'll mask the corners after drawing
     ctx.beginPath()
     ctx.rect(ARENA_CX - CROSS_HE - camX, ARENA_CY - CROSS_HE - camY, CROSS_HE * 2, CROSS_HE * 2)
   } else if (shape === 'pill') {
+    // Use bounding box clip (fast) — pill caps are masked by buffer zone
     ctx.beginPath()
-    pillPath(ARENA_CX - camX, ARENA_CY - camY, PILL_HALF_W, PILL_R)
+    ctx.rect(ARENA_CX - PILL_HALF_W - PILL_R - camX, ARENA_CY - PILL_R - camY, (PILL_HALF_W + PILL_R) * 2, PILL_R * 2)
   } else if (shape === 'hex') {
     hexPath(ARENA_CX - camX, ARENA_CY - camY, ARENA_RADIUS)
   } else if (shape === 'circle') {
@@ -362,20 +399,40 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   ctx.clip()
   perfEnd('clip')
 
-  perfStart('enemies')
+  perfStart('e_occlusion')
+  // Pre-compute blocked arcs for all enemies with active rings
+  const blockedArcsCache = new Map<Enemy, BlockedArc[]>()
+  const allEnemies = getEnemies()
+  for (const enemy of enemies) {
+    if (!enemy.alive || enemy.dying) continue
+    for (const rs of enemy.rings) {
+      const ringRadius = rs.ring.radius * getRingExpansion(rs.attackTimer)
+      if (ringRadius > 1) {
+        blockedArcsCache.set(enemy, getBlockedArcs(enemy.x, enemy.y, ringRadius, allEnemies, enemy))
+        break  // only need arcs once per enemy, not per ring
+      }
+    }
+  }
+  perfEnd('e_occlusion')
+
+  perfStart('e_rings')
   for (const enemy of enemies) {
     if (!enemy.alive && !enemy.dying) continue
     if (!enemy.dying) {
+      const arcs = blockedArcsCache.get(enemy) ?? []
       for (const rs of enemy.rings) {
-        const ringRadius = rs.ring.radius * getRingExpansion(rs.attackTimer)
-        const arcs = ringRadius > 1 ? getBlockedArcs(enemy.x, enemy.y, ringRadius, getEnemies(), enemy) : []
         drawRing(enemy.x, enemy.y, rs.ring, rs.attackTimer, undefined, rs.expandTime, arcs)
       }
     }
+  }
+  perfEnd('e_rings')
+
+  perfStart('e_bodies')
+  for (const enemy of enemies) {
+    if (!enemy.alive && !enemy.dying) continue
     drawEnemy(enemy, player)
   }
-
-  perfEnd('enemies')
+  perfEnd('e_bodies')
 
   // Dash sweep band — snap on at explosion, smooth fade out
   {
@@ -425,21 +482,33 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     }
   }
 
+  perfStart('p_ring')
   drawRing(player.x, player.y, player.ring, player.attackTimer, getEffectiveRadius(player))
 
   // Extra rings from upgrades
   for (let i = 0; i < player.extraRingCount; i++) {
     drawRing(player.x, player.y, player.ring, player.extraRingTimers[i]!, getEffectiveRadius(player))
   }
+  perfEnd('p_ring')
 
+  perfStart('orbs')
   drawXPOrbs(player)
+  perfEnd('orbs')
+
+  perfStart('particles')
   drawParticles()
+  perfEnd('particles')
 
   ctx.restore()
+
+  perfStart('player')
   drawPlayer(player)
+  perfEnd('player')
+
   drawDesignerPreview(player)
   drawSpawnPanel()
   drawHUD(player, enemies, fps)
+  perfEnd('R_TOTAL')
   perfFlush()
 
   // Perf overlay — below HUD info
@@ -625,15 +694,20 @@ function drawArenaBorder(player: Player): void {
       return 0.3 + h * 0.7
     }
 
+    // ── Compute waveform points once into wavePts, stroke 3x ──
+    wavePts.length = 0
+    let totalLen = 0
+    const waveStep = arenaShape === 'cross' ? 12 : step
+    const addWavePt = (wx: number, wy: number, nx: number, ny: number, prox: number, seed: number) => {
+      const wave = Math.sin(totalLen * freq + t) * baseAmp * prox * vary(Math.floor(totalLen), seed)
+      wavePts.push(wx + nx * wave, wy + ny * wave)
+      totalLen += waveStep
+    }
+
     if (arenaShape === 'cross') {
-      // Cross waveform — compute points once, stroke 3 times
-      const crossStep = 12
       const verts = getCrossVertices(ARENA_CX, ARENA_CY)
-      crossWavePts.length = 0
-      let totalLen = 0
       for (let e = 0; e < 12; e++) {
-        const v0 = verts[e]!
-        const v1 = verts[(e + 1) % 12]!
+        const v0 = verts[e]!, v1 = verts[(e + 1) % 12]!
         const edx = v1.x - v0.x, edy = v1.y - v0.y
         const edgeLen = Math.sqrt(edx * edx + edy * edy)
         if (edgeLen < 1) continue
@@ -641,243 +715,110 @@ function drawArenaBorder(player: Player): void {
         const midX = v0.x + edx * 0.5, midY = v0.y + edy * 0.5
         const pdx = midX - px, pdy = midY - py
         const prox = 0.3 + 0.7 * Math.max(0, 1 - Math.sqrt(pdx * pdx + pdy * pdy) / (CROSS_HE * 2))
-        const edgeSteps = Math.ceil(edgeLen / crossStep)
+        const edgeSteps = Math.ceil(edgeLen / waveStep)
         for (let s = 0; s <= edgeSteps; s++) {
           const frac = s / edgeSteps
-          const wx = v0.x + edx * frac - camX
-          const wy = v0.y + edy * frac - camY
-          const wave = Math.sin(totalLen * freq + t) * baseAmp * prox * vary(Math.floor(totalLen), e)
-          crossWavePts.push(wx + enx * wave, wy + eny * wave)
-          totalLen += crossStep
+          addWavePt(v0.x + edx * frac - camX, v0.y + edy * frac - camY, enx, eny, prox, e)
         }
       }
-      // Stroke the same path 3 times with different styles
-      const strokeCrossWave = (lw: number, style: string) => {
-        ctx.beginPath()
-        for (let i = 0; i < crossWavePts.length; i += 2) {
-          const sx = crossWavePts[i]!, sy = crossWavePts[i + 1]!
-          if (i === 0) ctx.moveTo(sx, sy)
-          else {
-            const cpx = (crossWavePts[i - 2]! + sx) / 2
-            const cpy = (crossWavePts[i - 1]! + sy) / 2
-            ctx.quadraticCurveTo(crossWavePts[i - 2]!, crossWavePts[i - 1]!, cpx, cpy)
-          }
-        }
-        ctx.closePath()
-        ctx.lineWidth = lw
-        ctx.strokeStyle = style
-        ctx.stroke()
-      }
-      strokeCrossWave(outerWidth, `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.15})`)
-      strokeCrossWave(midWidth, `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.35})`)
-      strokeCrossWave(coreWidth, `rgba(${cr}, ${cg}, ${cb}, ${alpha})`)
     } else if (arenaShape === 'pill') {
-      // Pill waveform — traces stadium perimeter
-      const proximity = (wx: number, wy: number) => {
-        const dx = wx - px
-        const dy = wy - py
-        const dist = Math.sqrt(dx * dx + dy * dy)
-        return 0.3 + 0.7 * Math.max(0, 1 - dist / ((PILL_HALF_W + PILL_R) * 1.5))
+      const proxPill = (wx: number, wy: number) => {
+        const dx = wx + camX - px, dy = wy + camY - py
+        return 0.3 + 0.7 * Math.max(0, 1 - Math.sqrt(dx * dx + dy * dy) / ((PILL_HALF_W + PILL_R) * 1.5))
       }
-      const drawPillWave = () => {
-        ctx.beginPath()
-        let totalLen = 0
-        let first = true
-        let prevSx = 0, prevSy = 0
-        const addPoint = (wx: number, wy: number, nx: number, ny: number) => {
-          const prox = proximity(wx + camX, wy + camY)
-          const wave = Math.sin(totalLen * freq + t) * baseAmp * prox * vary(Math.floor(totalLen), 0)
-          const sx = wx + nx * wave
-          const sy = wy + ny * wave
-          if (first) { ctx.moveTo(sx, sy); first = false }
-          else {
-            const cpx = (prevSx + sx) / 2
-            const cpy = (prevSy + sy) / 2
-            ctx.quadraticCurveTo(prevSx, prevSy, cpx, cpy)
-          }
-          prevSx = sx; prevSy = sy
-          totalLen += step
-        }
-        // Top edge
-        for (let i = -PILL_HALF_W; i <= PILL_HALF_W; i += step) addPoint(acx + i, acy - PILL_R, 0, -1)
-        // Right cap
-        const capSteps = Math.ceil(Math.PI * PILL_R / step)
-        for (let s = 0; s <= capSteps; s++) {
-          const a = -Math.PI / 2 + (s / capSteps) * Math.PI
-          addPoint(acx + PILL_HALF_W + Math.cos(a) * PILL_R, acy + Math.sin(a) * PILL_R, Math.cos(a), Math.sin(a))
-        }
-        // Bottom edge
-        for (let i = PILL_HALF_W; i >= -PILL_HALF_W; i -= step) addPoint(acx + i, acy + PILL_R, 0, 1)
-        // Left cap
-        for (let s = 0; s <= capSteps; s++) {
-          const a = Math.PI / 2 + (s / capSteps) * Math.PI
-          addPoint(acx - PILL_HALF_W + Math.cos(a) * PILL_R, acy + Math.sin(a) * PILL_R, Math.cos(a), Math.sin(a))
-        }
-        ctx.closePath()
-        ctx.stroke()
+      for (let i = -PILL_HALF_W; i <= PILL_HALF_W; i += waveStep) addWavePt(acx + i, acy - PILL_R, 0, -1, proxPill(acx + i, acy - PILL_R), 0)
+      const capSteps = Math.ceil(Math.PI * PILL_R / waveStep)
+      for (let s = 0; s <= capSteps; s++) {
+        const a = -Math.PI / 2 + (s / capSteps) * Math.PI
+        const wx = acx + PILL_HALF_W + Math.cos(a) * PILL_R, wy = acy + Math.sin(a) * PILL_R
+        addWavePt(wx, wy, Math.cos(a), Math.sin(a), proxPill(wx, wy), 1)
       }
-      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.15})`
-      ctx.lineWidth = outerWidth
-      drawPillWave()
-      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.35})`
-      ctx.lineWidth = midWidth
-      drawPillWave()
-      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha})`
-      ctx.lineWidth = coreWidth
-      drawPillWave()
+      for (let i = PILL_HALF_W; i >= -PILL_HALF_W; i -= waveStep) addWavePt(acx + i, acy + PILL_R, 0, 1, proxPill(acx + i, acy + PILL_R), 2)
+      for (let s = 0; s <= capSteps; s++) {
+        const a = Math.PI / 2 + (s / capSteps) * Math.PI
+        const wx = acx - PILL_HALF_W + Math.cos(a) * PILL_R, wy = acy + Math.sin(a) * PILL_R
+        addWavePt(wx, wy, Math.cos(a), Math.sin(a), proxPill(wx, wy), 3)
+      }
     } else if (arenaShape === 'hex') {
-      // Hex waveform — wave along each of the 6 edges
       const verts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
-      const drawHexWave = () => {
-        ctx.beginPath()
-        let totalLen = 0
-        let first = true
-        let prevSx = 0, prevSy = 0
-        for (let e = 0; e < 6; e++) {
-          const v0 = verts[e]!
-          const v1 = verts[(e + 1) % 6]!
-          const ex = (v1.x - v0.x)
-          const ey = (v1.y - v0.y)
-          const edgeLen = Math.sqrt(ex * ex + ey * ey)
-          const enx = ey / edgeLen
-          const eny = -ex / edgeLen
-          const edgeSteps = Math.ceil(edgeLen / step)
-          for (let s = 0; s <= edgeSteps; s++) {
-            const frac = s / edgeSteps
-            const wx = v0.x + ex * frac - camX
-            const wy = v0.y + ey * frac - camY
-            const edgePx = v0.x + ex * frac
-            const edgePy = v0.y + ey * frac
-            const dx = edgePx - px
-            const dy = edgePy - py
-            const dist = Math.sqrt(dx * dx + dy * dy)
-            const prox = 0.3 + 0.7 * (1 - dist / (ARENA_RADIUS * 2))
-            const wave = Math.sin(totalLen * freq + t) * baseAmp * prox * vary(Math.floor(totalLen), e)
-            const sx = wx + enx * wave
-            const sy = wy + eny * wave
-            if (first) { ctx.moveTo(sx, sy); first = false }
-            else {
-              const cpx = (prevSx + sx) / 2
-              const cpy = (prevSy + sy) / 2
-              ctx.quadraticCurveTo(prevSx, prevSy, cpx, cpy)
-            }
-            prevSx = sx
-            prevSy = sy
-            totalLen += step
-          }
+      for (let e = 0; e < 6; e++) {
+        const v0 = verts[e]!, v1 = verts[(e + 1) % 6]!
+        const edx = v1.x - v0.x, edy = v1.y - v0.y
+        const edgeLen = Math.sqrt(edx * edx + edy * edy)
+        const enx = edy / edgeLen, eny = -edx / edgeLen
+        const midX = v0.x + edx * 0.5, midY = v0.y + edy * 0.5
+        const pdx = midX - px, pdy = midY - py
+        const prox = 0.3 + 0.7 * (1 - Math.sqrt(pdx * pdx + pdy * pdy) / (ARENA_RADIUS * 2))
+        const edgeSteps = Math.ceil(edgeLen / waveStep)
+        for (let s = 0; s <= edgeSteps; s++) {
+          const frac = s / edgeSteps
+          addWavePt(v0.x + edx * frac - camX, v0.y + edy * frac - camY, enx, eny, prox, e)
         }
-        ctx.closePath()
-        ctx.stroke()
       }
-
-      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.15})`
-      ctx.lineWidth = outerWidth
-      drawHexWave()
-      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.35})`
-      ctx.lineWidth = midWidth
-      drawHexWave()
-      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha})`
-      ctx.lineWidth = coreWidth
-      drawHexWave()
     } else if (arenaShape === 'circle') {
-      // Circular waveform
       const circumference = Math.PI * 2 * ARENA_RADIUS
-      const angleStep = (step / circumference) * Math.PI * 2
-      const proximity = (angle: number) => {
-        const edgeX = ARENA_CX + Math.cos(angle) * ARENA_RADIUS
-        const edgeY = ARENA_CY + Math.sin(angle) * ARENA_RADIUS
-        const dx = edgeX - px
-        const dy = edgeY - py
-        const dist = Math.sqrt(dx * dx + dy * dy)
-        return 0.3 + 0.7 * (1 - dist / (ARENA_RADIUS * 2))
+      const angleStep = (waveStep / circumference) * Math.PI * 2
+      for (let a = 0; a < Math.PI * 2; a += angleStep) {
+        const edgeX = ARENA_CX + Math.cos(a) * ARENA_RADIUS
+        const edgeY = ARENA_CY + Math.sin(a) * ARENA_RADIUS
+        const pdx = edgeX - px, pdy = edgeY - py
+        const prox = 0.3 + 0.7 * (1 - Math.sqrt(pdx * pdx + pdy * pdy) / (ARENA_RADIUS * 2))
+        const wave = Math.sin(a * ARENA_RADIUS * freq + t) * baseAmp * prox * vary(Math.floor(a * ARENA_RADIUS), 0)
+        const r = ARENA_RADIUS + wave
+        wavePts.push(acx + Math.cos(a) * r, acy + Math.sin(a) * r)
+        totalLen += waveStep
       }
-
-      const drawCircleWave = () => {
-        ctx.beginPath()
-        let prevSx = 0, prevSy = 0
-        for (let a = 0; a < Math.PI * 2; a += angleStep) {
-          const arcLen = a * ARENA_RADIUS
-          const prox = proximity(a)
-          const wave = Math.sin(arcLen * freq + t) * baseAmp * prox * vary(Math.floor(arcLen), 0)
-          const r = ARENA_RADIUS + wave
-          const sx = acx + Math.cos(a) * r
-          const sy = acy + Math.sin(a) * r
-          if (a === 0) {
-            ctx.moveTo(sx, sy)
-          } else {
-            const cpx = (prevSx + sx) / 2
-            const cpy = (prevSy + sy) / 2
-            ctx.quadraticCurveTo(prevSx, prevSy, cpx, cpy)
-          }
-          prevSx = sx
-          prevSy = sy
-        }
-        ctx.closePath()
-        ctx.stroke()
-      }
-
-      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.15})`
-      ctx.lineWidth = outerWidth
-      drawCircleWave()
-      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.35})`
-      ctx.lineWidth = midWidth
-      drawCircleWave()
-      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha})`
-      ctx.lineWidth = coreWidth
-      drawCircleWave()
     } else {
-      // Rectangular waveform — 4 edges
-      const proximityH = (posX: number, edgeY: number) => {
-        const dx = posX - px
-        const dy = edgeY - py
-        const dist = Math.sqrt(dx * dx + dy * dy)
-        const maxDist = Math.sqrt(ARENA_W * ARENA_W + ARENA_H * ARENA_H)
-        return 0.3 + 0.7 * (1 - dist / maxDist)
+      // Rect: 4 separate edge segments stored sequentially
+      const maxDist = Math.sqrt(ARENA_W * ARENA_W + ARENA_H * ARENA_H)
+      const proxR = (posX: number, posY: number) => {
+        const dx = posX - px, dy = posY - py
+        return 0.3 + 0.7 * (1 - Math.sqrt(dx * dx + dy * dy) / maxDist)
       }
-      const proximityV = (edgeX: number, posY: number) => {
-        const dx = edgeX - px
-        const dy = posY - py
-        const dist = Math.sqrt(dx * dx + dy * dy)
-        const maxDist = Math.sqrt(ARENA_W * ARENA_W + ARENA_H * ARENA_H)
-        return 0.3 + 0.7 * (1 - dist / maxDist)
-      }
-      const drawWaveH = (startX: number, baseY: number, len: number, seed: number) => {
-        ctx.beginPath()
-        const w0 = Math.sin(0 * freq + t + seed) * baseAmp * proximityH(startX, baseY) * vary(0, seed)
-        ctx.moveTo(startX, baseY + w0)
-        for (let i = step; i <= len; i += step) {
-          const prox = proximityH(startX + i, baseY)
-          const wave = Math.sin(i * freq + t + seed) * baseAmp * prox * vary(i, seed)
-          const prevProx = proximityH(startX + i - step, baseY)
-          const prevWave = Math.sin((i - step) * freq + t + seed) * baseAmp * prevProx * vary(i - step, seed)
-          ctx.quadraticCurveTo(startX + i - step, baseY + prevWave, startX + i - step * 0.5, baseY + (prevWave + wave) * 0.5)
-        }
-        ctx.stroke()
-      }
-      const drawWaveV = (baseX: number, startY: number, len: number, seed: number) => {
-        ctx.beginPath()
-        const w0 = Math.sin(0 * freq + t + seed) * baseAmp * proximityV(baseX, startY) * vary(0, seed)
-        ctx.moveTo(baseX + w0, startY)
-        for (let i = step; i <= len; i += step) {
-          const prox = proximityV(baseX, startY + i)
-          const wave = Math.sin(i * freq + t + seed) * baseAmp * prox * vary(i, seed)
-          const prevProx = proximityV(baseX, startY + i - step)
-          const prevWave = Math.sin((i - step) * freq + t + seed) * baseAmp * prevProx * vary(i - step, seed)
-          ctx.quadraticCurveTo(baseX + prevWave, startY + i - step, baseX + (prevWave + wave) * 0.5, startY + i - step * 0.5)
-        }
-        ctx.stroke()
-      }
-
-      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.15})`
-      ctx.lineWidth = outerWidth
-      drawWaveH(x, y, w, 0); drawWaveH(x, y + h, w, 2); drawWaveV(x, y, h, 4); drawWaveV(x + w, y, h, 6)
-      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.35})`
-      ctx.lineWidth = midWidth
-      drawWaveH(x, y, w, 0); drawWaveH(x, y + h, w, 2); drawWaveV(x, y, h, 4); drawWaveV(x + w, y, h, 6)
-      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha})`
-      ctx.lineWidth = coreWidth
-      drawWaveH(x, y, w, 0); drawWaveH(x, y + h, w, 2); drawWaveV(x, y, h, 4); drawWaveV(x + w, y, h, 6)
+      // Top
+      for (let i = 0; i <= w; i += waveStep) addWavePt(x + i, y, 0, -1, proxR(camX + x + i, camY + y), 0)
+      wavePts.push(NaN, NaN) // segment break
+      // Bottom
+      totalLen = 0
+      for (let i = 0; i <= w; i += waveStep) addWavePt(x + i, y + h, 0, 1, proxR(camX + x + i, camY + y + h), 2)
+      wavePts.push(NaN, NaN)
+      // Left
+      totalLen = 0
+      for (let i = 0; i <= h; i += waveStep) addWavePt(x, y + i, -1, 0, proxR(camX + x, camY + y + i), 4)
+      wavePts.push(NaN, NaN)
+      // Right
+      totalLen = 0
+      for (let i = 0; i <= h; i += waveStep) addWavePt(x + w, y + i, 1, 0, proxR(camX + x + w, camY + y + i), 6)
     }
+
+    // ── Stroke the cached points 3x ──
+    const isClosedWave = arenaShape !== 'rect'
+    const strokeWave = (lw: number, style: string) => {
+      ctx.strokeStyle = style
+      ctx.lineWidth = lw
+      ctx.beginPath()
+      let segStart = true
+      for (let i = 0; i < wavePts.length; i += 2) {
+        const sx = wavePts[i]!, sy = wavePts[i + 1]!
+        if (sx !== sx) { // NaN = segment break
+          ctx.stroke()
+          ctx.beginPath()
+          segStart = true
+          continue
+        }
+        if (segStart) { ctx.moveTo(sx, sy); segStart = false }
+        else {
+          const cpx = (wavePts[i - 2]! + sx) / 2
+          const cpy = (wavePts[i - 1]! + sy) / 2
+          ctx.quadraticCurveTo(wavePts[i - 2]!, wavePts[i - 1]!, cpx, cpy)
+        }
+      }
+      if (isClosedWave) ctx.closePath()
+      ctx.stroke()
+    }
+    strokeWave(outerWidth, `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.15})`)
+    strokeWave(midWidth, `rgba(${cr}, ${cg}, ${cb}, ${alpha * 0.35})`)
+    strokeWave(coreWidth, `rgba(${cr}, ${cg}, ${cb}, ${alpha})`)
   }
 
   perfEnd('waveform')
@@ -1015,16 +956,19 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   const pastPeak = attackTimer - expandTime
   const showRedRing = pastPeak >= 0 && pastPeak < 0.11
 
-  // Trail particles
-  if (buildup > 0.2) {
-    const trailCount = Math.floor(buildup * 3)
+  // Trail particles — reduced count to leave room for explosions
+  if (buildup > 0.3) {
+    const trailCount = Math.floor(buildup * 2)
     spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, trailCount, 20 + buildup * 40, 0.3, 2, blockedArcs)
   }
 
-  // Explosion at peak
-  if (showRedRing && pastPeak < lastDt * 2) {
-    spawnRingParticles(worldX, worldY, currentRadius, 255, 255, 255, 40, 40, 0.5, 5, blockedArcs)
-    spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, 30, 25, 0.6, 3.6, blockedArcs)
+  // Explosion at peak — count scales with ring size for even distribution
+  if (showRedRing && pastPeak < lastDt * 2 && particles.length < MAX_PARTICLES - 20) {
+    const ringScale = Math.max(1, currentRadius / 140)  // 140 = baseline ring radius
+    const whiteCount = Math.round(15 * ringScale)
+    const colorCount = Math.round(10 * ringScale)
+    spawnRingParticles(worldX, worldY, currentRadius, 255, 255, 255, whiteCount, 20, 0.5, 8, blockedArcs)
+    spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, colorCount, 15, 0.6, 7, blockedArcs)
   }
 
   // Soft outer glow
@@ -1178,7 +1122,7 @@ function drawPlayer(player: Player): void {
     ctx.rect(ARENA_CX - CROSS_HE - camX, ARENA_CY - CROSS_HE - camY, CROSS_HE * 2, CROSS_HE * 2)
   } else if (trailShape === 'pill') {
     ctx.beginPath()
-    pillPath(ARENA_CX - camX, ARENA_CY - camY, PILL_HALF_W, PILL_R)
+    ctx.rect(ARENA_CX - PILL_HALF_W - PILL_R - camX, ARENA_CY - PILL_R - camY, (PILL_HALF_W + PILL_R) * 2, PILL_R * 2)
   } else if (trailShape === 'hex') {
     hexPath(ARENA_CX - camX, ARENA_CY - camY, ARENA_RADIUS)
   } else if (trailShape === 'circle') {
@@ -1242,7 +1186,7 @@ function drawPlayer(player: Player): void {
   if (player.hitFlash > HIT_FLASH_DURATION - 0.02) {
     const dmgFraction = 1 / player.maxHp  // enemy.damage is always 1
     const intensity = Math.min(Math.max(dmgFraction / 0.002, 1), 4)
-    const count = Math.floor(12 * intensity)
+    const count = Math.floor(8 * intensity)
     const biteAngle = -Math.PI / 2 + (player.hp / player.maxHp) * Math.PI * 2
     for (let i = 0; i < count; i++) {
       const spread = (Math.random() - 0.5) * (0.6 + intensity * 0.15)
@@ -1251,7 +1195,7 @@ function drawPlayer(player: Player): void {
       const px = player.x + Math.cos(angle) * dist
       const py = player.y + Math.sin(angle) * dist
       const speed = (30 + Math.random() * 50) * (0.8 + intensity * 0.2)
-      const size = (2 + Math.random() * 2) * (0.8 + intensity * 0.2)
+      const size = (2.5 + Math.random() * 2.5) * (0.8 + intensity * 0.2)
       spawnParticle(px, py, Math.cos(angle) * speed, Math.sin(angle) * speed,
         255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, size)
     }
@@ -1420,14 +1364,14 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       spawnDeathRipples(enemy.x, enemy.y, r, enemy.color)
     }
     if (dt < 0.02) {
-      for (let i = 0; i < 16; i++) {
+      for (let i = 0; i < 10; i++) {
         const angle = Math.random() * Math.PI * 2
         const dist = r * (0.5 + Math.random() * 0.5)
         const px = enemy.x + Math.cos(angle) * dist
         const py = enemy.y + Math.sin(angle) * dist
         const speed = 40 + Math.random() * 70
         spawnParticle(px, py, Math.cos(angle) * speed, Math.sin(angle) * speed,
-          255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, 3 + Math.random() * 2)
+          255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, 4 + Math.random() * 2.5)
       }
     }
 
@@ -1512,36 +1456,17 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     ctx.fill()
   }
 
-  // Damaged background — dark enemy color base + inner ring marks
-  {
-    const dr = Math.floor(hr * 0.15)
-    const dg = Math.floor(hg * 0.15)
-    const db = Math.floor(hb * 0.15)
-    const bgGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
-    bgGrad.addColorStop(0, `rgba(${dr}, ${dg}, ${db}, 0.5)`)
-    bgGrad.addColorStop(0.6, `rgba(${Math.floor(dr * 0.5)}, ${Math.floor(dg * 0.5)}, ${Math.floor(db * 0.5)}, 0.45)`)
-    bgGrad.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
-    ctx.beginPath()
-    ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.fillStyle = bgGrad
-    ctx.fill()
-
-    // Inner ring marks — concentric arcs for "internals" feel
-    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.04)`
-    ctx.lineWidth = 1
-    for (let i = 1; i <= 3; i++) {
-      const ringR = r * (i * 0.25)
-      ctx.beginPath()
-      ctx.arc(sx, sy, ringR, 0, Math.PI * 2)
-      ctx.stroke()
-    }
-  }
+  // Damaged background — solid fill (no gradient for perf)
+  ctx.beginPath()
+  ctx.arc(sx, sy, r, 0, Math.PI * 2)
+  ctx.fillStyle = `rgba(${Math.floor(hr * 0.08)}, ${Math.floor(hg * 0.08)}, ${Math.floor(hb * 0.08)}, 0.55)`
+  ctx.fill()
 
   // Hit particles — burst from the pie edge, intensity scales with damage fraction
   if (enemy.hitFlash > HIT_FLASH_DURATION - 0.02) {
     const hitFraction = damageFraction  // fraction of maxHp dealt
     const intensity = Math.min(Math.max(hitFraction / 0.20, 1), 4)  // 1x at <=20%, up to 4x at 80%+
-    const count = Math.floor(12 * intensity)
+    const count = Math.floor(8 * intensity)
     // Only the fresh bite — from actual HP to where displayHp is (the red drain wedge)
     const damageArcStart = startAngle + (enemy.hp / enemy.maxHp) * Math.PI * 2
     const damageArcEnd = damageArcStart + damageFraction * Math.PI * 2
@@ -1555,16 +1480,16 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const outAngle = Math.atan2(py - enemy.y, px - enemy.x)
       const vx = Math.cos(outAngle) * speed
       const vy = Math.sin(outAngle) * speed
-      const size = (2 + Math.random() * 2) * (0.8 + intensity * 0.2)
+      const size = (2.5 + Math.random() * 2.5) * (0.8 + intensity * 0.2)
       spawnParticle(px, py, vx, vy, 255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, size)
     }
     // Blood spray from center — enemy colored
-    const sprayCount = Math.floor(6 * intensity)
+    const sprayCount = Math.floor(4 * intensity)
     for (let i = 0; i < sprayCount; i++) {
       const angle = Math.random() * Math.PI * 2
       const speed = 40 + Math.random() * 100 * intensity
-      const sizeScale = r / 44  // scale relative to default enemy radius
-      const size = (1.5 + Math.random() * 2) * (0.8 + intensity * 0.2) * sizeScale
+      const sizeScale = r / 44
+      const size = (1.9 + Math.random() * 2.5) * (0.8 + intensity * 0.2) * sizeScale
       spawnParticle(enemy.x, enemy.y,
         Math.cos(angle) * speed, Math.sin(angle) * speed,
         230 + Math.floor(Math.random() * 25), 40 + Math.floor(Math.random() * 40), 40, 0.4 + Math.random() * 0.3, size)
@@ -1577,15 +1502,11 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     // Red draining wedge — the gap between displayHp (visual) and hp (actual)
     if (hpFraction > actualHpFraction) {
       const actualEnd = startAngle + actualHpFraction * Math.PI * 2
-      const redGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
-      redGrad.addColorStop(0, 'rgba(255, 70, 70, 0.55)')
-      redGrad.addColorStop(0.7, 'rgba(255, 40, 40, 0.4)')
-      redGrad.addColorStop(1, 'rgba(140, 20, 20, 0.3)')
       ctx.beginPath()
       ctx.moveTo(sx, sy)
       ctx.arc(sx, sy, r, actualEnd, endAngle)
       ctx.closePath()
-      ctx.fillStyle = redGrad
+      ctx.fillStyle = 'rgba(255, 50, 50, 0.4)'
       ctx.fill()
     }
 

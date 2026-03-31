@@ -207,6 +207,7 @@ export function getDesignedEnemies(): DesignedEnemy[] {
 export function toggleDesigner(): void {
   visible = !visible
   if (panel) panel.style.display = visible ? 'block' : 'none'
+  previewEnemy = null
   clearKeys()
 }
 

@@ -12,12 +12,13 @@ import { updateCamera, clampToArena, getArenaShape, setArenaShape } from '../gam
 import { PLAYER_RADIUS } from '../utils/constants.ts'
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on } from './EventBus.ts'
-import { perfStart, perfEnd } from '../render/Renderer.ts'
+import { perfStart, perfEnd, exportPerfLog } from '../render/Renderer.ts'
 import { getEnemyType } from '../entities/EnemyTypes.ts'
 
 let fps = 0
 let frameCount = 0
 let arenaToggleLock = false
+let perfExportLock = false
 let lastFpsTime = performance.now()
 
 // Totem spawn handler
@@ -59,11 +60,21 @@ export function update(dt: number): void {
   }
   if (!Input.isKeyDown('g')) arenaToggleLock = false
 
+  // P = export perf log
+  if (Input.isKeyDown('p') && !perfExportLock) {
+    perfExportLock = true
+    exportPerfLog()
+  }
+  if (!Input.isKeyDown('p')) perfExportLock = false
+
+  perfStart('U_TOTAL')
+
   advanceGlobalTime(dt)
   advancePatternClock(dt)
   updatePreviewEnemy(dt)
 
   // Build grid before player update so beat hit-detection can query enemies + orbs
+  perfStart('u_grid')
   grid.clear()
   for (const enemy of enemies) {
     if (enemy.alive) grid.insert(enemy)
@@ -72,23 +83,30 @@ export function update(dt: number): void {
   for (const orb of allOrbs) {
     if (orb.alive && !orb.dying) grid.insert(orb)
   }
+  perfEnd('u_grid')
 
+  perfStart('u_player')
   updatePlayer(player, dt)
+  perfEnd('u_player')
 
   const dir = Input.getMovementDir()
   updateCamera(cam, player.x, player.y, dir.x, dir.y, window.innerWidth, window.innerHeight, dt)
 
+  perfStart('u_enemies')
   for (const enemy of enemies) {
     updateDeath(enemy, dt)
     updateEnemy(enemy, player, dt, grid)
   }
+  perfEnd('u_enemies')
 
+  perfStart('u_orbs')
   updateOrbs(dt)
+  perfEnd('u_orbs')
 
-  // Multi-pass separation — resolve congestion (3 iterations)
+  // Multi-pass separation
   perfStart('separation')
   const orbs = getOrbs()
-  for (let pass = 0; pass < 3; pass++) {
+  for (let pass = 0; pass < 2; pass++) {
     // Build grid with enemies + orbs
     grid.clear()
     for (const enemy of enemies) {
@@ -207,6 +225,7 @@ export function update(dt: number): void {
   }
 
   perfEnd('separation')
+
   cleanupOrbs()
 
   // Prune dead enemies (swap-and-pop)
@@ -219,6 +238,7 @@ export function update(dt: number): void {
 
   // Check for level up
   tryTriggerUpgrade()
+  perfEnd('U_TOTAL')
 }
 
 export function render(alpha: number): void {
