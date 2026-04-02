@@ -1265,6 +1265,16 @@ function drawXPOrbs(player: Player): void {
           addAbsorbEffect(orb.x, orb.y, absR, absG, absB)
         }
 
+        // Explosion burst — small, orb-colored
+        for (let i = 0; i < 6; i++) {
+          const angle = (i / 6) * Math.PI * 2 + Math.random() * 0.5
+          const speed = 30 + Math.random() * 50
+          spawnParticle(orb.x, orb.y,
+            Math.cos(angle) * speed, Math.sin(angle) * speed,
+            Math.min(255, orbR + 40), Math.min(255, orbG + 30), Math.min(255, orbB + 30),
+            0.3 + Math.random() * 0.15, 15 + Math.random() * 5)
+        }
+
         const rippleColor = isHP ? '#E63B3B' : (isDouble ? '#64D732' : '#64FFc8')
         spawnDeathRipples(orb.x, orb.y, r * 1.5, rippleColor)
       }
@@ -1425,7 +1435,7 @@ function drawPlayer(player: Player): void {
       const px = player.x + Math.cos(angle) * dist
       const py = player.y + Math.sin(angle) * dist
       const speed = (30 + Math.random() * 50) * (0.8 + intensity * 0.2)
-      const size = (2.5 + Math.random() * 2.5) * (0.8 + intensity * 0.2)
+      const size = (3.3 + Math.random() * 3.3) * (0.8 + intensity * 0.2)
       spawnParticle(px, py, Math.cos(angle) * speed, Math.sin(angle) * speed,
         255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, size)
     }
@@ -1601,7 +1611,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         const py = enemy.y + Math.sin(angle) * dist
         const speed = 40 + Math.random() * 70
         spawnParticle(px, py, Math.cos(angle) * speed, Math.sin(angle) * speed,
-          255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, 4 + Math.random() * 2.5)
+          255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, 5.2 + Math.random() * 3.3)
       }
     }
 
@@ -1715,7 +1725,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const outAngle = Math.atan2(py - enemy.y, px - enemy.x)
       const vx = Math.cos(outAngle) * speed
       const vy = Math.sin(outAngle) * speed
-      const size = (2.5 + Math.random() * 2.5) * (0.8 + intensity * 0.2)
+      const size = (3.3 + Math.random() * 3.3) * (0.8 + intensity * 0.2)
       spawnParticle(px, py, vx, vy, 255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, size)
     }
     // Blood spray from center — enemy colored
@@ -1724,7 +1734,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const angle = Math.random() * Math.PI * 2
       const speed = 40 + Math.random() * 100 * intensity
       const sizeScale = r / 44
-      const size = (1.9 + Math.random() * 2.5) * (0.8 + intensity * 0.2) * sizeScale
+      const size = (2.5 + Math.random() * 3.3) * (0.8 + intensity * 0.2) * sizeScale
       spawnParticle(enemy.x, enemy.y,
         Math.cos(angle) * speed, Math.sin(angle) * speed,
         230 + Math.floor(Math.random() * 25), 40 + Math.floor(Math.random() * 40), 40, 0.4 + Math.random() * 0.3, size)
