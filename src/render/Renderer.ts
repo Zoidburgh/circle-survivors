@@ -20,6 +20,7 @@ import {
   GRID_CELL_PX,
   COLOR_PLAYER,
   PLAYER_RADIUS,
+  MAX_RING_RADIUS,
   PARTICLE_CAP,
   ARENA_BUFFER,
   HIT_FLASH_DURATION,
@@ -1490,6 +1491,23 @@ function drawPlayer(player: Player): void {
   ctx.lineWidth = 2.5
   ctx.stroke()
 
+  // Beat anticipation — 3 chained rings shrinking toward player body
+  if (player.attackTimer >= 0 && player.attackTimer < ATTACK_EXPAND_TIME) {
+    const buildup = player.attackTimer / ATTACK_EXPAND_TIME  // 0→1
+    for (let i = 0; i < 3; i++) {
+      const offset = i * 0.15  // stagger each ring
+      const t = Math.min(1, buildup + offset)
+      const anticipateR = drawRadius + (MAX_RING_RADIUS * 0.4) * (1 - t * t)
+      const anticipateAlpha = (0.02 + t * 0.06) * (1 - i * 0.25)  // trailing rings dimmer
+      const anticipateWidth = 0.8 + t * 0.4
+      ctx.beginPath()
+      ctx.arc(sx, sy, anticipateR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(79, 195, 247, ${anticipateAlpha})`
+      ctx.lineWidth = anticipateWidth
+      ctx.stroke()
+    }
+  }
+
   // Beat ripple — ring of light expanding from body on attack fire
   if (player.attackTimer >= 0 && player.attackTimer < 0.15) {
     const rippleT = player.attackTimer / 0.15
@@ -1586,7 +1604,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
 
   // Hit jitter — random position offset while flash is active
   if (enemy.hitFlash > 0) {
-    const jitterStrength = 4 * (enemy.hitFlash / HIT_FLASH_DURATION)
+    const jitterStrength = 5 * (enemy.hitFlash / HIT_FLASH_DURATION)
     sx += (Math.random() - 0.5) * 2 * jitterStrength
     sy += (Math.random() - 0.5) * 2 * jitterStrength
   }
@@ -1878,6 +1896,15 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     }
   }
 
+  // White flash overlay on top — visible over pie fill
+  if (enemy.hitFlash > 0) {
+    const flashT = enemy.hitFlash / HIT_FLASH_DURATION
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(255, 255, 255, ${0.4 * flashT * flashT})`
+    ctx.fill()
+  }
+
   // Chill overlay — blue tint (inside circle only)
   if (enemy.chillStacks > 0) {
     const intensity = enemy.chillStacks / 5
@@ -1928,6 +1955,54 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     ctx.strokeStyle = ringOverEnemy ? '#FFFFFF' : enemy.color
     ctx.lineWidth = 1.5
     ctx.stroke()
+  }
+
+  // Blink phase — telegraph → snap on half-beat → coil back
+  if (enemy.blink && enemy.blinkPreview > 0) {
+    const totalDur = BEAT_SEC
+    const elapsed = totalDur - enemy.blinkPreview
+    const halfBeat = totalDur * 0.5
+    const phase1 = elapsed < halfBeat  // telegraph
+
+    const fromSx = enemy.blinkFromX - camX
+    const fromSy = enemy.blinkFromY - camY
+    const toSx = enemy.blinkGhostX - camX
+    const toSy = enemy.blinkGhostY - camY
+    const ghostCount = 10
+
+    if (phase1) {
+      const raw = elapsed / halfBeat
+      const reach = 1 - (1 - raw) * (1 - raw)
+      for (let g = 0; g < ghostCount; g++) {
+        const frac = (g + 1) / (ghostCount + 1)
+        if (frac > reach) continue
+        const eased = frac * frac
+        const gx = fromSx + (toSx - fromSx) * eased
+        const gy = fromSy + (toSy - fromSy) * eased
+        const ga = 0.15 * (reach - frac) / reach
+        const gs = r * (1 - eased * 0.4)
+        ctx.beginPath()
+        ctx.arc(gx, gy, gs, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, ${ga})`
+        ctx.fill()
+      }
+    } else {
+      // Coil back — ease-in (slow start, accelerates into new position)
+      const raw = (elapsed - halfBeat) / halfBeat  // 0→1
+      const coil = raw * raw  // ease-in: slow then fast
+      for (let g = 0; g < ghostCount; g++) {
+        const baseFrac = (g + 1) / (ghostCount + 1)
+        const slideFrac = baseFrac * (1 - coil) + coil  // slides toward 1.0 (new pos)
+        const gx = fromSx + (toSx - fromSx) * slideFrac
+        const gy = fromSy + (toSy - fromSy) * slideFrac
+        const ga = 0.12 * (1 - coil)  // fades as it coils in
+        const gs = r * (0.6 + coil * 0.4)  // grows as it arrives
+        ctx.beginPath()
+        ctx.arc(gx, gy, gs, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, ${ga})`
+        ctx.fill()
+      }
+    }
   }
 
   // Magnet indicator — multiple inward-flowing rings
@@ -1998,6 +2073,8 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     }
     ctx.lineCap = 'butt'
   }
+
+  if (enemy.blink && enemy.blinkPreview > 0) ctx.globalAlpha = 1
 }
 
 function drawDesignerPreview(player: Player): void {

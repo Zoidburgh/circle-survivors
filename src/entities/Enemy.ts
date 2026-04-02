@@ -5,7 +5,7 @@ import { shouldFire, getBeatInterval, getLoopPosition } from '../audio/PatternCl
 import { playWindup } from '../audio/AudioEngine.ts'
 import { clampToArena, getArenaShape, ARENA_CX, ARENA_CY } from '../game/Arena.ts'
 import { emit } from '../core/EventBus.ts'
-import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE } from '../utils/constants.ts'
+import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import type { Player } from './Player.ts'
 import type { EnemyType, MovePattern } from './EnemyTypes.ts'
@@ -62,6 +62,14 @@ export interface Enemy {
   consume: boolean      // ring attack consumes nearby orbs, heals +1
   magnet: boolean       // pulls nearby orbs toward this enemy
   magnetRange: number   // pull radius
+  blink: boolean        // teleports periodically
+  blinkBeats: number    // beats between blinks
+  blinkTimer: number    // counts beats until next blink
+  blinkGhostX: number   // destination / old position after teleport
+  blinkGhostY: number
+  blinkFromX: number    // position before teleport (for trail)
+  blinkFromY: number
+  blinkPreview: number  // >0 = showing ghost, counts down
 }
 
 export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
@@ -121,6 +129,14 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     consume: type.consume ?? false,
     magnet: type.magnet ?? false,
     magnetRange: type.magnetRange ?? MAGNET_RANGE,
+    blink: type.blink ?? false,
+    blinkBeats: type.blinkBeats ?? 4,
+    blinkTimer: type.blinkBeats ?? 4,
+    blinkGhostX: 0,
+    blinkGhostY: 0,
+    blinkFromX: 0,
+    blinkFromY: 0,
+    blinkPreview: 0,
   }
 }
 
@@ -136,6 +152,41 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     if (enemy.chillDecayTimer >= CHILL_STACK_DECAY_TIME * decayMult) {
       enemy.chillStacks--
       enemy.chillDecayTimer = 0
+    }
+  }
+
+  // Blink logic — fast phase out/in
+  if (enemy.blink && enemy.spawnTimer >= 1) {
+    // Phase transition in progress
+    if (enemy.blinkPreview > 0) {
+      enemy.blinkPreview -= dt
+      // Teleport at half-beat
+      if (enemy.blinkPreview <= BEAT_SEC * 0.5 && enemy.blinkGhostX !== enemy.x) {
+        enemy.x = enemy.blinkGhostX
+        enemy.y = enemy.blinkGhostY
+      }
+    }
+    // Count beats — only when no ring is firing and not phasing
+    const allRingsIdle = enemy.rings.every(rs => rs.attackTimer < 0)
+    if (allRingsIdle && enemy.blinkPreview <= 0 && shouldFire('Player')) {
+      enemy.blinkTimer--
+      if (enemy.blinkTimer <= 0) {
+        const dx = enemy.x - player.x
+        const dy = enemy.y - player.y
+        const currentDist = Math.sqrt(dx * dx + dy * dy)
+        // Teleport to opposite side at the SAME distance
+        const baseAngle = currentDist > 1 ? Math.atan2(-dy, -dx) : Math.random() * Math.PI * 2
+        const angle = baseAngle + (Math.random() - 0.5) * 1.0
+        const destX = player.x + Math.cos(angle) * currentDist
+        const destY = player.y + Math.sin(angle) * currentDist
+        const clamped = clampToArena(destX, destY, enemy.radius)
+        enemy.blinkFromX = enemy.x
+        enemy.blinkFromY = enemy.y
+        enemy.blinkGhostX = clamped.x
+        enemy.blinkGhostY = clamped.y
+        enemy.blinkPreview = BEAT_SEC  // synced to one full beat: telegraph → snap on half-beat → coil back
+        enemy.blinkTimer = enemy.blinkBeats
+      }
     }
   }
 
@@ -184,8 +235,9 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   const dx = player.x - enemy.x
   const dy = player.y - enemy.y
   const dist = Math.sqrt(dx * dx + dy * dy)
-  const primaryRingRadius = enemy.rings[0]?.ring.radius ?? 100
-  const sweetSpot = primaryRingRadius
+  // Sweet spot: ring radius if has active rings, otherwise rush into player
+  const hasActiveRing = enemy.rings.some(rs => rs.patternName && rs.ring.radius > 0)
+  const sweetSpot = hasActiveRing ? (enemy.rings[0]?.ring.radius ?? 100) : 0
   const dirX = dist > 1 ? dx / dist : 0
   const dirY = dist > 1 ? dy / dist : 0
 

@@ -23,6 +23,8 @@ export interface EnemyType {
   consume?: boolean                 // ring attack consumes nearby orbs, heals +1 per orb
   magnet?: boolean                  // pulls nearby orbs toward this enemy
   magnetRange?: number              // custom pull range (default: MAGNET_RANGE from constants)
+  blink?: boolean                   // teleports to opposite side of player periodically
+  blinkBeats?: number               // beats between blinks (default: 4)
 }
 
 /** Look up an enemy type by name */

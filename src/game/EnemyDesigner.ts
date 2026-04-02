@@ -400,6 +400,14 @@ function addEnemyForm(existing?: DesignedEnemy): void {
         <input id="ed-magnet-${id}" type="checkbox" ${existing?.magnet ? 'checked' : ''}>
         <span style="${labelCSS} margin:0;">Magnet</span>
       </label>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:6px;">
+        <input id="ed-blink-${id}" type="checkbox" ${existing?.blink ? 'checked' : ''}>
+        <span style="${labelCSS} margin:0;">Blink</span>
+      </label>
+      <div id="ed-blink-beats-wrap-${id}" style="margin-top:4px;display:${existing?.blink ? 'block' : 'none'};">
+        <span style="${labelCSS}">Blink every <span id="ed-blink-beats-val-${id}">${existing?.blinkBeats ?? 4}</span> beats</span>
+        <input id="ed-blink-beats-${id}" type="range" min="2" max="16" step="1" value="${existing?.blinkBeats ?? 4}" style="width:100%;">
+      </div>
       <div id="ed-magnet-range-wrap-${id}" style="margin-top:4px;display:${existing?.magnet ? 'block' : 'none'};">
         <span style="${labelCSS}">Magnet Range: <span id="ed-magnet-range-val-${id}">${existing?.magnetRange ?? 200}</span></span>
         <input id="ed-magnet-range-${id}" type="range" min="80" max="500" step="10" value="${existing?.magnetRange ?? 200}" style="width:100%;">
@@ -556,6 +564,18 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     magnetRangeVal.textContent = magnetRangeInput.value
   })
 
+  // Blink checkbox toggles beats slider
+  const blinkCheckbox = body.querySelector(`#ed-blink-${id}`) as HTMLInputElement
+  const blinkBeatsWrap = body.querySelector(`#ed-blink-beats-wrap-${id}`) as HTMLDivElement
+  const blinkBeatsInput = body.querySelector(`#ed-blink-beats-${id}`) as HTMLInputElement
+  const blinkBeatsVal = body.querySelector(`#ed-blink-beats-val-${id}`) as HTMLSpanElement
+  blinkCheckbox.addEventListener('change', () => {
+    blinkBeatsWrap.style.display = blinkCheckbox.checked ? 'block' : 'none'
+  })
+  blinkBeatsInput.addEventListener('input', () => {
+    blinkBeatsVal.textContent = blinkBeatsInput.value
+  })
+
   function updatePreview(): void {
     const form = readForm()
     const newRings: PreviewRing[] = form.rings.map((rc, i) => {
@@ -615,6 +635,8 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const consume = (div.querySelector(`#ed-consume-${id}`) as HTMLInputElement).checked
     const magnet = (div.querySelector(`#ed-magnet-${id}`) as HTMLInputElement).checked
     const magnetRange = parseInt((div.querySelector(`#ed-magnet-range-${id}`) as HTMLInputElement).value) || 200
+    const blink = (div.querySelector(`#ed-blink-${id}`) as HTMLInputElement).checked
+    const blinkBeats = parseInt((div.querySelector(`#ed-blink-beats-${id}`) as HTMLInputElement).value) || 4
     const totemSpawn = (div.querySelector(`#ed-totem-${id}`) as HTMLInputElement).value.trim()
     const dropType = (div.querySelector(`#ed-drop-${id}`) as HTMLSelectElement).value as 'xp' | 'hp' | 'none'
     const movePattern = (div.querySelector(`#ed-move-${id}`) as HTMLSelectElement).value as import('../entities/EnemyTypes.ts').MovePattern
@@ -622,7 +644,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const sound = (rings[0]?.sound ?? 'pop') as SoundName
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
-    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, movePattern, totemSpawn, dropType }
+    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, movePattern, totemSpawn, dropType }
   }
 
 
