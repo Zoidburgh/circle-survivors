@@ -1920,6 +1920,23 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     ctx.stroke()
   }
 
+  // Magnet indicator — multiple inward-flowing rings
+  if (enemy.magnet && r > 5) {
+    const ringCount = 3
+    const cycleLen = 1.2  // seconds per full cycle
+    const now = performance.now() / 1000
+    for (let i = 0; i < ringCount; i++) {
+      const phase = ((now / cycleLen) + i / ringCount) % 1  // staggered 0→1
+      const pulseR = r + (enemy.magnetRange - r) * (1 - phase)
+      const pulseAlpha = phase * 0.18
+      ctx.beginPath()
+      ctx.arc(sx, sy, pulseR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(80, 180, 255, ${pulseAlpha})`
+      ctx.lineWidth = 1 + phase * 1.5
+      ctx.stroke()
+    }
+  }
+
   // Consume indicator — rotating arcs inside
   if (enemy.consume && r > 8) {
     const scale = r / 44  // scale with enemy size
@@ -2031,11 +2048,76 @@ function drawDesignerPreview(player: Player): void {
   ctx.stroke()
   ctx.setLineDash([])
 
+  // Tag visuals on preview
+  const pr = preview.radius
+
+  // Magnet rings
+  if (preview.magnet) {
+    const ringCount = 3
+    const cycleLen = 1.2
+    const now = performance.now() / 1000
+    for (let i = 0; i < ringCount; i++) {
+      const phase = ((now / cycleLen) + i / ringCount) % 1
+      const pulseR = pr + (preview.magnetRange - pr) * (1 - phase)
+      ctx.beginPath()
+      ctx.arc(sx, sy, pulseR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(80, 180, 255, ${phase * 0.18})`
+      ctx.lineWidth = 1 + phase * 1.5
+      ctx.stroke()
+    }
+  }
+
+  // Consume arcs
+  if (preview.consume) {
+    const scale = pr / 44
+    const voidR = pr * 0.6
+    const spin = performance.now() * 0.002
+    const arcLen = Math.PI * 0.45
+    const gap = (Math.PI * 2 - arcLen * 3) / 3
+    for (let a = 0; a < 3; a++) {
+      const aStart = spin + a * (arcLen + gap)
+      const aEnd = aStart + arcLen
+      ctx.beginPath()
+      ctx.arc(sx, sy, voidR, aStart, aEnd)
+      ctx.strokeStyle = 'rgba(230, 60, 70, 0.15)'
+      ctx.lineWidth = 12 * scale
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(sx, sy, voidR, aStart, aEnd)
+      ctx.strokeStyle = 'rgba(255, 80, 80, 0.5)'
+      ctx.lineWidth = 5 * scale
+      ctx.stroke()
+    }
+  }
+
+  // Immovable brackets
+  if (preview.immovable) {
+    const scale = pr / 44
+    const br = pr + 6 * scale
+    const bLen = pr * 0.3
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)'
+    ctx.lineWidth = 6 * scale
+    ctx.lineCap = 'round'
+    for (let i = 0; i < 4; i++) {
+      const a = Math.PI / 4 + i * Math.PI / 2
+      const cx = sx + Math.cos(a) * br
+      const cy = sy + Math.sin(a) * br
+      const arm1A = a + Math.PI / 2
+      const arm2A = a
+      ctx.beginPath()
+      ctx.moveTo(cx + Math.cos(arm1A) * bLen, cy + Math.sin(arm1A) * bLen)
+      ctx.lineTo(cx, cy)
+      ctx.lineTo(cx - Math.cos(arm2A) * bLen, cy - Math.sin(arm2A) * bLen)
+      ctx.stroke()
+    }
+    ctx.lineCap = 'butt'
+  }
+
   // Labels
   ctx.fillStyle = preview.color
   ctx.font = '11px monospace'
   ctx.textAlign = 'center'
-  ctx.fillText('PREVIEW', sx, sy - preview.radius - 8)
+  ctx.fillText('PREVIEW', sx, sy - preview.radius - (preview.immovable ? 16 : 8))
   ctx.fillText(preview.name, sx, sy + preview.radius + 14)
   ctx.textAlign = 'left'
   ctx.globalAlpha = 1

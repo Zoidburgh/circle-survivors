@@ -5,7 +5,7 @@ import { shouldFire, getBeatInterval, getLoopPosition } from '../audio/PatternCl
 import { playWindup } from '../audio/AudioEngine.ts'
 import { clampToArena, getArenaShape, ARENA_CX, ARENA_CY } from '../game/Arena.ts'
 import { emit } from '../core/EventBus.ts'
-import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME } from '../utils/constants.ts'
+import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import type { Player } from './Player.ts'
 import type { EnemyType, MovePattern } from './EnemyTypes.ts'
@@ -60,6 +60,8 @@ export interface Enemy {
   totemSpawn: string    // empty = not a totem, otherwise enemy type name to spawn
   dropType: 'xp' | 'hp' | 'none'
   consume: boolean      // ring attack consumes nearby orbs, heals +1
+  magnet: boolean       // pulls nearby orbs toward this enemy
+  magnetRange: number   // pull radius
 }
 
 export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
@@ -117,6 +119,8 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     totemSpawn: type.totemSpawn ?? '',
     dropType: type.dropType ?? 'xp',
     consume: type.consume ?? false,
+    magnet: type.magnet ?? false,
+    magnetRange: type.magnetRange ?? MAGNET_RANGE,
   }
 }
 

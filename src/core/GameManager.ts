@@ -9,7 +9,7 @@ import { advancePatternClock } from '../audio/PatternClock.ts'
 import { getPlayer, getEnemies, getGrid, getCamera, getPhase, getXpForNextLevel } from './GameState.ts'
 import { updateOrbs, cleanupOrbs, getOrbs } from '../entities/XPOrb.ts'
 import { updateCamera, clampToArena, getArenaShape, setArenaShape } from '../game/Arena.ts'
-import { PLAYER_RADIUS } from '../utils/constants.ts'
+import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH } from '../utils/constants.ts'
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on } from './EventBus.ts'
 import { perfStart, perfEnd, exportPerfLog, addSpawnEffect } from '../render/Renderer.ts'
@@ -168,6 +168,35 @@ export function update(dt: number): void {
 
   perfStart('u_orbs')
   updateOrbs(dt)
+
+  // Magnet pull — each orb attracted to closest magnet enemy
+  const magnetOrbs = getOrbs()
+  for (const orb of magnetOrbs) {
+    if (!orb.alive || orb.dying) continue
+    let closestDist = Infinity
+    let closestEnemy: Enemy | null = null
+    for (const enemy of enemies) {
+      if (!enemy.alive || enemy.dying || !enemy.magnet) continue
+      const dx = orb.x - enemy.x
+      const dy = orb.y - enemy.y
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      if (dist < enemy.magnetRange && dist < closestDist) {
+        closestDist = dist
+        closestEnemy = enemy
+      }
+    }
+    if (closestEnemy && closestDist > closestEnemy.radius + orb.radius) {
+      const dx = closestEnemy.x - orb.x
+      const dy = closestEnemy.y - orb.y
+      const len = Math.sqrt(dx * dx + dy * dy)
+      const stopDist = closestEnemy.radius + orb.radius
+      if (len > stopDist) {
+        const pull = Math.min(MAGNET_STRENGTH * dt, len - stopDist)  // don't overshoot into body
+        orb.x += (dx / len) * pull
+        orb.y += (dy / len) * pull
+      }
+    }
+  }
   perfEnd('u_orbs')
 
   // Multi-pass separation

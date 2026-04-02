@@ -133,6 +133,11 @@ export interface PreviewEnemy {
   name: string
   moveSpeed: number
   previewRings: PreviewRing[]
+  immovable: boolean
+  consume: boolean
+  magnet: boolean
+  magnetRange: number
+  totemSpawn: string
 }
 let previewEnemy: PreviewEnemy | null = null
 
@@ -391,6 +396,14 @@ function addEnemyForm(existing?: DesignedEnemy): void {
         <input id="ed-consume-${id}" type="checkbox" ${existing?.consume ? 'checked' : ''}>
         <span style="${labelCSS} margin:0;">Consume Orbs</span>
       </label>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:6px;">
+        <input id="ed-magnet-${id}" type="checkbox" ${existing?.magnet ? 'checked' : ''}>
+        <span style="${labelCSS} margin:0;">Magnet</span>
+      </label>
+      <div id="ed-magnet-range-wrap-${id}" style="margin-top:4px;display:${existing?.magnet ? 'block' : 'none'};">
+        <span style="${labelCSS}">Magnet Range: <span id="ed-magnet-range-val-${id}">${existing?.magnetRange ?? 200}</span></span>
+        <input id="ed-magnet-range-${id}" type="range" min="80" max="500" step="10" value="${existing?.magnetRange ?? 200}" style="width:100%;">
+      </div>
       <div style="margin-top:6px;">
         <span style="${labelCSS}">Drop</span>
         <select id="ed-drop-${id}" style="width:100%;padding:4px 6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
@@ -531,6 +544,18 @@ function addEnemyForm(existing?: DesignedEnemy): void {
   const initRings = existing?.rings ?? [{ ringRadius: 140, sound: 'rim', beats: [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5] }]
   for (const rc of initRings) addRingForm(rc)
 
+  // Magnet checkbox toggles range slider visibility
+  const magnetCheckbox = body.querySelector(`#ed-magnet-${id}`) as HTMLInputElement
+  const magnetRangeWrap = body.querySelector(`#ed-magnet-range-wrap-${id}`) as HTMLDivElement
+  const magnetRangeInput = body.querySelector(`#ed-magnet-range-${id}`) as HTMLInputElement
+  const magnetRangeVal = body.querySelector(`#ed-magnet-range-val-${id}`) as HTMLSpanElement
+  magnetCheckbox.addEventListener('change', () => {
+    magnetRangeWrap.style.display = magnetCheckbox.checked ? 'block' : 'none'
+  })
+  magnetRangeInput.addEventListener('input', () => {
+    magnetRangeVal.textContent = magnetRangeInput.value
+  })
+
   function updatePreview(): void {
     const form = readForm()
     const newRings: PreviewRing[] = form.rings.map((rc, i) => {
@@ -552,6 +577,11 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       name: form.name,
       moveSpeed: form.moveSpeed,
       previewRings: newRings,
+      immovable: form.movePattern === 'immovable',
+      consume: form.consume ?? false,
+      magnet: form.magnet ?? false,
+      magnetRange: form.magnetRange ?? 200,
+      totemSpawn: form.totemSpawn ?? '',
     }
   }
 
@@ -583,6 +613,8 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const key = (div.querySelector(`#ed-key-${id}`) as HTMLInputElement).value || (id + 1).toString()
     const blocksRings = (div.querySelector(`#ed-blocks-${id}`) as HTMLInputElement).checked
     const consume = (div.querySelector(`#ed-consume-${id}`) as HTMLInputElement).checked
+    const magnet = (div.querySelector(`#ed-magnet-${id}`) as HTMLInputElement).checked
+    const magnetRange = parseInt((div.querySelector(`#ed-magnet-range-${id}`) as HTMLInputElement).value) || 200
     const totemSpawn = (div.querySelector(`#ed-totem-${id}`) as HTMLInputElement).value.trim()
     const dropType = (div.querySelector(`#ed-drop-${id}`) as HTMLSelectElement).value as 'xp' | 'hp' | 'none'
     const movePattern = (div.querySelector(`#ed-move-${id}`) as HTMLSelectElement).value as import('../entities/EnemyTypes.ts').MovePattern
@@ -590,7 +622,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const sound = (rings[0]?.sound ?? 'pop') as SoundName
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
-    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, movePattern, totemSpawn, dropType }
+    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, movePattern, totemSpawn, dropType }
   }
 
 

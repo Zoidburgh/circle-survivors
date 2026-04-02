@@ -21,6 +21,8 @@ export interface EnemyType {
   totemSpawn?: string          // if set, this is a totem — name of enemy type it spawns on player hit
   dropType?: 'xp' | 'hp' | 'none'  // what orb to drop on kill (default: 'xp')
   consume?: boolean                 // ring attack consumes nearby orbs, heals +1 per orb
+  magnet?: boolean                  // pulls nearby orbs toward this enemy
+  magnetRange?: number              // custom pull range (default: MAGNET_RANGE from constants)
 }
 
 /** Look up an enemy type by name */

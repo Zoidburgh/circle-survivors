@@ -39,6 +39,10 @@ export const ARENA_BUFFER = 80
 export const HIT_GRACE = 2  // extra pixels on enemy/orb hitbox for easier hits (visual unchanged)
 export const AUDIO_THROTTLE_INTERVAL = 0.04
 
+// ── Magnet ──
+export const MAGNET_RANGE = 200      // pull radius in px
+export const MAGNET_STRENGTH = 80    // pull speed in px/s
+
 // ── Chill / Frostbite upgrade ──
 export const CHILL_SLOW_PER_STACK = 0.10   // 10% slow per stack
 export const CHILL_MAX_STACKS = 5           // max stacks on a single enemy
