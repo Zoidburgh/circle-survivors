@@ -20,6 +20,7 @@ export interface EnemyType {
   movePattern?: MovePattern
   totemSpawn?: string          // if set, this is a totem — name of enemy type it spawns on player hit
   dropType?: 'xp' | 'hp' | 'none'  // what orb to drop on kill (default: 'xp')
+  consume?: boolean                 // ring attack consumes nearby orbs, heals +1 per orb
 }
 
 /** Look up an enemy type by name */

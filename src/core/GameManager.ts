@@ -12,7 +12,7 @@ import { updateCamera, clampToArena, getArenaShape, setArenaShape } from '../gam
 import { PLAYER_RADIUS } from '../utils/constants.ts'
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on } from './EventBus.ts'
-import { perfStart, perfEnd, exportPerfLog } from '../render/Renderer.ts'
+import { perfStart, perfEnd, exportPerfLog, addSpawnEffect } from '../render/Renderer.ts'
 import { getEnemyType } from '../entities/EnemyTypes.ts'
 
 let fps = 0
@@ -22,18 +22,85 @@ let perfExportLock = false
 let lastFpsTime = performance.now()
 
 // Totem spawn handler
+/** Find a spawn position that doesn't overlap immovable enemies or the player */
+function findClearSpawnPos(x: number, y: number, radius: number, enemies: Enemy[], player: { x: number; y: number }): { x: number; y: number } {
+  let sx = x, sy = y
+  for (let pass = 0; pass < 3; pass++) {
+    for (const enemy of enemies) {
+      if (!enemy.alive || enemy.dying) continue
+      if (!enemy.immovable) continue
+      const dx = sx - enemy.x
+      const dy = sy - enemy.y
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      const minDist = radius + enemy.radius + 2
+      if (dist < minDist && dist > 0.1) {
+        const overlap = minDist - dist
+        sx += (dx / dist) * overlap
+        sy += (dy / dist) * overlap
+      }
+    }
+    // Also avoid player
+    const pdx = sx - player.x
+    const pdy = sy - player.y
+    const pDist = Math.sqrt(pdx * pdx + pdy * pdy)
+    const pMin = radius + PLAYER_RADIUS + 2
+    if (pDist < pMin && pDist > 0.1) {
+      const overlap = pMin - pDist
+      sx += (pdx / pDist) * overlap
+      sy += (pdy / pDist) * overlap
+    }
+  }
+  const clamped = clampToArena(sx, sy, radius)
+  return clamped
+}
+
 on('totem:spawn', (totemEnemy: Enemy) => {
   const typeName = totemEnemy.totemSpawn
   if (!typeName) return
   const type = getEnemyType(typeName)
   if (!type) return
-  // Spawn at a random offset from the totem
-  const angle = Math.random() * Math.PI * 2
-  const dist = totemEnemy.radius + (type.radius ?? 40) + 10
-  const sx = totemEnemy.x + Math.cos(angle) * dist
-  const sy = totemEnemy.y + Math.sin(angle) * dist
+  // Spawn on the far side of the totem from the player — try multiple angles if blocked
+  const player = getPlayer()
+  const dx = totemEnemy.x - player.x
+  const dy = totemEnemy.y - player.y
+  const len = Math.sqrt(dx * dx + dy * dy)
+  const baseAngle = len > 1 ? Math.atan2(dy, dx) : Math.random() * Math.PI * 2
+  const spawnRadius = type.radius ?? 40
+  const dist = totemEnemy.radius + spawnRadius + 60
   const enemies = getEnemies()
-  enemies.push(createEnemy(sx, sy, type))
+
+  // Try 8 angles, starting from away-from-player, pick the one with least overlap
+  let bestX = totemEnemy.x, bestY = totemEnemy.y, bestOverlap = Infinity
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const angle = baseAngle + (attempt * Math.PI / 4) + (Math.random() - 0.5) * 0.3
+    const rawX = totemEnemy.x + Math.cos(angle) * dist
+    const rawY = totemEnemy.y + Math.sin(angle) * dist
+    const clamped = clampToArena(rawX, rawY, spawnRadius)
+    const pos = findClearSpawnPos(clamped.x, clamped.y, spawnRadius, enemies, player)
+
+    // Measure total overlap at this position
+    let overlap = 0
+    for (const e of enemies) {
+      if (!e.alive || e.dying) continue
+      const edx = pos.x - e.x, edy = pos.y - e.y
+      const eDist = Math.sqrt(edx * edx + edy * edy)
+      const minDist = spawnRadius + e.radius
+      if (eDist < minDist) overlap += minDist - eDist
+    }
+    // Check wall proximity (how much the clamp moved us)
+    const wallDist = Math.sqrt((rawX - pos.x) ** 2 + (rawY - pos.y) ** 2)
+    overlap += wallDist * 0.5
+
+    if (overlap < bestOverlap) {
+      bestOverlap = overlap
+      bestX = pos.x
+      bestY = pos.y
+    }
+    if (overlap < 1) break  // good enough
+  }
+
+  enemies.push(createEnemy(bestX, bestY, type))
+  addSpawnEffect(totemEnemy.x, totemEnemy.y, totemEnemy.radius, bestX, bestY, type.color)
 })
 
 export function update(dt: number): void {
@@ -116,6 +183,42 @@ export function update(dt: number): void {
       if (orb.alive && !orb.dying) grid.insert(orb)
     }
 
+    // Immovable separation — very heavy, barely pushed by anything
+    for (const enemy of enemies) {
+      if (!enemy.alive || enemy.dying || !enemy.immovable) continue
+      const nearby = grid.query(enemy)
+      for (const other of nearby) {
+        if (!('hp' in other)) continue
+        const oe = other as typeof enemy
+        if (!oe.alive || oe.dying || oe === enemy) continue
+        const minDist = enemy.radius + oe.radius + 2
+        const dx = enemy.x - oe.x
+        const dy = enemy.y - oe.y
+        const dist = Math.sqrt(dx * dx + dy * dy)
+        if (dist < minDist && dist > 0.1) {
+          const overlap = minDist - dist
+          const nx = dx / dist
+          const ny = dy / dist
+          if (oe.immovable) {
+            // Both immovable — split evenly
+            enemy.x += nx * overlap * 0.5
+            enemy.y += ny * overlap * 0.5
+            oe.x -= nx * overlap * 0.5
+            oe.y -= ny * overlap * 0.5
+          } else {
+            // Immovable barely moves (10%), other takes the rest (90%)
+            enemy.x += nx * overlap * 0.1
+            enemy.y += ny * overlap * 0.1
+            oe.x -= nx * overlap * 0.9
+            oe.y -= ny * overlap * 0.9
+          }
+        }
+      }
+      const ec = clampToArena(enemy.x, enemy.y, enemy.radius)
+      enemy.x = ec.x
+      enemy.y = ec.y
+    }
+
     // Enemy-enemy separation (grid-accelerated) — immovable enemies act as walls
     for (const enemy of enemies) {
       if (!enemy.alive || enemy.dying || enemy.immovable) continue
@@ -178,14 +281,21 @@ export function update(dt: number): void {
         if (dist < minDist && dist > 0.1) {
           const nx = dx / dist
           const ny = dy / dist
-          if (isEnemy) {
-            const overlap = minDist - dist
-            orb.x += nx * overlap
-            orb.y += ny * overlap
+          const overlap = (minDist - dist) * 0.5
+          orb.x += nx * overlap
+          orb.y += ny * overlap
+          if (!isEnemy) {
+            // Orb-orb: push the other orb too
+            const otherOrb = other as typeof orb
+            otherOrb.x -= nx * overlap
+            otherOrb.y -= ny * overlap
           } else {
-            const overlap = (minDist - dist) * 0.5
-            orb.x += nx * overlap
-            orb.y += ny * overlap
+            // Orb-enemy: push enemy too (same as enemy-enemy)
+            const oe = other as Enemy
+            if (!oe.immovable) {
+              oe.x -= nx * overlap
+              oe.y -= ny * overlap
+            }
           }
         }
       }
@@ -203,22 +313,27 @@ export function update(dt: number): void {
       const dist = Math.sqrt(dx * dx + dy * dy)
       if (dist < minDist && dist > 0.1) {
         const overlap = minDist - dist
-        player.x += (dx / dist) * overlap
-        player.y += (dy / dist) * overlap
+        const nx = dx / dist
+        const ny = dy / dist
+        if (enemy.immovable) {
+          // Player pushes heavy enemy a little (15%), player takes the rest
+          enemy.x -= nx * overlap * 0.15
+          enemy.y -= ny * overlap * 0.15
+          player.x += nx * overlap * 0.85
+          player.y += ny * overlap * 0.85
+          const ec = clampToArena(enemy.x, enemy.y, enemy.radius)
+          enemy.x = ec.x
+          enemy.y = ec.y
+        } else {
+          // Player is heavier than normal enemies
+          player.x += nx * overlap * 0.2
+          player.y += ny * overlap * 0.2
+          enemy.x -= nx * overlap * 0.8
+          enemy.y -= ny * overlap * 0.8
+        }
       }
     }
-    for (const orb of orbs) {
-      if (!orb.alive || orb.dying) continue
-      const minDist = orb.radius + PLAYER_RADIUS
-      const dx = player.x - orb.x
-      const dy = player.y - orb.y
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      if (dist < minDist && dist > 0.1) {
-        const overlap = minDist - dist
-        player.x += (dx / dist) * overlap
-        player.y += (dy / dist) * overlap
-      }
-    }
+    // Orbs never push player — already handled by player-pushes-orbs pass above
     const pc = clampToArena(player.x, player.y, PLAYER_RADIUS)
     player.x = pc.x
     player.y = pc.y

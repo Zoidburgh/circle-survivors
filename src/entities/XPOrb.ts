@@ -13,6 +13,7 @@ export interface XPOrb {
   spawnTimer: number   // 0→1 grow-in
   dying: boolean
   deathTimer: number
+  consumedBy: 'player' | 'enemy' | null
 }
 
 const ORB_RADIUS = PLAYER_RADIUS * 0.5
@@ -37,6 +38,7 @@ export function spawnOrb(x: number, y: number, value = 1, type: OrbType = 'xp'):
     spawnTimer: 0,
     dying: false,
     deathTimer: -1,
+    consumedBy: null,
   })
 }
 
@@ -44,8 +46,9 @@ export function getOrbs(): XPOrb[] {
   return orbs
 }
 
-export function collectOrb(orb: XPOrb): void {
+export function collectOrb(orb: XPOrb, source: 'player' | 'enemy' = 'player'): void {
   orb.dying = true
+  orb.consumedBy = source
   orb.deathTimer = 0
 }
 

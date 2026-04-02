@@ -59,6 +59,7 @@ export interface Enemy {
   immovable: boolean   // derived from movePattern === 'immovable'
   totemSpawn: string    // empty = not a totem, otherwise enemy type name to spawn
   dropType: 'xp' | 'hp' | 'none'
+  consume: boolean      // ring attack consumes nearby orbs, heals +1
 }
 
 export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
@@ -115,6 +116,7 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     immovable: (type.movePattern ?? 'pursue') === 'immovable',
     totemSpawn: type.totemSpawn ?? '',
     dropType: type.dropType ?? 'xp',
+    consume: type.consume ?? false,
   }
 }
 

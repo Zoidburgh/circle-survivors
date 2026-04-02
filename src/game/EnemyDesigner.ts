@@ -387,6 +387,10 @@ function addEnemyForm(existing?: DesignedEnemy): void {
         <input id="ed-blocks-${id}" type="checkbox" ${existing?.blocksRings ? 'checked' : ''}>
         <span style="${labelCSS} margin:0;">Shield</span>
       </label>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:6px;">
+        <input id="ed-consume-${id}" type="checkbox" ${existing?.consume ? 'checked' : ''}>
+        <span style="${labelCSS} margin:0;">Consume Orbs</span>
+      </label>
       <div style="margin-top:6px;">
         <span style="${labelCSS}">Drop</span>
         <select id="ed-drop-${id}" style="width:100%;padding:4px 6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
@@ -578,6 +582,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const radius = parseInt((div.querySelector(`#ed-radius-${id}`) as HTMLInputElement).value) || 40
     const key = (div.querySelector(`#ed-key-${id}`) as HTMLInputElement).value || (id + 1).toString()
     const blocksRings = (div.querySelector(`#ed-blocks-${id}`) as HTMLInputElement).checked
+    const consume = (div.querySelector(`#ed-consume-${id}`) as HTMLInputElement).checked
     const totemSpawn = (div.querySelector(`#ed-totem-${id}`) as HTMLInputElement).value.trim()
     const dropType = (div.querySelector(`#ed-drop-${id}`) as HTMLSelectElement).value as 'xp' | 'hp' | 'none'
     const movePattern = (div.querySelector(`#ed-move-${id}`) as HTMLSelectElement).value as import('../entities/EnemyTypes.ts').MovePattern
@@ -585,7 +590,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const sound = (rings[0]?.sound ?? 'pop') as SoundName
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
-    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, movePattern, totemSpawn, dropType }
+    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, movePattern, totemSpawn, dropType }
   }
 
 

@@ -47,7 +47,10 @@ window.addEventListener('keydown', e => {
     return
   }
   const type = ENEMY_TYPES.find(t => t.key === e.key)
-  if (type) spawnEnemy(type)
+  if (type) {
+    console.log(`Spawning: ${type.name} (key=${type.key}, r=${type.radius}, hp=${type.hp}, totem=${type.totemSpawn || 'none'})`)
+    spawnEnemy(type)
+  }
 })
 
 canvas.addEventListener('click', e => {

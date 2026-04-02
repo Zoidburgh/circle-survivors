@@ -129,6 +129,219 @@ const deathRipples: DeathRipple[] = []
 
 const MAX_RIPPLES = 30
 
+// Orb absorb effects — stream from orb to player
+interface AbsorbEffect {
+  originX: number; originY: number
+  targetX: number; targetY: number  // -1,-1 = track player
+  r: number; g: number; b: number
+  timer: number
+  duration: number
+}
+const absorbEffects: AbsorbEffect[] = []
+const MAX_ABSORBS = 15
+
+export function addAbsorbEffect(x: number, y: number, r: number, g: number, b: number, targetX = -1, targetY = -1): void {
+  if (absorbEffects.length >= MAX_ABSORBS) absorbEffects.shift()
+  absorbEffects.push({ originX: x, originY: y, targetX, targetY, r, g, b, timer: 0, duration: 0.6 })
+}
+
+function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
+  for (let i = absorbEffects.length - 1; i >= 0; i--) {
+    const fx = absorbEffects[i]!
+    fx.timer += dt
+    if (fx.timer >= fx.duration) {
+      absorbEffects[i] = absorbEffects[absorbEffects.length - 1]!
+      absorbEffects.pop()
+      continue
+    }
+    const t = fx.timer / fx.duration
+
+    const sx1 = fx.originX - camX
+    const sy1 = fx.originY - camY
+    const tx = fx.targetX < 0 ? player.x : fx.targetX
+    const ty = fx.targetY < 0 ? player.y : fx.targetY
+    const sx2 = tx - camX
+    const sy2 = ty - camY
+    const ddx = sx2 - sx1, ddy = sy2 - sy1
+
+    // 5 orbs streaming from origin to player
+    const chainCount = 5
+    const spacing = 0.1
+    ctx.lineCap = 'round'
+
+    for (let c = 0; c < chainCount; c++) {
+      const orbT = t - c * spacing
+      if (orbT < 0 || orbT > 1) continue
+      const orbEase = orbT * orbT * (3 - 2 * orbT)  // smooth ease in-out
+      const orbLife = 1 - orbT
+
+      // Sine wave perpendicular to travel direction
+      const perpX = -ddy, perpY = ddx
+      const perpLen = Math.sqrt(perpX * perpX + perpY * perpY)
+      const wave = perpLen > 1
+        ? Math.sin(orbT * 12 + c * 1.5) * 15 * orbLife  // wave that fades near player
+        : 0
+      const wnx = perpLen > 1 ? perpX / perpLen : 0
+      const wny = perpLen > 1 ? perpY / perpLen : 0
+
+      const orbX = sx1 + ddx * orbEase + wnx * wave
+      const orbY = sy1 + ddy * orbEase + wny * wave
+      const orbSize = (13 - c * 1.4) * orbLife
+
+      // Glow
+      ctx.beginPath()
+      ctx.arc(orbX, orbY, orbSize + 10, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.1})`
+      ctx.fill()
+
+      // Core
+      ctx.beginPath()
+      ctx.arc(orbX, orbY, Math.max(1, orbSize), 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${Math.min(255, fx.r + 80)}, ${Math.min(255, fx.g + 60)}, ${Math.min(255, fx.b + 60)}, ${orbLife * 0.6})`
+      ctx.fill()
+
+      // Beam to next
+      if (c < chainCount - 1) {
+        const nextT = t - (c + 1) * spacing
+        if (nextT >= 0) {
+          const nextEase = nextT * nextT * (3 - 2 * nextT)
+          const nextWave = Math.sin(nextT * 12 + (c + 1) * 1.5) * 15 * (1 - nextT)
+          const nextX = sx1 + ddx * nextEase + wnx * nextWave
+          const nextY = sy1 + ddy * nextEase + wny * nextWave
+          ctx.beginPath()
+          ctx.moveTo(orbX, orbY)
+          ctx.lineTo(nextX, nextY)
+          ctx.strokeStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.2})`
+          ctx.lineWidth = 3 * orbLife
+          ctx.stroke()
+        }
+      }
+    }
+    ctx.lineCap = 'butt'
+  }
+}
+
+// Totem spawn effects
+interface SpawnEffect {
+  totemX: number; totemY: number
+  spawnX: number; spawnY: number
+  r: number; g: number; b: number
+  timer: number
+  duration: number
+  totemRadius: number
+}
+const spawnEffects: SpawnEffect[] = []
+const MAX_SPAWN_EFFECTS = 10
+
+export function addSpawnEffect(totemX: number, totemY: number, totemRadius: number, spawnX: number, spawnY: number, color: string): void {
+  if (spawnEffects.length >= MAX_SPAWN_EFFECTS) spawnEffects.shift()
+  const r = parseInt(color.slice(1, 3), 16)
+  const g = parseInt(color.slice(3, 5), 16)
+  const b = parseInt(color.slice(5, 7), 16)
+  spawnEffects.push({ totemX, totemY, spawnX, spawnY, r, g, b, timer: 0, duration: 0.51, totemRadius })
+}
+
+function updateAndDrawSpawnEffects(dt: number): void {
+  for (let i = spawnEffects.length - 1; i >= 0; i--) {
+    const fx = spawnEffects[i]!
+    fx.timer += dt
+    if (fx.timer >= fx.duration) {
+      spawnEffects[i] = spawnEffects[spawnEffects.length - 1]!
+      spawnEffects.pop()
+      continue
+    }
+    const t = fx.timer / fx.duration
+    const ease = 1 - (1 - t) * (1 - t)  // ease-out
+
+    const sx1 = fx.totemX - camX
+    const sy1 = fx.totemY - camY
+    const sx2 = fx.spawnX - camX
+    const sy2 = fx.spawnY - camY
+    const alpha = (1 - t) * (1 - t)
+
+    // Direction from totem to spawn
+    const ddx = sx2 - sx1, ddy = sy2 - sy1
+    const dLen = Math.sqrt(ddx * ddx + ddy * ddy)
+    const dnx = dLen > 0 ? ddx / dLen : 0, dny = dLen > 0 ? ddy / dLen : 0
+
+    // 1. Totem flash — bright glow on totem body at the start
+    if (t < 0.2) {
+      const flashAlpha = (1 - t / 0.2) * 0.6
+      ctx.beginPath()
+      ctx.arc(sx1, sy1, fx.totemRadius, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${flashAlpha})`
+      ctx.fill()
+    }
+
+    // 2. Ejection chain — 5 orbs shooting from totem, fast with trail
+    const chainCount = 5
+    const spacing = 0.08
+    ctx.lineCap = 'round'
+
+    for (let c = 0; c < chainCount; c++) {
+      const orbT = t - c * spacing
+      if (orbT < 0 || orbT > 1) continue
+      // Cubic ease-out — fast launch, decelerates
+      const orbEase = 1 - (1 - orbT) * (1 - orbT) * (1 - orbT)
+      const orbLife = 1 - orbT
+      const isLead = c === 0
+      const orbSize = isLead ? 28 : (20 - c * 2.5)
+      if (orbSize <= 0) continue
+
+      const orbX = sx1 + ddx * orbEase
+      const orbY = sy1 + ddy * orbEase
+
+      // All orbs white-hot to bright, glow in enemy color
+      const blend = c / chainCount  // 0 = lead (white), 1 = tail (lighter enemy color)
+      const coreR = Math.floor(255 - blend * (255 - Math.min(255, fx.r + 120)) * 0.5)
+      const coreG = Math.floor(255 - blend * (255 - Math.min(255, fx.g + 100)) * 0.5)
+      const coreB = Math.floor(255 - blend * (255 - Math.min(255, fx.b + 100)) * 0.5)
+
+      // Glow halo — enemy color
+      ctx.beginPath()
+      ctx.arc(orbX, orbY, orbSize + 16, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${Math.min(255, fx.r + 80)}, ${Math.min(255, fx.g + 60)}, ${Math.min(255, fx.b + 60)}, ${orbLife * 0.15})`
+      ctx.fill()
+
+      // Core orb — white to light
+      ctx.beginPath()
+      ctx.arc(orbX, orbY, orbSize * orbLife, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${coreR}, ${coreG}, ${coreB}, ${orbLife * 0.8})`
+      ctx.fill()
+
+      // Beam to next orb — bright white
+      if (c < chainCount - 1) {
+        const nextT = t - (c + 1) * spacing
+        if (nextT >= 0) {
+          const nextEase = 1 - (1 - nextT) * (1 - nextT) * (1 - nextT)
+          const nextX = sx1 + ddx * nextEase
+          const nextY = sy1 + ddy * nextEase
+          ctx.beginPath()
+          ctx.moveTo(orbX, orbY)
+          ctx.lineTo(nextX, nextY)
+          ctx.strokeStyle = `rgba(255, 255, 255, ${orbLife * 0.2})`
+          ctx.lineWidth = 10 * orbLife
+          ctx.stroke()
+        }
+      }
+    }
+
+    ctx.lineCap = 'butt'
+
+    // 3. Spawn pulse ring — expands from spawn point when head arrives
+    if (t > 0.3) {
+      const pulseT = (t - 0.3) / 0.7
+      const pulseR = 10 + pulseT * 40
+      const pulseAlpha = (1 - pulseT) * (1 - pulseT) * 0.4
+      ctx.beginPath()
+      ctx.arc(sx2, sy2, pulseR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${pulseAlpha})`
+      ctx.lineWidth = 2 * (1 - pulseT)
+      ctx.stroke()
+    }
+  }
+}
+
 function spawnDeathRipples(x: number, y: number, radius: number, color: string): void {
   if (deathRipples.length >= MAX_RIPPLES) return
   const r = parseInt(color.slice(1, 3), 16)
@@ -333,6 +546,8 @@ function pillPath(cx: number, cy: number, halfW: number, r: number, ccw = false)
 export function resetRenderer(): void {
   particles.length = 0
   deathRipples.length = 0
+  spawnEffects.length = 0
+  absorbEffects.length = 0
   borderWaveIntensity = 0
   playerGlowIntensity = 0
   outerPulseIntensity = 0
@@ -504,6 +719,9 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfStart('player')
   drawPlayer(player)
   perfEnd('player')
+
+  updateAndDrawSpawnEffects(lastDt)
+  updateAndDrawAbsorbEffects(lastDt, player)
 
   drawDesignerPreview(player)
   drawSpawnPanel()
@@ -1031,10 +1249,22 @@ function drawXPOrbs(player: Player): void {
       const t = Math.min(orb.deathTimer / 0.2, 1)
       const r = orb.baseRadius * (1 - t * 0.5)
 
-      // Spawn particles + ripple on first frame
+      // Spawn particles on first frame — fly toward player
       if (orb.deathTimer < 0.02) {
-        spawnRingParticles(orb.x, orb.y, r * 0.5, orbR, orbG, orbB, 10, 80, 0.3, 3)
-        spawnRingParticles(orb.x, orb.y, r * 0.3, 255, 255, 255, 6, 50, 0.2, 2)
+        const toPlayerDx = player.x - orb.x
+        const toPlayerDy = player.y - orb.y
+        const toPlayerDist = Math.sqrt(toPlayerDx * toPlayerDx + toPlayerDy * toPlayerDy)
+        const tpnx = toPlayerDist > 1 ? toPlayerDx / toPlayerDist : 0
+        const tpny = toPlayerDist > 1 ? toPlayerDy / toPlayerDist : 0
+
+        // Absorb stream — only for player-collected orbs
+        if (orb.consumedBy !== 'enemy') {
+          const absR = isHP ? 255 : Math.min(255, orbR + 50)
+          const absG = isHP ? 140 : Math.min(255, orbG + 30)
+          const absB = isHP ? 140 : Math.min(255, orbB + 30)
+          addAbsorbEffect(orb.x, orb.y, absR, absG, absB)
+        }
+
         const rippleColor = isHP ? '#E63B3B' : (isDouble ? '#64D732' : '#64FFc8')
         spawnDeathRipples(orb.x, orb.y, r * 1.5, rippleColor)
       }
@@ -1439,6 +1669,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   const ringOverEnemy = playerRadius > 0 && Math.abs(distToPlayer - playerRadius) < r
 
   const hr = enemy.cr, hg = enemy.cg, hb = enemy.cb
+  const isTotem = enemy.totemSpawn !== ''
 
   const hpFraction = enemy.displayHp / enemy.maxHp
   const damageFraction = player.damage * player.modifiers.damageMult / enemy.maxHp
@@ -1456,10 +1687,14 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     ctx.fill()
   }
 
-  // Damaged background — solid fill (no gradient for perf)
+  // Background — solid fill
   ctx.beginPath()
   ctx.arc(sx, sy, r, 0, Math.PI * 2)
-  ctx.fillStyle = `rgba(${Math.floor(hr * 0.08)}, ${Math.floor(hg * 0.08)}, ${Math.floor(hb * 0.08)}, 0.55)`
+  if (isTotem) {
+    ctx.fillStyle = 'rgba(15, 15, 20, 0.75)'  // neutral dark, heavier
+  } else {
+    ctx.fillStyle = `rgba(${Math.floor(hr * 0.08)}, ${Math.floor(hg * 0.08)}, ${Math.floor(hb * 0.08)}, 0.55)`
+  }
   ctx.fill()
 
   // Hit particles — burst from the pie edge, intensity scales with damage fraction
@@ -1496,10 +1731,99 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     }
   }
 
-  // HP pie wedge — radial gradient fill (bright center, dark edge)
+  // HP display
   const actualHpFraction = enemy.hp / enemy.maxHp
-  if (hpFraction > 0) {
-    // Red draining wedge — the gap between displayHp (visual) and hp (actual)
+
+  if (isTotem && hpFraction > 0) {
+    // Segmented HP — cap visual segments for perf
+    const segments = Math.min(enemy.maxHp, 20)
+    const hpPerSeg = enemy.maxHp / segments
+    const gapAngle = segments > 1 ? 0.06 : 0
+    const segAngle = (Math.PI * 2 - gapAngle * segments) / segments
+
+    // Two-tone colors: bright inner, dark outer
+    const midR = Math.max(0, r * 0.55)
+    const innerFill = `rgba(${Math.min(255, hr + 30)}, ${Math.min(255, hg + 20)}, ${Math.min(255, hb + 20)}, 0.6)`
+    const outerFill = `rgba(${Math.floor(hr * 0.75)}, ${Math.floor(hg * 0.75)}, ${Math.floor(hb * 0.75)}, 0.5)`
+    const edgeColor = `rgba(${Math.min(255, hr + 80)}, ${Math.min(255, hg + 60)}, ${Math.min(255, hb + 60)}, 0.3)`
+
+    // Helper: draw a two-tone filled segment
+    const drawSegFill = (sStart: number, sEnd: number) => {
+      // Outer dark portion (full wedge)
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.arc(sx, sy, r, sStart, sEnd)
+      ctx.closePath()
+      ctx.fillStyle = outerFill
+      ctx.fill()
+      // Inner bright portion (smaller wedge on top)
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.arc(sx, sy, midR, sStart, sEnd)
+      ctx.closePath()
+      ctx.fillStyle = innerFill
+      ctx.fill()
+      // Edge highlight arc
+      ctx.beginPath()
+      ctx.arc(sx, sy, Math.max(0, r - 2), sStart, sEnd)
+      ctx.strokeStyle = edgeColor
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    }
+
+    for (let s = 0; s < segments; s++) {
+      const segStart = startAngle + s * (segAngle + gapAngle)
+      const segEnd = segStart + segAngle
+      const segHPMin = s * hpPerSeg
+      const segHPMax = (s + 1) * hpPerSeg
+
+      if (enemy.hp >= segHPMax) {
+        drawSegFill(segStart, segEnd)
+      } else if (enemy.displayHp > segHPMin) {
+        const displayInSeg = Math.min(enemy.displayHp - segHPMin, hpPerSeg)
+        const actualInSeg = Math.max(0, enemy.hp - segHPMin)
+        const displayFrac = displayInSeg / hpPerSeg
+        const actualFrac = actualInSeg / hpPerSeg
+
+        // Red drain part
+        if (displayFrac > actualFrac) {
+          const redStart = segStart + actualFrac * segAngle
+          const redEnd = segStart + displayFrac * segAngle
+          ctx.beginPath()
+          ctx.moveTo(sx, sy)
+          ctx.arc(sx, sy, r, redStart, redEnd)
+          ctx.closePath()
+          ctx.fillStyle = 'rgba(255, 50, 50, 0.4)'
+          ctx.fill()
+        }
+
+        // Remaining HP — two-tone
+        if (actualFrac > 0) {
+          drawSegFill(segStart, segStart + actualFrac * segAngle)
+        }
+      }
+    }
+
+    // Structural divider lines
+    if (segments > 1) {
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)'
+      ctx.lineWidth = 1.5
+      for (let s = 0; s < segments; s++) {
+        const divAngle = startAngle + s * (segAngle + gapAngle) - gapAngle / 2
+        ctx.beginPath()
+        ctx.moveTo(sx, sy)
+        ctx.lineTo(sx + Math.cos(divAngle) * r, sy + Math.sin(divAngle) * r)
+        ctx.stroke()
+      }
+    }
+
+    // Center mark — bright core dot
+    ctx.beginPath()
+    ctx.arc(sx, sy, 4, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(${Math.min(255, hr + 100)}, ${Math.min(255, hg + 80)}, ${Math.min(255, hb + 80)}, 0.7)`
+    ctx.fill()
+  } else if (hpFraction > 0) {
+    // Normal enemy HP pie
     if (hpFraction > actualHpFraction) {
       const actualEnd = startAngle + actualHpFraction * Math.PI * 2
       ctx.beginPath()
@@ -1510,7 +1834,6 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       ctx.fill()
     }
 
-    // Main HP fill
     const mainEnd = startAngle + actualHpFraction * Math.PI * 2
     const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
     grad.addColorStop(0, `rgba(${hr}, ${hg}, ${hb}, 0.7)`)
@@ -1568,12 +1891,86 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     }
   }
 
-  // Outline — crisp thin edge
-  ctx.beginPath()
-  ctx.arc(sx, sy, r, 0, Math.PI * 2)
-  ctx.strokeStyle = ringOverEnemy ? '#FFFFFF' : enemy.color
-  ctx.lineWidth = 1.5
-  ctx.stroke()
+  // Outline
+  if (isTotem) {
+    // Totem: glow behind outline + thick border + inner ring
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.12)`
+    ctx.lineWidth = 8
+    ctx.stroke()
+
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.strokeStyle = ringOverEnemy ? '#FFFFFF' : enemy.color
+    ctx.lineWidth = 3
+    ctx.stroke()
+
+    ctx.beginPath()
+    ctx.arc(sx, sy, Math.max(0, r - 6), 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.25)`
+    ctx.lineWidth = 1
+    ctx.stroke()
+  } else {
+    // Normal enemy: crisp thin edge
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.strokeStyle = ringOverEnemy ? '#FFFFFF' : enemy.color
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+  }
+
+  // Consume indicator — rotating arcs inside
+  if (enemy.consume && r > 8) {
+    const scale = r / 44  // scale with enemy size
+    const voidR = r * 0.6
+    const spin = performance.now() * 0.002
+    const arcCount = 3
+    const arcLen = Math.PI * 0.45
+    const gap = (Math.PI * 2 - arcLen * arcCount) / arcCount
+
+    for (let a = 0; a < arcCount; a++) {
+      const aStart = spin + a * (arcLen + gap)
+      const aEnd = aStart + arcLen
+
+      ctx.beginPath()
+      ctx.arc(sx, sy, voidR, aStart, aEnd)
+      ctx.strokeStyle = 'rgba(230, 60, 70, 0.15)'
+      ctx.lineWidth = 12 * scale
+      ctx.stroke()
+
+      ctx.beginPath()
+      ctx.arc(sx, sy, voidR, aStart, aEnd)
+      ctx.strokeStyle = 'rgba(255, 80, 80, 0.5)'
+      ctx.lineWidth = 5 * scale
+      ctx.stroke()
+    }
+  }
+
+  // Immovable indicator — corner brackets
+  if (enemy.immovable && r > 5) {
+    const scale = r / 44
+    const br = r + 6 * scale
+    const bLen = r * 0.3
+    ctx.strokeStyle = `rgba(255, 255, 255, 0.55)`
+    ctx.lineWidth = 6 * scale
+    ctx.lineCap = 'round'
+    // 4 corners at 45°, 135°, 225°, 315°
+    for (let i = 0; i < 4; i++) {
+      const a = Math.PI / 4 + i * Math.PI / 2
+      const cx = sx + Math.cos(a) * br
+      const cy = sy + Math.sin(a) * br
+      // Two arms of the L-bracket, perpendicular to the diagonal
+      const arm1A = a + Math.PI / 2
+      const arm2A = a
+      ctx.beginPath()
+      ctx.moveTo(cx + Math.cos(arm1A) * bLen, cy + Math.sin(arm1A) * bLen)
+      ctx.lineTo(cx, cy)
+      ctx.lineTo(cx - Math.cos(arm2A) * bLen, cy - Math.sin(arm2A) * bLen)
+      ctx.stroke()
+    }
+    ctx.lineCap = 'butt'
+  }
 }
 
 function drawDesignerPreview(player: Player): void {

@@ -10,6 +10,7 @@ import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playColl
 import { getBlockedArcs, isTargetBlocked } from './RingOcclusion.ts'
 import { spawnOrb, collectOrb, ORB_HP_HEAL } from '../entities/XPOrb.ts'
 import type { XPOrb } from '../entities/XPOrb.ts'
+import { addAbsorbEffect } from '../render/Renderer.ts'
 import { hasBonus } from './UpgradeManager.ts'
 
 export function initHitDetection(): void {
@@ -145,6 +146,32 @@ export function initHitDetection(): void {
         player.hitFlash = HIT_FLASH_DURATION
         playPlayerHit()
         if (player.hp <= 0) player.hp = 0
+      }
+    }
+
+    // Consume: eat nearby orbs at ring peak, heal +1 per orb
+    if (enemy.consume && ringRadius > 1) {
+      const grid = getGrid()
+      const ringEntity = { x: enemy.x, y: enemy.y, radius: ringRadius }
+      const nearby = grid.query(ringEntity)
+      for (const entity of nearby) {
+        if ('hp' in entity) continue  // skip enemies
+        const orb = entity as XPOrb
+        if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
+        const oDist = distance({ x: enemy.x, y: enemy.y }, { x: orb.x, y: orb.y })
+        if (Math.abs(oDist - ringRadius) < orb.radius + HIT_GRACE) {
+          collectOrb(orb, 'enemy')
+          // Heal enemy
+          if (enemy.hp < enemy.maxHp) {
+            enemy.hp = Math.min(enemy.hp + 1, enemy.maxHp)
+          }
+          // Absorb stream from orb to enemy
+          const isHP = orb.orbType === 'hp'
+          const absR = isHP ? 255 : 150
+          const absG = isHP ? 140 : 255
+          const absB = isHP ? 140 : 200
+          addAbsorbEffect(orb.x, orb.y, absR, absG, absB, enemy.x, enemy.y)
+        }
       }
     }
   })
