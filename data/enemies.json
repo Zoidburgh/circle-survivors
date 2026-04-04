@@ -3,34 +3,91 @@
   "enemies": [
     {
       "name": "Enemy3",
-      "color": "#ffeb3b",
-      "hp": 10,
-      "moveSpeed": 100,
-      "radius": 70,
+      "color": "#ba68c8",
+      "hp": 4,
+      "moveSpeed": 250,
+      "radius": 38,
       "ringRadius": 120,
       "key": "2",
       "role": "pop",
       "sound": "pop",
       "beats": [],
       "rings": [],
-      "blocksRings": true,
-      "movePattern": "zigzag"
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 430,
+      "blink": false,
+      "blinkBeats": 4,
+      "movePattern": "zigzag",
+      "totemSpawn": "",
+      "dropType": "xp"
     },
     {
-      "name": "Enemy5",
-      "color": "#ab47bc",
+      "name": "Test_Save",
+      "color": "#71dd3c",
       "hp": 2,
-      "moveSpeed": 300,
+      "moveSpeed": 120,
       "radius": 40,
-      "ringRadius": 140,
+      "ringRadius": 150,
       "key": "5",
       "role": "rim",
       "sound": "rim",
       "beats": [
         0.5,
-        2,
+        1.5,
+        2.5,
+        3.5,
         4.5,
-        6
+        5.5,
+        6.5,
+        7.5
+      ],
+      "rings": [
+        {
+          "ringRadius": 150,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ]
+        }
+      ],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": true,
+      "blinkBeats": 2,
+      "movePattern": "pursue",
+      "totemSpawn": "",
+      "dropType": "xp"
+    },
+    {
+      "name": "Enemy4",
+      "color": "#ff1744",
+      "hp": 3,
+      "moveSpeed": 200,
+      "radius": 20,
+      "ringRadius": 140,
+      "key": "4",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0.5,
+        1.5,
+        2.5,
+        3.5,
+        4.5,
+        5.5,
+        6.5,
+        7.5
       ],
       "rings": [
         {
@@ -38,94 +95,177 @@
           "sound": "rim",
           "beats": [
             0.5,
-            2,
+            1.5,
+            2.5,
+            3.5,
             4.5,
-            6
+            5.5,
+            6.5,
+            7.5
           ]
         }
       ],
       "blocksRings": false,
-      "movePattern": "bounce"
+      "consume": true,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "movePattern": "immovable",
+      "totemSpawn": "dsd",
+      "dropType": "hp"
+    },
+    {
+      "name": "Enemy4_2",
+      "color": "#aeea00",
+      "hp": 6,
+      "moveSpeed": 50,
+      "radius": 80,
+      "ringRadius": 200,
+      "key": "4",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0.5,
+        1.5,
+        2.5,
+        3.5,
+        4.5,
+        5.5,
+        6.5,
+        7.5
+      ],
+      "rings": [
+        {
+          "ringRadius": 200,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ]
+        }
+      ],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "movePattern": "lunge",
+      "totemSpawn": "Enemy5",
+      "dropType": "xp"
+    },
+    {
+      "name": "Enemy5",
+      "color": "#cfd8dc",
+      "hp": 2,
+      "moveSpeed": 50,
+      "radius": 40,
+      "ringRadius": 140,
+      "key": "5",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0.5,
+        1.5,
+        2.5,
+        3.5,
+        4.5,
+        5.5,
+        6.5,
+        7.5
+      ],
+      "rings": [
+        {
+          "ringRadius": 140,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ]
+        }
+      ],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "movePattern": "immovable",
+      "totemSpawn": "Test_Save",
+      "dropType": "xp"
     },
     {
       "name": "Enemy6",
-      "color": "#4fc3f7",
-      "hp": 10,
-      "moveSpeed": 50,
-      "radius": 60,
-      "ringRadius": 300,
+      "color": "#f9a825",
+      "hp": 6,
+      "moveSpeed": 200,
+      "radius": 100,
+      "ringRadius": 200,
       "key": "6",
       "role": "rim",
       "sound": "rim",
       "beats": [
+        0,
         0.5,
+        1,
         1.5,
+        2,
         2.5,
+        3,
         3.5,
+        4,
         4.5,
+        5,
         5.5,
+        6,
         6.5,
+        7,
         7.5
       ],
       "rings": [
         {
-          "ringRadius": 300,
+          "ringRadius": 200,
           "sound": "rim",
           "beats": [
+            0,
             0.5,
+            1,
             1.5,
+            2,
             2.5,
+            3,
             3.5,
+            4,
             4.5,
+            5,
             5.5,
+            6,
             6.5,
-            7.5
-          ]
-        }
-      ],
-      "blocksRings": true,
-      "movePattern": "pursue",
-      "immovable": false,
-      "totemSpawn": ""
-    },
-    {
-      "name": "Test_Save",
-      "color": "#ab47bc",
-      "hp": 2,
-      "moveSpeed": 50,
-      "radius": 40,
-      "ringRadius": 140,
-      "key": "5",
-      "role": "rim",
-      "sound": "rim",
-      "beats": [
-        0.5,
-        1.5,
-        2.5,
-        3.5,
-        4.5,
-        5.5,
-        6.5,
-        7.5
-      ],
-      "rings": [
-        {
-          "ringRadius": 140,
-          "sound": "rim",
-          "beats": [
-            0.5,
-            1.5,
-            2.5,
-            3.5,
-            4.5,
-            5.5,
-            6.5,
+            7,
             7.5
           ]
         }
       ],
       "blocksRings": false,
-      "movePattern": "pursue",
+      "consume": true,
+      "magnet": true,
+      "magnetRange": 370,
+      "blink": false,
+      "blinkBeats": 4,
+      "movePattern": "lunge",
       "totemSpawn": "Enemy3",
       "dropType": "xp"
     }

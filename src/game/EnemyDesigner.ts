@@ -33,6 +33,54 @@ let panel: HTMLDivElement | null = null
 let visible = false
 
 // ── Persistence ──
+// ── Curated color palette ──
+// HSL-based, avoids player cyan (180-200) and orb teal (150-170)
+function hsl(h: number, s: number, l: number): string {
+  // Convert HSL to hex
+  const c = (1 - Math.abs(2 * l / 100 - 1)) * s / 100
+  const x = c * (1 - Math.abs((h / 60) % 2 - 1))
+  const m = l / 100 - c / 2
+  let r = 0, g = 0, b = 0
+  if (h < 60) { r = c; g = x }
+  else if (h < 120) { r = x; g = c }
+  else if (h < 180) { g = c; b = x }
+  else if (h < 240) { g = x; b = c }
+  else if (h < 300) { r = x; b = c }
+  else { r = c; b = x }
+  const toHex = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, '0')
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`
+}
+
+const ENEMY_PALETTE: string[] = [
+  // ── Neon / Electric ──
+  '#FF0055', '#FF2D6A', '#FF4081', '#FF6090', '#FF80AB',  // hot pink
+  '#FF3300', '#FF5722', '#FF6E40', '#FF8A65', '#FFAB91',  // neon red-orange
+  '#FF6D00', '#FF9100', '#FFB300', '#FFC107', '#FFD54F',  // amber/gold
+  '#EEFF41', '#C6FF00', '#AEEA00', '#9AE600', '#76FF03',  // acid green
+  '#00E676', '#00C853', '#2E7D32', '#1B5E20', '#4CAF50',  // matrix green
+
+  // ── Cyber Blues/Purples ──
+  '#304FFE', '#3D5AFE', '#536DFE', '#448AFF', '#82B1FF',  // electric blue
+  '#651FFF', '#7C4DFF', '#AA00FF', '#B388FF', '#CE93D8',  // neon purple
+  '#D500F9', '#E040FB', '#EA80FC', '#F06292', '#EC407A',  // magenta/fuchsia
+  '#6200EA', '#7B1FA2', '#9C27B0', '#AB47BC', '#BA68C8',  // deep violet
+
+  // ── Warm Cyber ──
+  '#FF1744', '#D50000', '#C62828', '#B71C1C', '#E53935',  // blood red
+  '#FF9800', '#F57C00', '#E65100', '#BF360C', '#DD2C00',  // rust/fire
+  '#FFD740', '#FFC400', '#FFAB00', '#FF8F00', '#F9A825',  // cyber gold
+  '#FFEE58', '#FDD835', '#F5BF03', '#E6A800', '#D4A017',  // plasma yellow
+
+  // ── Cool Cyber ──
+  '#00B0FF', '#0091EA', '#01579B', '#0288D1', '#039BE5',  // steel blue
+  '#1DE9B6', '#00BFA5', '#009688', '#00897B', '#00695C',  // cyber teal
+  '#18FFFF', '#00E5FF', '#00B8D4', '#0097A7', '#00838F',  // ice cyan
+
+  // ── Neutrals / Chrome ──
+  '#ECEFF1', '#CFD8DC', '#B0BEC5', '#90A4AE', '#78909C',  // chrome
+  '#546E7A', '#455A64', '#37474F', '#263238', '#1A1A2E',  // dark steel
+]
+
 const SAVE_KEY = 'circle-survivors-enemies'
 const SAVE_VERSION = 1
 
@@ -369,6 +417,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       <div style="flex:1;"><span style="${labelCSS}">Name</span><input id="ed-name-${id}" value="${defaultName}" style="${inputCSS}"></div>
       <div><span style="${labelCSS}">Color</span><input id="ed-color-${id}" type="color" value="${defaultColor}" style="width:40px;height:32px;border:none;cursor:pointer;background:none;display:block;"></div>
     </div>
+    <div id="ed-palette-${id}" style="display:flex;flex-wrap:wrap;gap:2px;margin-bottom:8px;"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:6px;margin-bottom:8px;">
       <div><span style="${labelCSS}">HP</span><input id="ed-hp-${id}" type="text" value="${existing?.hp ?? 2}" style="${inputCSS}"></div>
       <div><span style="${labelCSS}">Speed</span><input id="ed-speed-${id}" type="text" value="${existing?.moveSpeed ?? 50}" style="${inputCSS}"></div>
@@ -388,41 +437,50 @@ function addEnemyForm(existing?: DesignedEnemy): void {
           <option value="immovable" ${existing?.movePattern === 'immovable' ? 'selected' : ''}>Immovable — wall, can't be pushed</option>
         </select>
       </div>
-      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:14px;">
-        <input id="ed-blocks-${id}" type="checkbox" ${existing?.blocksRings ? 'checked' : ''}>
-        <span style="${labelCSS} margin:0;">Shield</span>
-      </label>
-      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:6px;">
-        <input id="ed-consume-${id}" type="checkbox" ${existing?.consume ? 'checked' : ''}>
-        <span style="${labelCSS} margin:0;">Consume Orbs</span>
-      </label>
-      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:6px;">
-        <input id="ed-magnet-${id}" type="checkbox" ${existing?.magnet ? 'checked' : ''}>
-        <span style="${labelCSS} margin:0;">Magnet</span>
-      </label>
-      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:6px;">
-        <input id="ed-blink-${id}" type="checkbox" ${existing?.blink ? 'checked' : ''}>
-        <span style="${labelCSS} margin:0;">Blink</span>
-      </label>
-      <div id="ed-blink-beats-wrap-${id}" style="margin-top:4px;display:${existing?.blink ? 'block' : 'none'};">
-        <span style="${labelCSS}">Blink every <span id="ed-blink-beats-val-${id}">${existing?.blinkBeats ?? 4}</span> beats</span>
-        <input id="ed-blink-beats-${id}" type="range" min="2" max="16" step="1" value="${existing?.blinkBeats ?? 4}" style="width:100%;">
+      <!-- Tags section -->
+      <div style="margin-top:12px;padding:8px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:4px;">
+        <span style="color:#4FC3F7;font-size:11px;font-weight:bold;display:block;margin-bottom:6px;">Tags</span>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;">
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input id="ed-blocks-${id}" type="checkbox" ${existing?.blocksRings ? 'checked' : ''}>
+            <span style="color:#aaa;font:11px monospace;">Shield</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input id="ed-consume-${id}" type="checkbox" ${existing?.consume ? 'checked' : ''}>
+            <span style="color:#FF8080;font:11px monospace;">Consume</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input id="ed-magnet-${id}" type="checkbox" ${existing?.magnet ? 'checked' : ''}>
+            <span style="color:#50B4FF;font:11px monospace;">Magnet</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input id="ed-blink-${id}" type="checkbox" ${existing?.blink ? 'checked' : ''}>
+            <span style="color:#CE93D8;font:11px monospace;">Blink</span>
+          </label>
+        </div>
+        <div id="ed-magnet-range-wrap-${id}" style="margin-top:6px;display:${existing?.magnet ? 'block' : 'none'};">
+          <span style="color:#50B4FF;font:10px monospace;">Range: <span id="ed-magnet-range-val-${id}">${existing?.magnetRange ?? 200}</span></span>
+          <input id="ed-magnet-range-${id}" type="range" min="80" max="500" step="10" value="${existing?.magnetRange ?? 200}" style="width:100%;">
+        </div>
+        <div id="ed-blink-beats-wrap-${id}" style="margin-top:4px;display:${existing?.blink ? 'block' : 'none'};">
+          <span style="color:#CE93D8;font:10px monospace;">Every <span id="ed-blink-beats-val-${id}">${existing?.blinkBeats ?? 4}</span> beats</span>
+          <input id="ed-blink-beats-${id}" type="range" min="2" max="16" step="1" value="${existing?.blinkBeats ?? 4}" style="width:100%;">
+        </div>
       </div>
-      <div id="ed-magnet-range-wrap-${id}" style="margin-top:4px;display:${existing?.magnet ? 'block' : 'none'};">
-        <span style="${labelCSS}">Magnet Range: <span id="ed-magnet-range-val-${id}">${existing?.magnetRange ?? 200}</span></span>
-        <input id="ed-magnet-range-${id}" type="range" min="80" max="500" step="10" value="${existing?.magnetRange ?? 200}" style="width:100%;">
-      </div>
-      <div style="margin-top:6px;">
-        <span style="${labelCSS}">Drop</span>
-        <select id="ed-drop-${id}" style="width:100%;padding:4px 6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
-          <option value="xp" ${(existing?.dropType ?? 'xp') === 'xp' ? 'selected' : ''}>XP Orb</option>
-          <option value="hp" ${existing?.dropType === 'hp' ? 'selected' : ''}>HP Orb</option>
-          <option value="none" ${existing?.dropType === 'none' ? 'selected' : ''}>None</option>
-        </select>
-      </div>
-      <div style="margin-top:6px;">
-        <span style="${labelCSS}">Totem Spawn</span>
-        <input id="ed-totem-${id}" type="text" value="${existing?.totemSpawn ?? ''}" placeholder="enemy name" style="width:100%;padding:4px 6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
+      <!-- Behavior section -->
+      <div style="margin-top:8px;display:flex;gap:8px;">
+        <div style="flex:1;">
+          <span style="${labelCSS}">Drop</span>
+          <select id="ed-drop-${id}" style="width:100%;padding:4px 6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
+            <option value="xp" ${(existing?.dropType ?? 'xp') === 'xp' ? 'selected' : ''}>XP</option>
+            <option value="hp" ${existing?.dropType === 'hp' ? 'selected' : ''}>HP</option>
+            <option value="none" ${existing?.dropType === 'none' ? 'selected' : ''}>None</option>
+          </select>
+        </div>
+        <div style="flex:2;">
+          <span style="${labelCSS}">Totem Spawn</span>
+          <input id="ed-totem-${id}" type="text" value="${existing?.totemSpawn ?? ''}" placeholder="enemy name" style="width:100%;padding:4px 6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
+        </div>
       </div>
     </div>
 
@@ -547,6 +605,19 @@ function addEnemyForm(existing?: DesignedEnemy): void {
 
   // Add ring button
   body.querySelector(`#ed-addring-${id}`)!.addEventListener('click', () => addRingForm())
+
+  // Color palette swatches
+  const paletteDiv = body.querySelector(`#ed-palette-${id}`) as HTMLDivElement
+  const colorInput = body.querySelector(`#ed-color-${id}`) as HTMLInputElement
+  for (const c of ENEMY_PALETTE) {
+    const swatch = document.createElement('div')
+    swatch.style.cssText = `width:14px;height:14px;border-radius:2px;cursor:pointer;background:${c};border:1px solid rgba(255,255,255,0.1);`
+    swatch.addEventListener('click', () => {
+      colorInput.value = c
+      updatePreview()
+    })
+    paletteDiv.appendChild(swatch)
+  }
 
   // Initialize rings from existing data
   const initRings = existing?.rings ?? [{ ringRadius: 140, sound: 'rim', beats: [0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5] }]

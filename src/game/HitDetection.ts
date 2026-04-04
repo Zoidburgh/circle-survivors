@@ -30,7 +30,7 @@ export function initHitDetection(): void {
 
     const isDashing = player.dashTimer >= 0
     // Cap dash sweep to last 30% of dash path — prevents full backtrack
-    const DASH_SWEEP_CAP = 0.45
+    const DASH_SWEEP_CAP = 0.3
     const dashCapT = isDashing ? 1 - DASH_SWEEP_CAP : 0
     const sweepFromX = isDashing
       ? player.dashStartX + (player.x - player.dashStartX) * dashCapT

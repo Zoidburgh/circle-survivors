@@ -18,7 +18,7 @@ import {
 import { hexToRgba } from '../utils/math.ts'
 import { COLOR_PLAYER } from '../utils/constants.ts'
 
-const DASH_DISTANCE = 260
+const DASH_DISTANCE = 312
 const DASH_DURATION = 0.5
 export const DASH_CHARGE_TIME = 3.0  // seconds to regen one charge
 export const DASH_MAX_CHARGES = 2

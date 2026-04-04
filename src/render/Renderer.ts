@@ -657,7 +657,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       // Snap: capture sweep state at explosion
       dashSweepIntensity = 1
       // Match the 30% cap from HitDetection
-      const capT = 0.55
+      const capT = 0.7
       dashSweepStartX = player.dashStartX + (player.x - player.dashStartX) * capT
       dashSweepStartY = player.dashStartY + (player.y - player.dashStartY) * capT
       dashSweepEndX = player.x
@@ -751,14 +751,22 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
 function drawGrid(player: Player): void {
   const cellSize = GRID_CELL_PX
 
-  // Radial floor gradient — subtle darkening toward arena edges
-  const arenaCx = ARENA_CX - camX
-  const arenaCy = ARENA_CY - camY
-  const gradR = getArenaShape() === 'circle' ? ARENA_RADIUS * 0.7 : Math.max(ARENA_W, ARENA_H) * 0.6
-  const floorGrad = ctx.createRadialGradient(arenaCx, arenaCy, 0, arenaCx, arenaCy, gradR)
-  floorGrad.addColorStop(0, 'rgba(20, 16, 40, 0.15)')
-  floorGrad.addColorStop(1, 'rgba(0, 0, 0, 0.25)')
-  ctx.fillStyle = floorGrad
+  // Inner vignette — spotlight centered on player, edges darken
+  const psx = player.x - camX
+  const psy = player.y - camY
+  const shape = getArenaShape()
+  const maxR = shape === 'circle' ? ARENA_RADIUS
+    : shape === 'hex' ? ARENA_RADIUS
+    : shape === 'pill' ? PILL_HALF_W + PILL_R
+    : shape === 'cross' ? CROSS_HE
+    : Math.max(ARENA_W, ARENA_H) * 0.5
+
+  const vignetteGrad = ctx.createRadialGradient(psx, psy, maxR * 0.15, psx, psy, maxR * 0.9)
+  vignetteGrad.addColorStop(0, 'rgba(0, 0, 0, 0)')
+  vignetteGrad.addColorStop(0.3, 'rgba(0, 0, 0, 0.2)')
+  vignetteGrad.addColorStop(0.6, 'rgba(0, 0, 0, 0.45)')
+  vignetteGrad.addColorStop(1, 'rgba(0, 0, 0, 0.9)')
+  ctx.fillStyle = vignetteGrad
   ctx.fillRect(0, 0, width, height)
 
 }
@@ -1403,24 +1411,39 @@ function drawPlayer(player: Player): void {
     strokeColor = `rgb(255, ${Math.floor(30 + 225 * (1 - t))}, ${Math.floor(30 + 217 * (1 - t))})`
   }
 
-  // Dash trail — interpolate from current pos back to dash start
+  // Dash afterimages — fading copies of player body along dash path
   if (player.dashTimer >= 0) {
     const dsx = player.dashStartX - camX
     const dsy = player.dashStartY - camY
-    for (let i = 1; i <= 9; i++) {
-      const t = i / 6  // 0→1 from player toward dash start
-      const trailAlpha = (player.dashTimer / 0.5) * (1 - i * 0.1)
-      if (trailAlpha <= 0) continue
-      const trailX = sx + (dsx - sx) * t
-      const trailY = sy + (dsy - sy) * t
+    const dashProgress = 1 - Math.max(0, player.dashTimer) / player.dashDuration
+    const ddx = sx - dsx, ddy = sy - dsy
+    const dashLen = Math.sqrt(ddx * ddx + ddy * ddy)
+
+    // Afterimages — 5 copies interpolated between start and current pos
+    for (let i = 1; i <= 5; i++) {
+      const t = i / 6  // spread evenly from player toward start
+      const fade = player.dashTimer / player.dashDuration
+      if (fade <= 0) continue
+      const ax = sx + (dsx - sx) * t
+      const ay = sy + (dsy - sy) * t
+      const aScale = 1 - t * 0.3
+      const aRadius = drawRadius * aScale
+      const aFade = fade * (1 - t * 0.6)  // further = dimmer
+
+      // Ghost fill
       ctx.beginPath()
-      ctx.arc(trailX, trailY, PLAYER_RADIUS, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(79, 195, 247, ${0.1 * trailAlpha})`
+      ctx.arc(ax, ay, aRadius, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(79, 195, 247, ${0.2 * aFade})`
       ctx.fill()
-      ctx.strokeStyle = `rgba(79, 195, 247, ${0.2 * trailAlpha})`
-      ctx.lineWidth = 1.5
+
+      // Ghost outline
+      ctx.beginPath()
+      ctx.arc(ax, ay, aRadius, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(79, 195, 247, ${0.4 * aFade})`
+      ctx.lineWidth = 2 * aScale
       ctx.stroke()
     }
+
   }
 
   // Hit particles — red burst from pie edge on hit
@@ -1491,14 +1514,14 @@ function drawPlayer(player: Player): void {
   ctx.lineWidth = 2.5
   ctx.stroke()
 
-  // Beat anticipation — 3 chained rings shrinking toward player body
+  // Beat anticipation — 10 chained rings shrinking toward player body
   if (player.attackTimer >= 0 && player.attackTimer < ATTACK_EXPAND_TIME) {
     const buildup = player.attackTimer / ATTACK_EXPAND_TIME  // 0→1
-    for (let i = 0; i < 3; i++) {
-      const offset = i * 0.15  // stagger each ring
+    for (let i = 0; i < 10; i++) {
+      const offset = i * 0.06  // stagger each ring
       const t = Math.min(1, buildup + offset)
       const anticipateR = drawRadius + (MAX_RING_RADIUS * 0.4) * (1 - t * t)
-      const anticipateAlpha = (0.02 + t * 0.06) * (1 - i * 0.25)  // trailing rings dimmer
+      const anticipateAlpha = (0.02 + t * 0.06) * (1 - i * 0.09)  // trailing rings dimmer
       const anticipateWidth = 0.8 + t * 0.4
       ctx.beginPath()
       ctx.arc(sx, sy, anticipateR, 0, Math.PI * 2)
@@ -1968,7 +1991,25 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     const fromSy = enemy.blinkFromY - camY
     const toSx = enemy.blinkGhostX - camX
     const toSy = enemy.blinkGhostY - camY
-    const ghostCount = 10
+    // Scale ghost count with distance for smooth trail
+    const dx = toSx - fromSx, dy = toSy - fromSy
+    const blinkDist = Math.sqrt(dx * dx + dy * dy)
+    const ghostCount = Math.min(20, Math.max(8, Math.round(blinkDist / 30)))
+
+    // White flash at snap moment — peaks at halfBeat, fades quickly
+    const snapProximity = 1 - Math.min(1, Math.abs(elapsed - halfBeat) / 0.08)  // 1 at snap, 0 after 0.08s
+    if (snapProximity > 0) {
+      const flashAlpha = snapProximity * 0.12
+      for (let g = 0; g < ghostCount; g++) {
+        const frac = (g + 1) / (ghostCount + 1)
+        const gx = fromSx + (toSx - fromSx) * frac
+        const gy = fromSy + (toSy - fromSy) * frac
+        ctx.beginPath()
+        ctx.arc(gx, gy, r * 0.8, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(255, 255, 255, ${flashAlpha * (1 - frac * 0.3)})`
+        ctx.fill()
+      }
+    }
 
     if (phase1) {
       const raw = elapsed / halfBeat
@@ -1979,7 +2020,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         const eased = frac * frac
         const gx = fromSx + (toSx - fromSx) * eased
         const gy = fromSy + (toSy - fromSy) * eased
-        const ga = 0.15 * (reach - frac) / reach
+        const ga = 0.09 * (reach - frac) / reach
         const gs = r * (1 - eased * 0.4)
         ctx.beginPath()
         ctx.arc(gx, gy, gs, 0, Math.PI * 2)
@@ -1995,7 +2036,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         const slideFrac = baseFrac * (1 - coil) + coil  // slides toward 1.0 (new pos)
         const gx = fromSx + (toSx - fromSx) * slideFrac
         const gy = fromSy + (toSy - fromSy) * slideFrac
-        const ga = 0.12 * (1 - coil)  // fades as it coils in
+        const ga = 0.07 * (1 - coil)  // fades as it coils in
         const gs = r * (0.6 + coil * 0.4)  // grows as it arrives
         ctx.beginPath()
         ctx.arc(gx, gy, gs, 0, Math.PI * 2)

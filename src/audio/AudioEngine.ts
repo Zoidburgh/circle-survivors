@@ -218,23 +218,50 @@ export function playPlayerHit(): void {
   ensureContext()
   const c = ctx!
   const t = c.currentTime
-  // Priority 2: Low thud (sub lane 40-90hz)
+
+  // Tonal hit — minor chord stab, musical but painful
+  const click = c.createOscillator()
+  const clickGain = c.createGain()
+  click.type = 'square'
+  click.frequency.setValueAtTime(440, t)  // A4 — cuts through
+  click.frequency.exponentialRampToValueAtTime(110, t + 0.08)
+  clickGain.gain.setValueAtTime(rVol(0.35), t)
+  clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.1)
+  click.connect(clickGain)
+  clickGain.connect(master)
+  click.start(t)
+  click.stop(t + 0.1)
+
+  // Dissonant minor second — the "pain" interval
+  const dis = c.createOscillator()
+  const disGain = c.createGain()
+  dis.type = 'sawtooth'
+  dis.frequency.setValueAtTime(466, t)  // Bb4 — half step above A = tension
+  dis.frequency.exponentialRampToValueAtTime(116, t + 0.08)
+  disGain.gain.setValueAtTime(rVol(0.2), t)
+  disGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08)
+  dis.connect(disGain)
+  disGain.connect(master)
+  dis.start(t)
+  dis.stop(t + 0.08)
+
+  // Low thud body
   const osc1 = c.createOscillator()
   const osc2 = c.createOscillator()
   const gain = c.createGain()
   osc1.type = 'triangle'
-  osc1.frequency.value = rPitch(65)
+  osc1.frequency.value = rPitch(50)
   osc2.type = 'sawtooth'
-  osc2.frequency.value = rPitch(90)
-  gain.gain.setValueAtTime(rVol(0.6), t)
-  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3)
+  osc2.frequency.value = rPitch(75)
+  gain.gain.setValueAtTime(rVol(0.5), t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
   osc1.connect(gain)
   osc2.connect(gain)
   gain.connect(master)
   osc1.start(t)
   osc2.start(t)
-  osc1.stop(t + 0.3)
-  osc2.stop(t + 0.3)
+  osc1.stop(t + 0.2)
+  osc2.stop(t + 0.2)
 }
 
 export function playBeatTick(): void {

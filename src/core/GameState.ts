@@ -13,7 +13,7 @@ const enemies: Enemy[] = []
 const grid = new SpatialGrid(GRID_CELL_SIZE)
 const camera: Camera = createCamera()
 let phase: GamePhase = 'playing'
-let xpForNextLevel = 5
+let xpForNextLevel = 15
 let level = 1
 
 export function getPlayer(): Player { return player }
@@ -29,7 +29,7 @@ export function checkLevelUp(): boolean {
   if (player.xp >= xpForNextLevel) {
     player.xp -= xpForNextLevel
     level++
-    xpForNextLevel = 5 // flat for testing, curve later
+    xpForNextLevel = 15 // flat for testing, curve later
     return true
   }
   return false
@@ -46,6 +46,6 @@ export function resetGameState(): void {
   cam.targetX = ARENA_W / 2
   cam.targetY = ARENA_H / 2
   phase = 'playing'
-  xpForNextLevel = 5
+  xpForNextLevel = 15
   level = 1
 }
