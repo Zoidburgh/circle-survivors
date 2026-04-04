@@ -25,6 +25,8 @@ export interface EnemyType {
   magnetRange?: number              // custom pull range (default: MAGNET_RANGE from constants)
   blink?: boolean                   // teleports to opposite side of player periodically
   blinkBeats?: number               // beats between blinks (default: 4)
+  volatile?: boolean                // explodes on death, damages nearby enemies + player
+  volatileRange?: number            // explosion radius (default: 150)
 }
 
 /** Look up an enemy type by name */

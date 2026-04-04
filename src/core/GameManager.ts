@@ -1,7 +1,7 @@
 import * as Input from '../game/InputManager.ts'
 import * as Renderer from '../render/Renderer.ts'
 import { updatePlayer } from '../entities/Player.ts'
-import { createEnemy, updateEnemy, updateDeath } from '../entities/Enemy.ts'
+import { createEnemy, updateEnemy, updateDeath, damageEnemy } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { advanceGlobalTime } from './RhythmClock.ts'
 import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
@@ -9,10 +9,12 @@ import { advancePatternClock } from '../audio/PatternClock.ts'
 import { getPlayer, getEnemies, getGrid, getCamera, getPhase, getXpForNextLevel } from './GameState.ts'
 import { updateOrbs, cleanupOrbs, getOrbs } from '../entities/XPOrb.ts'
 import { updateCamera, clampToArena, getArenaShape, setArenaShape } from '../game/Arena.ts'
-import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH } from '../utils/constants.ts'
+import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils/constants.ts'
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on } from './EventBus.ts'
-import { perfStart, perfEnd, exportPerfLog, addSpawnEffect } from '../render/Renderer.ts'
+import { shouldFire } from '../audio/PatternClock.ts'
+import { HIT_FLASH_DURATION } from '../utils/constants.ts'
+import { perfStart, perfEnd, exportPerfLog, addSpawnEffect, addVolatileExplosion, setPendingExplosions } from '../render/Renderer.ts'
 import { getEnemyType } from '../entities/EnemyTypes.ts'
 
 let fps = 0
@@ -22,6 +24,15 @@ let perfExportLock = false
 let lastFpsTime = performance.now()
 
 // Totem spawn handler
+// ── Pending volatile explosions ──
+interface PendingExplosion {
+  x: number; y: number
+  range: number
+  r: number; g: number; b: number
+  timer: number  // time since queued (for buildup visual)
+}
+const pendingExplosions: PendingExplosion[] = []
+
 /** Find a spawn position that doesn't overlap immovable enemies or the player */
 function findClearSpawnPos(x: number, y: number, radius: number, enemies: Enemy[], player: { x: number; y: number }): { x: number; y: number } {
   let sx = x, sy = y
@@ -103,6 +114,17 @@ on('totem:spawn', (totemEnemy: Enemy) => {
   addSpawnEffect(totemEnemy.x, totemEnemy.y, totemEnemy.radius, bestX, bestY, type.color)
 })
 
+// Queue volatile explosion on death
+on('enemy:killed', (enemy: Enemy) => {
+  if (!enemy.volatile) return
+  pendingExplosions.push({
+    x: enemy.x, y: enemy.y,
+    range: enemy.volatileRange,
+    r: enemy.cr, g: enemy.cg, b: enemy.cb,
+    timer: 0,
+  })
+})
+
 export function update(dt: number): void {
   const phase = getPhase()
 
@@ -159,7 +181,51 @@ export function update(dt: number): void {
   const dir = Input.getMovementDir()
   updateCamera(cam, player.x, player.y, dir.x, dir.y, window.innerWidth, window.innerHeight, dt)
 
+  // Process volatile explosions BEFORE enemy updates (so positions match player ring hits)
   perfStart('u_enemies')
+  for (let i = pendingExplosions.length - 1; i >= 0; i--) {
+    const exp = pendingExplosions[i]!
+    exp.timer += dt
+    // Detonate after exactly 1 second
+    if (exp.timer >= BEAT_SEC) {
+      // Damage all enemies in range (check current pos + blink destination)
+      for (const enemy of enemies) {
+        if (!enemy.alive || enemy.dying) continue
+        const dx = enemy.x - exp.x
+        const dy = enemy.y - exp.y
+        const hitRange = exp.range + enemy.radius  // include enemy body
+        const inRange = dx * dx + dy * dy <= hitRange * hitRange
+        // Also check blink destination if mid-phase
+        let destInRange = false
+        if (enemy.blink && enemy.blinkPreview > 0) {
+          const gdx = enemy.blinkGhostX - exp.x
+          const gdy = enemy.blinkGhostY - exp.y
+          destInRange = gdx * gdx + gdy * gdy <= hitRange * hitRange
+        }
+        if (inRange || destInRange) {
+          damageEnemy(enemy, 1)
+        }
+      }
+      // Damage player if in range
+      const pdx = player.x - exp.x
+      const pdy = player.y - exp.y
+      const playerHitRange = exp.range + PLAYER_RADIUS
+      if (pdx * pdx + pdy * pdy <= playerHitRange * playerHitRange) {
+        player.hp -= 1
+        player.hitFlash = HIT_FLASH_DURATION
+        if (player.hp <= 0) player.hp = 0
+      }
+      // Visual explosion + particles spread across blast circle
+      addVolatileExplosion(exp.x, exp.y, exp.range, exp.r, exp.g, exp.b)
+      Renderer.spawnVolatileParticles(exp.x, exp.y, exp.range, exp.r, exp.g, exp.b)
+      // Remove
+      pendingExplosions[i] = pendingExplosions[pendingExplosions.length - 1]!
+      pendingExplosions.pop()
+    }
+  }
+  // Pass pending to renderer for buildup visuals
+  setPendingExplosions(pendingExplosions)
+
   for (const enemy of enemies) {
     updateDeath(enemy, dt)
     updateEnemy(enemy, player, dt, grid)

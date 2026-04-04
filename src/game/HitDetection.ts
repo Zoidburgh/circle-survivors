@@ -55,7 +55,13 @@ export function initHitDetection(): void {
         const enemy = entity as Enemy
         if (!enemy.alive || hitEnemies.has(enemy)) continue
         const dist = distance({ x: sx, y: sy }, { x: enemy.x, y: enemy.y })
-        if (Math.abs(dist - ringRadius) < enemy.radius + grace) {
+        // Also check blink destination if mid-phase
+        let hitAtDest = false
+        if (enemy.blink && enemy.blinkPreview > 0) {
+          const destDist = distance({ x: sx, y: sy }, { x: enemy.blinkGhostX, y: enemy.blinkGhostY })
+          hitAtDest = Math.abs(destDist - ringRadius) < enemy.radius + grace
+        }
+        if (Math.abs(dist - ringRadius) < enemy.radius + grace || hitAtDest) {
           const wasDying = enemy.dying
           damageEnemy(enemy, player.damage * player.modifiers.damageMult)
           hitEnemies.add(enemy)

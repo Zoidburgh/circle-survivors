@@ -64,6 +64,8 @@ export interface Enemy {
   magnetRange: number   // pull radius
   blink: boolean        // teleports periodically
   blinkBeats: number    // beats between blinks
+  volatile: boolean     // explodes on death
+  volatileRange: number // explosion radius
   blinkTimer: number    // counts beats until next blink
   blinkGhostX: number   // destination / old position after teleport
   blinkGhostY: number
@@ -131,6 +133,8 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     magnetRange: type.magnetRange ?? MAGNET_RANGE,
     blink: type.blink ?? false,
     blinkBeats: type.blinkBeats ?? 4,
+    volatile: type.volatile ?? false,
+    volatileRange: type.volatileRange ?? 150,
     blinkTimer: type.blinkBeats ?? 4,
     blinkGhostX: 0,
     blinkGhostY: 0,

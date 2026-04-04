@@ -222,6 +222,114 @@ function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
   }
 }
 
+// Volatile explosion effects
+interface VolatileExplosion {
+  x: number; y: number
+  range: number
+  r: number; g: number; b: number
+  timer: number
+  duration: number
+}
+const volatileExplosions: VolatileExplosion[] = []
+
+// Pending volatile buildup visuals (read from GameManager)
+export interface PendingExplosionVisual {
+  x: number; y: number; range: number
+  r: number; g: number; b: number; timer: number
+}
+let pendingExplosionVisuals: PendingExplosionVisual[] = []
+
+export function setPendingExplosions(pending: PendingExplosionVisual[]): void {
+  pendingExplosionVisuals = pending
+}
+
+export function addVolatileExplosion(x: number, y: number, range: number, r: number, g: number, b: number): void {
+  volatileExplosions.push({ x, y, range, r, g, b, timer: 0, duration: 0.3 })
+}
+
+export function spawnVolatileParticles(cx: number, cy: number, range: number, r: number, g: number, b: number): void {
+  const count = Math.min(30, Math.round(range / 6))
+  for (let i = 0; i < count; i++) {
+    const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
+    const dist = Math.random() * range  // spread across entire circle
+    const px = cx + Math.cos(angle) * dist
+    const py = cy + Math.sin(angle) * dist
+    const speed = 40 + Math.random() * 80
+    const outAngle = Math.atan2(py - cy, px - cx)
+    // Enemy color tinted toward red-white
+    const tint = Math.random()
+    const pr = Math.min(255, r + Math.floor(tint * 120))
+    const pg = Math.min(255, g + Math.floor(tint * 40))
+    const pb = Math.min(255, b + Math.floor(tint * 40))
+    spawnParticle(px, py,
+      Math.cos(outAngle) * speed, Math.sin(outAngle) * speed,
+      pr, pg, pb,
+      0.45 + Math.random() * 0.25, 9 + Math.random() * 7)
+  }
+}
+
+function updateAndDrawVolatileEffects(dt: number): void {
+  // Buildup — ring expands from center to blast range over 1s
+  for (const p of pendingExplosionVisuals) {
+    const sx = p.x - camX, sy = p.y - camY
+    const progress = Math.min(p.timer / BEAT_SEC, 1)  // 0→1 over 1 second
+    const ease = progress * progress  // ease-in: slow start, accelerates
+    const ringR = ease * p.range
+    const alpha = 0.15 + progress * 0.25
+
+    // Blend enemy color toward red as it expands
+    const rr = Math.min(255, p.r + Math.floor(progress * (255 - p.r) * 0.7))
+    const rg = Math.floor(p.g * (1 - progress * 0.6))
+    const rb = Math.floor(p.b * (1 - progress * 0.6))
+
+    // Expanding ring
+    ctx.beginPath()
+    ctx.arc(sx, sy, ringR, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${rr}, ${rg}, ${rb}, ${alpha})`
+    ctx.lineWidth = 3 + progress * 3
+    ctx.stroke()
+
+    // Faint fill trailing behind the ring
+    ctx.beginPath()
+    ctx.arc(sx, sy, ringR, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(${rr}, ${rg}, ${rb}, ${progress * 0.06})`
+    ctx.fill()
+  }
+
+  // Explosion flashes
+  for (let i = volatileExplosions.length - 1; i >= 0; i--) {
+    const ex = volatileExplosions[i]!
+    ex.timer += dt
+    if (ex.timer >= ex.duration) {
+      volatileExplosions[i] = volatileExplosions[volatileExplosions.length - 1]!
+      volatileExplosions.pop()
+      continue
+    }
+    const t = ex.timer / ex.duration
+    const alpha = (1 - t) * (1 - t)
+    const sx = ex.x - camX, sy = ex.y - camY
+
+    // Full area flash — quick bright pulse
+    ctx.beginPath()
+    ctx.arc(sx, sy, ex.range, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(255, 255, 255, ${alpha * 0.35})`
+    ctx.fill()
+
+    // Colored fill on top
+    ctx.beginPath()
+    ctx.arc(sx, sy, ex.range, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(${ex.r}, ${ex.g}, ${ex.b}, ${alpha * 0.25})`
+    ctx.fill()
+
+    // Edge ring
+    ctx.beginPath()
+    ctx.arc(sx, sy, ex.range, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${ex.r}, ${ex.g}, ${ex.b}, ${alpha * 0.5})`
+    ctx.lineWidth = 3 * (1 - t)
+    ctx.stroke()
+  }
+}
+
 // Totem spawn effects
 interface SpawnEffect {
   totemX: number; totemY: number
@@ -549,6 +657,8 @@ export function resetRenderer(): void {
   deathRipples.length = 0
   spawnEffects.length = 0
   absorbEffects.length = 0
+  volatileExplosions.length = 0
+  pendingExplosionVisuals = []
   borderWaveIntensity = 0
   playerGlowIntensity = 0
   outerPulseIntensity = 0
@@ -589,6 +699,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   drawArenaBorder(player)
   perfStart('ripples')
   updateAndDrawDeathRipples(lastDt)
+  updateAndDrawVolatileEffects(lastDt)
   perfEnd('ripples')
 
   // Clip rings and particles to arena bounds
@@ -2063,6 +2174,26 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     }
   }
 
+  // Volatile indicator — pulsing warm inner glow + faint blast range
+  if (enemy.volatile && r > 5 && !enemy.dying) {
+    // Inner glow — slow pulse
+    const vPulse = 0.5 + Math.sin(performance.now() * 0.004) * 0.5
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(255, 100, 0, ${0.12 + vPulse * 0.15})`
+    ctx.fill()
+
+    // Faint blast range circle
+    ctx.save()
+    ctx.setLineDash([6, 6])
+    ctx.beginPath()
+    ctx.arc(sx, sy, enemy.volatileRange, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(255, 120, 0, 0.08)`
+    ctx.lineWidth = 1
+    ctx.stroke()
+    ctx.restore()
+  }
+
   // Consume indicator — rotating arcs inside
   if (enemy.consume && r > 8) {
     const scale = r / 44  // scale with enemy size
@@ -2193,6 +2324,18 @@ function drawDesignerPreview(player: Player): void {
       ctx.lineWidth = 1 + phase * 1.5
       ctx.stroke()
     }
+  }
+
+  // Volatile range
+  if (preview.volatile) {
+    ctx.save()
+    ctx.setLineDash([6, 6])
+    ctx.beginPath()
+    ctx.arc(sx, sy, preview.volatileRange, 0, Math.PI * 2)
+    ctx.strokeStyle = 'rgba(255, 120, 0, 0.12)'
+    ctx.lineWidth = 1
+    ctx.stroke()
+    ctx.restore()
   }
 
   // Consume arcs
