@@ -173,6 +173,9 @@ export interface PreviewRing {
   attackTimer: number
   expandTime: number
   patternName: string
+  edgeMode: boolean
+  edgePoints: number
+  edgeActive: number
 }
 
 export interface PreviewEnemy {
@@ -557,6 +560,15 @@ function addEnemyForm(existing?: DesignedEnemy): void {
         <option value="custom">Custom...</option>
       </select>
       <input class="ed-rbeats" type="text" value="${defaultBeats}" style="${inputCSS} display:none;" placeholder="0.5, 1.5...">
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;">
+        <input class="ed-redge" type="checkbox" ${rc?.edgeMode ? 'checked' : ''}>
+        <span style="color:#FFB74D;font:10px monospace;">Edge Fire</span>
+      </label>
+      <div class="ed-redge-opts" style="display:${rc?.edgeMode ? 'flex' : 'none'};gap:6px;margin-top:3px;">
+        <div style="flex:1;"><span style="color:#999;font:9px monospace;">Points</span><input class="ed-redge-pts" type="number" min="2" max="6" value="${rc?.edgePoints ?? 3}" style="${inputCSS}"></div>
+        <div style="flex:1;"><span style="color:#999;font:9px monospace;">Active</span><input class="ed-redge-act" type="number" min="1" max="6" value="${rc?.edgeActive ?? 1}" style="${inputCSS}"></div>
+        <div style="flex:1;"><span style="color:#999;font:9px monospace;">Switch</span><input class="ed-redge-sw" type="number" min="1" max="8" value="${rc?.edgeSwitchBeats ?? 1}" style="${inputCSS}"></div>
+      </div>
     `
     ringsContainer.appendChild(ringDiv)
 
@@ -581,6 +593,12 @@ function addEnemyForm(existing?: DesignedEnemy): void {
         beatsInp.value = (RHYTHM_PRESETS[rhythmSel.value] ?? []).join(', ')
       }
       updatePreview()
+    })
+
+    const edgeCheck = ringDiv.querySelector('.ed-redge') as HTMLInputElement
+    const edgeOpts = ringDiv.querySelector('.ed-redge-opts') as HTMLDivElement
+    edgeCheck.addEventListener('change', () => {
+      edgeOpts.style.display = edgeCheck.checked ? 'flex' : 'none'
     })
 
     ringDiv.querySelector('.ed-rdel')!.addEventListener('click', () => {
@@ -608,7 +626,11 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       const ringRadius = parseInt((rd.querySelector('.ed-rradius') as HTMLInputElement).value) || 120
       const beatsStr = (rd.querySelector('.ed-rbeats') as HTMLInputElement).value
       const beats = beatsStr.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n))
-      result.push({ ringRadius, sound, beats })
+      const edgeMode = (rd.querySelector('.ed-redge') as HTMLInputElement)?.checked ?? false
+      const edgePoints = parseInt((rd.querySelector('.ed-redge-pts') as HTMLInputElement)?.value) || 3
+      const edgeActive = parseInt((rd.querySelector('.ed-redge-act') as HTMLInputElement)?.value) || 1
+      const edgeSwitchBeats = parseInt((rd.querySelector('.ed-redge-sw') as HTMLInputElement)?.value) || 1
+      result.push({ ringRadius, sound, beats, edgeMode, edgePoints, edgeActive, edgeSwitchBeats })
     })
     return result
   }
@@ -682,6 +704,9 @@ function addEnemyForm(existing?: DesignedEnemy): void {
         attackTimer: existing?.attackTimer ?? -1,
         expandTime: existing?.expandTime ?? ATTACK_EXPAND_TIME,
         patternName: pName,
+        edgeMode: rc.edgeMode ?? false,
+        edgePoints: rc.edgePoints ?? 3,
+        edgeActive: rc.edgeActive ?? 1,
       }
     })
     previewEnemy = {

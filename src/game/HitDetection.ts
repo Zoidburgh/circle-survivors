@@ -1,7 +1,7 @@
 import { on, emit } from '../core/EventBus.ts'
 import { getPlayer, getGrid, getEnemies } from '../core/GameState.ts'
 import { getEffectiveRadius } from '../entities/Player.ts'
-import { damageEnemy } from '../entities/Enemy.ts'
+import { damageEnemy, getRingOrigins } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { getRingExpansion, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { distance } from '../utils/math.ts'
@@ -137,16 +137,20 @@ export function initHitDetection(): void {
     playEnemyBeatTick(rs.patternName, rs.sound)
 
     const ringRadius = rs.ring.radius * getRingExpansion(rs.attackTimer)
-    const dist = distance(
-      { x: player.x, y: player.y },
-      { x: enemy.x, y: enemy.y }
-    )
-    if (Math.abs(dist - ringRadius) < player.hitRadius) {
-      // Ghost dash — invincible while dashing
+    const origins = getRingOrigins(enemy, rs)
+    let playerHit = false
+    for (const origin of origins) {
+      const dist = distance({ x: player.x, y: player.y }, origin)
+      if (Math.abs(dist - ringRadius) < player.hitRadius) {
+        playerHit = true
+        break
+      }
+    }
+    if (playerHit) {
       if (player.dashTimer >= 0 && hasBonus('ghostDash')) return
-
-      const arcs = getBlockedArcs(enemy.x, enemy.y, ringRadius, getEnemies(), enemy)
-      const blocked = isTargetBlocked(enemy.x, enemy.y, player.x, player.y, arcs)
+      // Check occlusion from first origin (approximation)
+      const arcs = getBlockedArcs(origins[0]!.x, origins[0]!.y, ringRadius, getEnemies(), enemy)
+      const blocked = isTargetBlocked(origins[0]!.x, origins[0]!.y, player.x, player.y, arcs)
       if (!blocked) {
         player.hp -= enemy.damage
         player.hitFlash = HIT_FLASH_DURATION
@@ -158,13 +162,14 @@ export function initHitDetection(): void {
     // Consume: eat nearby orbs at ring peak, heal +1 per orb
     if (enemy.consume && ringRadius > 1) {
       const grid = getGrid()
-      const ringEntity = { x: enemy.x, y: enemy.y, radius: ringRadius }
+      for (const origin of origins) {
+      const ringEntity = { x: origin.x, y: origin.y, radius: ringRadius }
       const nearby = grid.query(ringEntity)
       for (const entity of nearby) {
-        if ('hp' in entity) continue  // skip enemies
+        if ('hp' in entity) continue
         const orb = entity as XPOrb
         if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
-        const oDist = distance({ x: enemy.x, y: enemy.y }, { x: orb.x, y: orb.y })
+        const oDist = distance(origin, { x: orb.x, y: orb.y })
         if (Math.abs(oDist - ringRadius) < orb.radius + HIT_GRACE) {
           collectOrb(orb, 'enemy')
           // Heal enemy
@@ -179,6 +184,7 @@ export function initHitDetection(): void {
           addAbsorbEffect(orb.x, orb.y, absR, absG, absB, enemy.x, enemy.y)
         }
       }
+      } // end origins loop
     }
   })
 

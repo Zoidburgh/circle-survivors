@@ -1,6 +1,7 @@
 import type { Player } from '../entities/Player.ts'
 import { getEffectiveRadius } from '../entities/Player.ts'
 import type { Enemy } from '../entities/Enemy.ts'
+import { getRingOrigins } from '../entities/Enemy.ts'
 import type { Ring } from '../entities/Ring.ts'
 import { getRingExpansion, getRingAlpha, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
@@ -748,7 +749,10 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     if (!enemy.dying) {
       const arcs = blockedArcsCache.get(enemy) ?? []
       for (const rs of enemy.rings) {
-        drawRing(enemy.x, enemy.y, rs.ring, rs.attackTimer, undefined, rs.expandTime, arcs)
+        const origins = getRingOrigins(enemy, rs)
+        for (const origin of origins) {
+          drawRing(origin.x, origin.y, rs.ring, rs.attackTimer, undefined, rs.expandTime, arcs)
+        }
       }
     }
   }
@@ -2174,6 +2178,49 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     }
   }
 
+  // Edge ring point indicators — track ring + sliding active dots
+  for (const rs of enemy.rings) {
+    if (!rs.edgeMode || r < 5) continue
+    const step = (Math.PI * 2) / rs.edgePoints
+
+    // Track ring connecting all points
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.12)`
+    ctx.lineWidth = 3
+    ctx.stroke()
+
+    // Inactive point dots (static positions)
+    for (let p = 0; p < rs.edgePoints; p++) {
+      const angle = -Math.PI / 2 + p * step
+      const px = sx + Math.cos(angle) * r
+      const py = sy + Math.sin(angle) * r
+      ctx.beginPath()
+      ctx.arc(px, py, 2, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, 0.2)`
+      ctx.fill()
+    }
+
+    // Active dots — use smooth angle, glow
+    for (let a = 0; a < rs.edgeActive; a++) {
+      const angle = -Math.PI / 2 + rs.edgeAngle + a * step
+      const px = sx + Math.cos(angle) * r
+      const py = sy + Math.sin(angle) * r
+
+      // Glow
+      ctx.beginPath()
+      ctx.arc(px, py, 11, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, 0.2)`
+      ctx.fill()
+
+      // Core dot
+      ctx.beginPath()
+      ctx.arc(px, py, 6, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${Math.min(255, hr + 60)}, ${Math.min(255, hg + 40)}, ${Math.min(255, hb + 40)}, 0.9)`
+      ctx.fill()
+    }
+  }
+
   // Volatile indicator — pulsing warm inner glow + faint blast range
   if (enemy.volatile && r > 5 && !enemy.dying) {
     // Inner glow — slow pulse
@@ -2269,6 +2316,20 @@ function drawDesignerPreview(player: Player): void {
 
   // Draw each preview ring
   for (const pr of preview.previewRings) {
+    // Compute origins for edge mode
+    const ringOrigins: { x: number; y: number }[] = []
+    if (pr.edgeMode) {
+      for (let a = 0; a < pr.edgeActive; a++) {
+        const angle = -Math.PI / 2 + (a / pr.edgePoints) * Math.PI * 2
+        ringOrigins.push({
+          x: worldX + Math.cos(angle) * preview.radius,
+          y: worldY + Math.sin(angle) * preview.radius,
+        })
+      }
+    } else {
+      ringOrigins.push({ x: worldX, y: worldY })
+    }
+
     if (pr.attackTimer >= 0) {
       const expansion = getRingExpansion(pr.attackTimer)
       const currentRadius = pr.ringRadius * expansion
@@ -2277,22 +2338,26 @@ function drawDesignerPreview(player: Player): void {
         const buildup = Math.min(pr.attackTimer / pExpandTime, 1)
         const alpha = getRingAlpha(pr.attackTimer, 0.3 + 0.5 * buildup)
 
-        ctx.beginPath()
-        ctx.arc(sx, sy, currentRadius, 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${alpha})`
-        ctx.lineWidth = 2 + 4 * buildup
-        ctx.stroke()
+        for (const o of ringOrigins) {
+          ctx.beginPath()
+          ctx.arc(o.x - camX, o.y - camY, currentRadius, 0, Math.PI * 2)
+          ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${alpha})`
+          ctx.lineWidth = 2 + 4 * buildup
+          ctx.stroke()
+        }
       }
     }
 
-    // Max ring range — dashed
-    ctx.beginPath()
-    ctx.arc(sx, sy, pr.ringRadius, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.1)`
-    ctx.lineWidth = 1
-    ctx.setLineDash([4, 6])
-    ctx.stroke()
-    ctx.setLineDash([])
+    // Max ring range — dashed (from each origin)
+    for (const o of ringOrigins) {
+      ctx.beginPath()
+      ctx.arc(o.x - camX, o.y - camY, pr.ringRadius, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.1)`
+      ctx.lineWidth = 1
+      ctx.setLineDash([4, 6])
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
   }
 
   // Ghost body
@@ -2306,6 +2371,23 @@ function drawDesignerPreview(player: Player): void {
   ctx.setLineDash([4, 4])
   ctx.stroke()
   ctx.setLineDash([])
+
+  // Edge point dots on preview
+  for (const ring of preview.previewRings) {
+    if (!ring.edgeMode) continue
+    for (let p = 0; p < ring.edgePoints; p++) {
+      const angle = -Math.PI / 2 + (p / ring.edgePoints) * Math.PI * 2
+      const px = sx + Math.cos(angle) * preview.radius
+      const py = sy + Math.sin(angle) * preview.radius
+      const isActive = p < ring.edgeActive
+      ctx.beginPath()
+      ctx.arc(px, py, isActive ? 4 : 2.5, 0, Math.PI * 2)
+      ctx.fillStyle = isActive
+        ? `rgba(${hr}, ${hg}, ${hb}, 0.8)`
+        : `rgba(${hr}, ${hg}, ${hb}, 0.25)`
+      ctx.fill()
+    }
+  }
 
   // Tag visuals on preview
   const pr = preview.radius

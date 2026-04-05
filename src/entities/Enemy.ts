@@ -18,6 +18,13 @@ export interface RingState {
   expandTime: number
   patternName: string  // key in PatternClock
   sound: string
+  edgeMode: boolean
+  edgePoints: number
+  edgeActive: number       // how many fire simultaneously
+  edgeSwitchBeats: number
+  edgeIndex: number        // target rotation offset
+  edgeAngle: number        // smooth current angle (radians)
+  edgeBeatCount: number
 }
 
 export interface Enemy {
@@ -74,6 +81,21 @@ export interface Enemy {
   blinkPreview: number  // >0 = showing ghost, counts down
 }
 
+/** Get the world positions a ring fires from (center or edge offsets) */
+export function getRingOrigins(enemy: Enemy, rs: RingState): { x: number; y: number }[] {
+  if (!rs.edgeMode) return [{ x: enemy.x, y: enemy.y }]
+  const origins: { x: number; y: number }[] = []
+  const step = (Math.PI * 2) / rs.edgePoints
+  for (let a = 0; a < rs.edgeActive; a++) {
+    const angle = -Math.PI / 2 + rs.edgeAngle + a * step
+    origins.push({
+      x: enemy.x + Math.cos(angle) * enemy.radius,
+      y: enemy.y + Math.sin(angle) * enemy.radius,
+    })
+  }
+  return origins
+}
+
 export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
   // Build ring states from type config
   const ringConfigs = type.rings ?? [
@@ -86,6 +108,13 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     expandTime: ATTACK_EXPAND_TIME,
     patternName: ringConfigs.length > 1 ? `${type.name}_r${i}` : type.name,
     sound: rc.sound,
+    edgeMode: rc.edgeMode ?? false,
+    edgePoints: rc.edgePoints ?? 3,
+    edgeActive: rc.edgeActive ?? 1,
+    edgeSwitchBeats: rc.edgeSwitchBeats ?? 1,
+    edgeIndex: 0,
+    edgeAngle: 0,
+    edgeBeatCount: 0,
   }))
 
   return {
@@ -220,6 +249,13 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
           rs.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * 0.8)
           rs.attackTimer = 0
           playWindup(rs.expandTime, false)
+          if (rs.edgeMode) {
+            rs.edgeBeatCount++
+            if (rs.edgeBeatCount >= rs.edgeSwitchBeats) {
+              rs.edgeBeatCount = 0
+              rs.edgeIndex = (rs.edgeIndex + 1) % rs.edgePoints
+            }
+          }
         }
         if (rs.attackTimer >= 0) {
           rs.attackTimer += dt
@@ -456,11 +492,28 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   if (enemy.spawnTimer >= 1) {
     for (let i = 0; i < enemy.rings.length; i++) {
       const rs = enemy.rings[i]!
+      // Smooth edge angle toward target
+      if (rs.edgeMode) {
+        const targetAngle = (rs.edgeIndex / rs.edgePoints) * Math.PI * 2
+        let diff = targetAngle - rs.edgeAngle
+        // Shortest path around the circle
+        while (diff > Math.PI) diff -= Math.PI * 2
+        while (diff < -Math.PI) diff += Math.PI * 2
+        rs.edgeAngle += diff * 8 * dt  // smooth lerp
+      }
       if (shouldFire(rs.patternName)) {
         const interval = getBeatInterval(rs.patternName)
         rs.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * 0.8)
         rs.attackTimer = 0
         playWindup(rs.expandTime, false)
+        // Edge mode: advance point after N beats
+        if (rs.edgeMode) {
+          rs.edgeBeatCount++
+          if (rs.edgeBeatCount >= rs.edgeSwitchBeats) {
+            rs.edgeBeatCount = 0
+            rs.edgeIndex = (rs.edgeIndex + 1) % rs.edgePoints
+          }
+        }
       }
 
       if (rs.attackTimer >= 0) {

@@ -4,6 +4,10 @@ export interface RingConfig {
   ringRadius: number
   sound: string
   beats: number[]
+  edgeMode?: boolean          // fire from edge of enemy body
+  edgePoints?: number         // equidistant points on edge (default: 3)
+  edgeActive?: number         // how many fire at once (default: 1, max = edgePoints = all at once)
+  edgeSwitchBeats?: number    // beats between switching point (default: 1)
 }
 
 export interface EnemyType {
