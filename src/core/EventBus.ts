@@ -7,6 +7,7 @@ export interface GameEventMap {
   'enemy:beat': [enemy: Enemy, ringIndex: number]
   'enemy:killed': [enemy: Enemy]
   'totem:spawn': [totemEnemy: Enemy]
+  'enemy:revenge': [enemy: Enemy]
 }
 
 type EventName = keyof GameEventMap

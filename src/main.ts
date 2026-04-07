@@ -12,6 +12,7 @@ import { initDesigner } from './game/EnemyDesigner.ts'
 import { setPattern } from './audio/PatternClock.ts'
 import { SONG_DEFAULT } from './audio/SongPatterns.ts'
 import { getSpawnPos } from './game/Arena.ts'
+import { spawnOrb } from './entities/XPOrb.ts'
 import { handleUpgradeClick, handleUpgradeHover } from './game/UpgradeScreen.ts'
 
 // ── Init ──
@@ -38,6 +39,14 @@ window.addEventListener('keydown', e => {
       Audio.switchBeat(num - 1)
       return
     }
+  }
+  if (e.key === '9') {
+    const player = getPlayer()
+    for (let i = 0; i < 50; i++) {
+      const pos = getSpawnPos(player.x, player.y, 50)
+      spawnOrb(pos.x, pos.y, 1, 'hp')
+    }
+    return
   }
   if (e.key === '0') {
     for (let i = 0; i < 10; i++) {

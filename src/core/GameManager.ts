@@ -7,20 +7,23 @@ import { advanceGlobalTime } from './RhythmClock.ts'
 import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
 import { advancePatternClock } from '../audio/PatternClock.ts'
 import { getPlayer, getEnemies, getGrid, getCamera, getPhase, getXpForNextLevel } from './GameState.ts'
-import { updateOrbs, cleanupOrbs, getOrbs } from '../entities/XPOrb.ts'
+import { updateOrbs, cleanupOrbs, getOrbs, spawnOrb } from '../entities/XPOrb.ts'
 import { updateCamera, clampToArena, getArenaShape, setArenaShape } from '../game/Arena.ts'
 import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils/constants.ts'
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on } from './EventBus.ts'
-import { shouldFire } from '../audio/PatternClock.ts'
+import { shouldFire, timeUntilNextBeat } from '../audio/PatternClock.ts'
+import { playPlayerHit } from '../audio/AudioEngine.ts'
 import { HIT_FLASH_DURATION } from '../utils/constants.ts'
 import { perfStart, perfEnd, exportPerfLog, addSpawnEffect, addVolatileExplosion, setPendingExplosions } from '../render/Renderer.ts'
 import { getEnemyType } from '../entities/EnemyTypes.ts'
+import { hasBonus } from '../game/UpgradeManager.ts'
 
 let fps = 0
 let frameCount = 0
 let arenaToggleLock = false
 let perfExportLock = false
+let lastRenderTime = performance.now()
 let lastFpsTime = performance.now()
 
 // Totem spawn handler
@@ -114,6 +117,30 @@ on('totem:spawn', (totemEnemy: Enemy) => {
   addSpawnEffect(totemEnemy.x, totemEnemy.y, totemEnemy.radius, bestX, bestY, type.color)
 })
 
+// Pending revenge damage checks
+interface PendingRevenge {
+  origins: { x: number; y: number }[]
+  radius: number
+  damage: number
+  timer: number
+  expandTime: number  // synced to next beat
+}
+const pendingRevenges: PendingRevenge[] = []
+
+// Revenge ring visual + queue damage for peak
+on('enemy:revenge', (enemy: Enemy) => {
+  const expandTime = BEAT_SEC  // always exactly 1 full beat to expand
+  const origins: { x: number; y: number }[] = []
+  for (let i = 0; i < enemy.revengeRings; i++) {
+    const angle = enemy.revengeAngle + (i / enemy.revengeRings) * Math.PI * 2
+    const ox = enemy.x + Math.cos(angle) * enemy.radius
+    const oy = enemy.y + Math.sin(angle) * enemy.radius
+    origins.push({ x: ox, y: oy })
+    Renderer.spawnRevengeRingParticles(ox, oy, enemy.revengeRadius, enemy.cr, enemy.cg, enemy.cb, expandTime)
+  }
+  pendingRevenges.push({ origins, radius: enemy.revengeRadius, damage: enemy.damage, timer: 0, expandTime })
+})
+
 // Queue volatile explosion on death
 on('enemy:killed', (enemy: Enemy) => {
   if (!enemy.volatile) return
@@ -181,6 +208,31 @@ export function update(dt: number): void {
   const dir = Input.getMovementDir()
   updateCamera(cam, player.x, player.y, dir.x, dir.y, window.innerWidth, window.innerHeight, dt)
 
+  // Process revenge ring damage at peak (BEAT_SEC after spawn)
+  for (let i = pendingRevenges.length - 1; i >= 0; i--) {
+    const pr = pendingRevenges[i]!
+    pr.timer += dt
+    if (pr.timer >= pr.expandTime) {
+      // Check if player is hit by any ring at peak
+      for (const origin of pr.origins) {
+        const pdx = player.x - origin.x
+        const pdy = player.y - origin.y
+        const pDist = Math.sqrt(pdx * pdx + pdy * pdy)
+        if (Math.abs(pDist - pr.radius) < PLAYER_RADIUS) {
+          if (!(player.dashTimer >= 0 && hasBonus('ghostDash'))) {
+            player.hp -= pr.damage
+            player.hitFlash = HIT_FLASH_DURATION
+            playPlayerHit()
+            if (player.hp <= 0) player.hp = 0
+          }
+          break  // only hit once per revenge burst
+        }
+      }
+      pendingRevenges[i] = pendingRevenges[pendingRevenges.length - 1]!
+      pendingRevenges.pop()
+    }
+  }
+
   // Process volatile explosions BEFORE enemy updates (so positions match player ring hits)
   perfStart('u_enemies')
   for (let i = pendingExplosions.length - 1; i >= 0; i--) {
@@ -203,7 +255,12 @@ export function update(dt: number): void {
           destInRange = gdx * gdx + gdy * gdy <= hitRange * hitRange
         }
         if (inRange || destInRange) {
+          const wasDying = enemy.dying
           damageEnemy(enemy, 1)
+          // Spawn orb if killed by explosion
+          if (enemy.dying && !wasDying && enemy.dropType !== 'none') {
+            spawnOrb(enemy.x, enemy.y, 1, enemy.dropType)
+          }
         }
       }
       // Damage player if in range
@@ -213,6 +270,7 @@ export function update(dt: number): void {
       if (pdx * pdx + pdy * pdy <= playerHitRange * playerHitRange) {
         player.hp -= 1
         player.hitFlash = HIT_FLASH_DURATION
+        playPlayerHit()
         if (player.hp <= 0) player.hp = 0
       }
       // Visual explosion + particles spread across blast circle
@@ -464,7 +522,9 @@ export function render(alpha: number): void {
     lastFpsTime = now
   }
 
-  Renderer.render(player, enemies, alpha, fps, 1 / 60, cam)
+  const renderDt = Math.min((now - lastRenderTime) / 1000, 0.1)  // real delta, capped
+  lastRenderTime = now
+  Renderer.render(player, enemies, alpha, fps, renderDt, cam)
 
   // Draw XP bar and upgrade screen on top (outside arena clip)
   const canvas = document.getElementById('game') as HTMLCanvasElement

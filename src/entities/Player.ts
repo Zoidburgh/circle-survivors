@@ -18,7 +18,7 @@ import {
 import { hexToRgba } from '../utils/math.ts'
 import { COLOR_PLAYER } from '../utils/constants.ts'
 
-const DASH_DISTANCE = 312
+const DASH_DISTANCE = 413
 const DASH_DURATION = 0.5
 export const DASH_CHARGE_TIME = 3.0  // seconds to regen one charge
 export const DASH_MAX_CHARGES = 2
@@ -65,8 +65,9 @@ export interface Player {
   trailTimer: number
   prevX: number
   prevY: number
-  dashStartX: number  // position when dash began — for sweep hit detection
+  dashStartX: number  // position when dash began
   dashStartY: number
+  dashPath: { x: number; y: number }[]  // recorded positions along curved dash
   hitRadius: number
   xp: number
   speed: number
@@ -102,6 +103,7 @@ export function createPlayer(x: number, y: number): Player {
     prevY: ARENA_H / 2,
     dashStartX: ARENA_W / 2,
     dashStartY: ARENA_H / 2,
+    dashPath: [],
     hitRadius: PLAYER_RADIUS,
     xp: 0,
     speed: PLAYER_SPEED,
@@ -136,6 +138,7 @@ export function resetPlayer(player: Player): void {
   player.prevY = ARENA_H / 2
   player.dashStartX = ARENA_W / 2
   player.dashStartY = ARENA_H / 2
+  player.dashPath = []
   player.xp = 0
   player.extraRingTimers = [-1, -1, -1, -1]
   player.extraRingCount = 0
@@ -172,8 +175,26 @@ export function updatePlayer(player: Player, dt: number): void {
     player.dashTimer -= dt
     const progress = 1 - (Math.max(0, player.dashTimer) / player.dashDuration)
     const speed = Math.sin(progress * Math.PI) * (player.dashDistance * player.modifiers.dashDistanceMult * player.modifiers.speedMult / player.dashDuration) * 1.6
+    // Steer during dash — blend movement input into dash direction
+    const dir = Input.getMovementDir()
+    const steerStrength = 1.0  // full control during dash
+    if (dir.x !== 0 || dir.y !== 0) {
+      player.dashDirX += (dir.x - player.dashDirX) * steerStrength * dt * 11
+      player.dashDirY += (dir.y - player.dashDirY) * steerStrength * dt * 11
+      // Renormalize direction
+      const len = Math.sqrt(player.dashDirX * player.dashDirX + player.dashDirY * player.dashDirY)
+      if (len > 0.1) {
+        player.dashDirX /= len
+        player.dashDirY /= len
+      }
+    }
     player.x += player.dashDirX * speed * dt
     player.y += player.dashDirY * speed * dt
+    // Record path point every ~12px of movement
+    const lastPt = player.dashPath[player.dashPath.length - 1]
+    if (!lastPt || Math.sqrt((player.x - lastPt.x) ** 2 + (player.y - lastPt.y) ** 2) > 6) {
+      player.dashPath.push({ x: player.x, y: player.y })
+    }
   } else {
     const dir = Input.getMovementDir()
     if (dir.x !== 0 || dir.y !== 0) {
@@ -296,6 +317,7 @@ export function updatePlayer(player: Player, dt: number): void {
         player.dashDirX = Math.cos(player.facingAngle)
         player.dashDirY = Math.sin(player.facingAngle)
       }
+      player.dashPath = [{ x: player.x, y: player.y }]
       player.dashStartX = player.x
       player.dashStartY = player.y
       player.dashTimer = player.dashDuration

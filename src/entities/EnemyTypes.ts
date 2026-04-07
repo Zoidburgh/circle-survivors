@@ -31,6 +31,9 @@ export interface EnemyType {
   blinkBeats?: number               // beats between blinks (default: 4)
   volatile?: boolean                // explodes on death, damages nearby enemies + player
   volatileRange?: number            // explosion radius (default: 150)
+  revenge?: boolean                 // fires rings on next beat after being hit
+  revengeRings?: number             // how many rings fire (default: 4)
+  revengeRadius?: number            // ring attack radius (default: 120)
 }
 
 /** Look up an enemy type by name */

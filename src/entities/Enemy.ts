@@ -73,6 +73,12 @@ export interface Enemy {
   blinkBeats: number    // beats between blinks
   volatile: boolean     // explodes on death
   volatileRange: number // explosion radius
+  revenge: boolean      // fires rings after being hit
+  revengeRings: number  // how many
+  revengeRadius: number // ring radius
+  revengeArmed: boolean // hit received, waiting for beat
+  revengeTimer: number  // time since armed
+  revengeAngle: number  // slowly rotating base angle for fire points
   blinkTimer: number    // counts beats until next blink
   blinkGhostX: number   // destination / old position after teleport
   blinkGhostY: number
@@ -164,6 +170,12 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     blinkBeats: type.blinkBeats ?? 4,
     volatile: type.volatile ?? false,
     volatileRange: type.volatileRange ?? 150,
+    revenge: type.revenge ?? false,
+    revengeRings: type.revengeRings ?? 4,
+    revengeRadius: type.revengeRadius ?? 120,
+    revengeArmed: false,
+    revengeTimer: 0,
+    revengeAngle: 0,
     blinkTimer: type.blinkBeats ?? 4,
     blinkGhostX: 0,
     blinkGhostY: 0,
@@ -285,6 +297,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   let moveY = 0
 
   enemy.moveTimer += dt
+  if (enemy.revenge) enemy.revengeAngle += dt * 0.5  // slow rotation ~0.5 rad/s
 
   switch (enemy.movePattern) {
     case 'pursue':

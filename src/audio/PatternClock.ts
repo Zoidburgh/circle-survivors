@@ -94,3 +94,19 @@ export function getBeatInterval(typeName: string): number {
   }
   return minGap * BEAT_SEC
 }
+
+/** Time in seconds until the next beat of a given pattern fires */
+export function timeUntilNextBeat(typeName: string): number {
+  if (!currentPattern) return BEAT_SEC
+  const beats = currentPattern.patterns[typeName]
+  if (!beats || beats.length === 0) return BEAT_SEC
+  const pos = getLoopPosition()
+  const loopLen = currentPattern.loopBeats
+  let minTime = loopLen  // worst case: full loop
+  for (const b of beats) {
+    let diff = b - pos
+    if (diff <= 0.05) diff += loopLen  // skip beats that already fired this tick
+    if (diff < minTime) minTime = diff
+  }
+  return minTime * BEAT_SEC
+}

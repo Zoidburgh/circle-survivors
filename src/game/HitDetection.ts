@@ -29,24 +29,36 @@ export function initHitDetection(): void {
     const ringRadius = getEffectiveRadius(player) * getRingExpansion(activeTimer)
 
     const isDashing = player.dashTimer >= 0
-    // Cap dash sweep to last 30% of dash path — prevents full backtrack
-    const DASH_SWEEP_CAP = 0.3
-    const dashCapT = isDashing ? 1 - DASH_SWEEP_CAP : 0
-    const sweepFromX = isDashing
-      ? player.dashStartX + (player.x - player.dashStartX) * dashCapT
-      : player.prevX
-    const sweepFromY = isDashing
-      ? player.dashStartY + (player.y - player.dashStartY) * dashCapT
-      : player.prevY
-    const steps = isDashing ? 8 : 4
     const grace = isDashing ? HIT_GRACE + 6 : HIT_GRACE
     const hitEnemies = new Set<Enemy>()
     const killedEnemies: Enemy[] = []
 
-    for (let s = 0; s <= steps; s++) {
-      const t = s / steps
-      const sx = sweepFromX + (player.x - sweepFromX) * t
-      const sy = sweepFromY + (player.y - sweepFromY) * t
+    // Build sweep positions — curved dash path or straight line
+    const sweepPositions: { x: number; y: number }[] = []
+    if (isDashing && player.dashPath.length > 1) {
+      // Use last 30% of recorded dash path
+      const DASH_SWEEP_CAP = 0.3
+      const startIdx = Math.floor(player.dashPath.length * (1 - DASH_SWEEP_CAP))
+      const pathSlice = player.dashPath.slice(startIdx)
+      // Sample up to 8 points from the slice
+      const steps = Math.min(8, pathSlice.length)
+      for (let s = 0; s < steps; s++) {
+        const idx = Math.floor(s / steps * pathSlice.length)
+        sweepPositions.push(pathSlice[idx]!)
+      }
+      sweepPositions.push({ x: player.x, y: player.y })
+    } else {
+      const steps = 4
+      for (let s = 0; s <= steps; s++) {
+        const t = s / steps
+        sweepPositions.push({
+          x: player.prevX + (player.x - player.prevX) * t,
+          y: player.prevY + (player.y - player.prevY) * t,
+        })
+      }
+    }
+
+    for (const { x: sx, y: sy } of sweepPositions) {
 
       const ringEntity = { x: sx, y: sy, radius: ringRadius }
       const nearby = grid.query(ringEntity)
@@ -74,6 +86,10 @@ export function initHitDetection(): void {
           if (enemy.totemSpawn) {
             emit('totem:spawn', enemy)
           }
+          // Revenge: fire immediately from current position (including killing blow)
+          if (enemy.revenge) {
+            emit('enemy:revenge', enemy)
+          }
           if (enemy.dying && !wasDying) killedEnemies.push(enemy)
         }
       }
@@ -89,10 +105,7 @@ export function initHitDetection(): void {
 
     // Check orbs along the same sweep (grid-accelerated)
     const collectedOrbs = new Set<XPOrb>()
-    for (let s = 0; s <= steps; s++) {
-      const t = s / steps
-      const sx = sweepFromX + (player.x - sweepFromX) * t
-      const sy = sweepFromY + (player.y - sweepFromY) * t
+    for (const { x: sx, y: sy } of sweepPositions) {
       const ringEntity = { x: sx, y: sy, radius: ringRadius }
       const nearbyOrbs = grid.query(ringEntity)
       for (const entity of nearbyOrbs) {
@@ -187,6 +200,8 @@ export function initHitDetection(): void {
       } // end origins loop
     }
   })
+
+  // Revenge damage handled in GameManager at ring peak timing
 
   on('enemy:killed', () => {
     playKill()
