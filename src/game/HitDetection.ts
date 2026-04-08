@@ -1,11 +1,11 @@
 import { on, emit } from '../core/EventBus.ts'
 import { getPlayer, getGrid, getEnemies } from '../core/GameState.ts'
-import { getEffectiveRadius } from '../entities/Player.ts'
+import { getEffectiveRadius, hurtPlayer } from '../entities/Player.ts'
 import { damageEnemy, getRingOrigins } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { getRingExpansion, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { distance } from '../utils/math.ts'
-import { HIT_FLASH_DURATION, HIT_GRACE, CHILL_MAX_STACKS } from '../utils/constants.ts'
+import { HIT_GRACE, CHILL_MAX_STACKS } from '../utils/constants.ts'
 import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playCollect } from '../audio/AudioEngine.ts'
 import { getBlockedArcs, isTargetBlocked } from './RingOcclusion.ts'
 import { spawnOrb, collectOrb, ORB_HP_HEAL } from '../entities/XPOrb.ts'
@@ -165,10 +165,7 @@ export function initHitDetection(): void {
       const arcs = getBlockedArcs(origins[0]!.x, origins[0]!.y, ringRadius, getEnemies(), enemy)
       const blocked = isTargetBlocked(origins[0]!.x, origins[0]!.y, player.x, player.y, arcs)
       if (!blocked) {
-        player.hp -= enemy.damage
-        player.hitFlash = HIT_FLASH_DURATION
-        playPlayerHit()
-        if (player.hp <= 0) player.hp = 0
+        if (hurtPlayer(player, enemy.damage)) playPlayerHit()
       }
     }
 

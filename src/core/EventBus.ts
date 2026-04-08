@@ -8,6 +8,8 @@ export interface GameEventMap {
   'enemy:killed': [enemy: Enemy]
   'totem:spawn': [totemEnemy: Enemy]
   'enemy:revenge': [enemy: Enemy]
+  'player:shieldBreak': [player: Player]
+  'player:shieldRestore': [player: Player]
 }
 
 type EventName = keyof GameEventMap

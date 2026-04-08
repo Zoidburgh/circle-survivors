@@ -264,6 +264,62 @@ export function playPlayerHit(): void {
   osc2.stop(t + 0.2)
 }
 
+export function playShieldBreak(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  // High crystalline descending ping
+  const ping = c.createOscillator()
+  const pingGain = c.createGain()
+  ping.type = 'sine'
+  ping.frequency.setValueAtTime(1800, t)
+  ping.frequency.exponentialRampToValueAtTime(600, t + 0.15)
+  pingGain.gain.setValueAtTime(rVol(0.4), t)
+  pingGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
+  ping.connect(pingGain)
+  pingGain.connect(master)
+  ping.start(t)
+  ping.stop(t + 0.2)
+
+  // Noise burst — glass shatter texture
+  const bufSize = Math.floor(c.sampleRate * 0.1)
+  const buffer = c.createBuffer(1, bufSize, c.sampleRate)
+  const data = buffer.getChannelData(0)
+  for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * 0.3
+  const noise = c.createBufferSource()
+  noise.buffer = buffer
+  const noiseGain = c.createGain()
+  noiseGain.gain.setValueAtTime(rVol(0.3), t)
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.1)
+  const hpf = c.createBiquadFilter()
+  hpf.type = 'highpass'
+  hpf.frequency.value = 2000
+  noise.connect(hpf)
+  hpf.connect(noiseGain)
+  noiseGain.connect(master)
+  noise.start(t)
+  noise.stop(t + 0.1)
+}
+
+export function playShieldRestore(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  const chime = c.createOscillator()
+  const chimeGain = c.createGain()
+  chime.type = 'sine'
+  chime.frequency.setValueAtTime(800, t)
+  chime.frequency.exponentialRampToValueAtTime(1400, t + 0.12)
+  chimeGain.gain.setValueAtTime(rVol(0.25), t)
+  chimeGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
+  chime.connect(chimeGain)
+  chimeGain.connect(master)
+  chime.start(t)
+  chime.stop(t + 0.2)
+}
+
 export function playBeatTick(): void {
   ensureContext()
   playKick()

@@ -4,6 +4,7 @@
 
 import type { PlayerModifiers } from '../entities/Player.ts'
 import { getPattern, setPattern } from '../audio/PatternClock.ts'
+import { SHIELD_MAX_CHARGES, SHIELD_RECHARGE_TIME, PLAYER_MAX_HP } from '../utils/constants.ts'
 
 export interface UpgradeBonus {
   speedMult?: number        // e.g. 0.1 = +10% speed
@@ -20,6 +21,11 @@ export interface UpgradeBonus {
   multiCollectBonus?: boolean // 2+ orbs collected in one beat = double XP from each
   ghostDash?: boolean // invincible during dash
   chillHit?: boolean  // ring hits slow enemies
+  extraHp?: number             // +1 max HP per stack
+  sizeMult?: number            // negative = smaller (e.g. -0.10 = 10% smaller)
+  shieldRechargeMult?: number  // negative = faster recharge
+  shieldMaxCharges?: number    // +1 shield charge per stack
+  noShield?: boolean           // tradeoff: removes shield entirely
 }
 
 export interface ActiveUpgrade {
@@ -103,6 +109,8 @@ export function computeModifiers(): PlayerModifiers {
   let dashDistance = 0
   let dashCharge = 0
   let xp = 0
+  let shieldRecharge = 0
+  let size = 0
 
   for (const u of activeUpgrades) {
     speed += u.bonus.speedMult ?? 0
@@ -112,6 +120,8 @@ export function computeModifiers(): PlayerModifiers {
     dashDistance += u.bonus.dashDistanceMult ?? 0
     dashCharge += u.bonus.dashChargeMult ?? 0
     xp += u.bonus.xpMult ?? 0
+    shieldRecharge += u.bonus.shieldRechargeMult ?? 0
+    size += u.bonus.sizeMult ?? 0
   }
 
   return {
@@ -122,6 +132,8 @@ export function computeModifiers(): PlayerModifiers {
     dashDistanceMult: 1 + dashDistance,
     dashChargeMult: 1 + dashCharge,
     xpMult: 1 + xp,
+    shieldRechargeMult: 1 + shieldRecharge,
+    sizeMult: 1 + size,
   }
 }
 
@@ -138,7 +150,7 @@ const EXTRA_RING_BEATS: number[][] = [
 ]
 
 /** Apply computed modifiers to player — call after any upgrade change */
-export function applyModifiers(player: { modifiers: PlayerModifiers; dashMaxCharges: number; dashSlots: number[]; extraRingCount: number }): void {
+export function applyModifiers(player: { modifiers: PlayerModifiers; dashMaxCharges: number; dashSlots: number[]; extraRingCount: number; shieldMaxCharges: number; shieldCharges: number; shieldRechargeTimer: number; shieldRechargeTime: number; hp: number; maxHp: number }): void {
   const mods = computeModifiers()
   player.modifiers.speedMult = mods.speedMult
   player.modifiers.damageMult = mods.damageMult
@@ -147,6 +159,19 @@ export function applyModifiers(player: { modifiers: PlayerModifiers; dashMaxChar
   player.modifiers.dashDistanceMult = mods.dashDistanceMult
   player.modifiers.dashChargeMult = mods.dashChargeMult
   player.modifiers.xpMult = mods.xpMult
+  player.modifiers.shieldRechargeMult = mods.shieldRechargeMult
+  player.modifiers.sizeMult = mods.sizeMult
+
+  // Structural: extra HP
+  let extraHp = 0
+  for (const u of activeUpgrades) {
+    extraHp += u.bonus.extraHp ?? 0
+  }
+  const oldMax = player.maxHp
+  player.maxHp = PLAYER_MAX_HP + extraHp
+  if (player.maxHp > oldMax) {
+    player.hp += player.maxHp - oldMax  // heal the gained HP
+  }
 
   // Structural: extra dash charges
   let extraDash = 0
@@ -185,4 +210,24 @@ export function applyModifiers(player: { modifiers: PlayerModifiers; dashMaxChar
     }
     setPattern({ ...pat, patterns })
   }
+
+  // Structural: shield charges
+  let extraShield = 0
+  let removeShield = false
+  for (const u of activeUpgrades) {
+    extraShield += u.bonus.shieldMaxCharges ?? 0
+    if (u.bonus.noShield) removeShield = true
+  }
+  if (removeShield) {
+    player.shieldMaxCharges = 0
+    player.shieldCharges = 0
+    player.shieldRechargeTimer = -1
+  } else {
+    const targetShield = SHIELD_MAX_CHARGES + extraShield
+    player.shieldMaxCharges = targetShield
+    if (player.shieldCharges < targetShield && player.shieldRechargeTimer < 0) {
+      player.shieldCharges = targetShield
+    }
+  }
+  player.shieldRechargeTime = SHIELD_RECHARGE_TIME * player.modifiers.shieldRechargeMult
 }

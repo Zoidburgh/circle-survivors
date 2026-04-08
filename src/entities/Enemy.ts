@@ -248,6 +248,9 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     const drainRate = enemy.dying ? HP_DRAIN_SPEED * 4 : HP_DRAIN_SPEED * 2
     enemy.displayHp -= (enemy.displayHp - enemy.hp) * drainRate * dt
     if (enemy.displayHp - enemy.hp < 0.01) enemy.displayHp = enemy.hp
+  } else if (enemy.displayHp < enemy.hp) {
+    enemy.displayHp += (enemy.hp - enemy.displayHp) * 6 * dt
+    if (enemy.hp - enemy.displayHp < 0.01) enemy.displayHp = enemy.hp
   }
 
   // Immovable enemies skip all movement and separation

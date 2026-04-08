@@ -21,7 +21,7 @@ const DEATH_DUR = 0.2
 const MAX_ORBS = 150
 
 // ── Tuning — easy to modify for upgrades ──
-export const ORB_HP_HEAL = 50        // HP restored per health orb
+export const ORB_HP_HEAL = 1         // HP restored per health orb
 export const ORB_HP_DROP_CHANCE = 0.5 // 50% chance to drop HP orb instead of XP
 
 const orbs: XPOrb[] = []

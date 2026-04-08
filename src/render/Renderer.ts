@@ -1,5 +1,5 @@
 import type { Player } from '../entities/Player.ts'
-import { getEffectiveRadius } from '../entities/Player.ts'
+import { getEffectiveRadius, getBodyRadius } from '../entities/Player.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { getRingOrigins } from '../entities/Enemy.ts'
 import type { Ring } from '../entities/Ring.ts'
@@ -25,6 +25,8 @@ import {
   PARTICLE_CAP,
   ARENA_BUFFER,
   HIT_FLASH_DURATION,
+  SHIELD_ORBIT_RADIUS_OFFSET,
+  SHIELD_BREAK_FLASH,
 } from '../utils/constants.ts'
 
 let canvas: HTMLCanvasElement
@@ -56,6 +58,10 @@ let dashSweepRadius = 0
 let ringPeakX = 0  // player position at ring peak — for aligned post-peak effects
 let ringPeakY = 0
 let dashSweepPath: { x: number; y: number }[] = []
+let prevShieldCharges = -1  // track for restore particle trigger
+let shieldRestoreAnim = 0   // countdown for restore converge effect
+let shieldDisplayProgress = 0  // smoothed recharge progress for retreat animation
+let frameDt = 0.016         // render dt stored for use in draw functions
 const wavePts: number[] = []  // reused per frame for all waveforms
 
 // ── Perf tracking ──
@@ -144,7 +150,7 @@ const MAX_ABSORBS = 15
 
 export function addAbsorbEffect(x: number, y: number, r: number, g: number, b: number, targetX = -1, targetY = -1): void {
   if (absorbEffects.length >= MAX_ABSORBS) absorbEffects.shift()
-  absorbEffects.push({ originX: x, originY: y, targetX, targetY, r, g, b, timer: 0, duration: 0.6 })
+  absorbEffects.push({ originX: x, originY: y, targetX, targetY, r, g, b, timer: 0, duration: 0.4 })
 }
 
 function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
@@ -181,18 +187,18 @@ function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
       const perpX = -ddy, perpY = ddx
       const perpLen = Math.sqrt(perpX * perpX + perpY * perpY)
       const wave = perpLen > 1
-        ? Math.sin(orbT * 12 + c * 1.5) * 15 * orbLife  // wave that fades near player
+        ? Math.sin(orbT * 12 + c * 1.5) * 15 * orbLife * orbLife  // wave fades faster near target
         : 0
       const wnx = perpLen > 1 ? perpX / perpLen : 0
       const wny = perpLen > 1 ? perpY / perpLen : 0
 
       const orbX = sx1 + ddx * orbEase + wnx * wave
       const orbY = sy1 + ddy * orbEase + wny * wave
-      const orbSize = (13 - c * 1.4) * orbLife
+      const orbSize = (16 - c * 1.6) * Math.max(orbLife, 0.15)
 
       // Glow
       ctx.beginPath()
-      ctx.arc(orbX, orbY, orbSize + 10, 0, Math.PI * 2)
+      ctx.arc(orbX, orbY, orbSize + 13, 0, Math.PI * 2)
       ctx.fillStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.1})`
       ctx.fill()
 
@@ -207,16 +213,28 @@ function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
         const nextT = t - (c + 1) * spacing
         if (nextT >= 0) {
           const nextEase = nextT * nextT * (3 - 2 * nextT)
-          const nextWave = Math.sin(nextT * 12 + (c + 1) * 1.5) * 15 * (1 - nextT)
+          const nextLife = 1 - nextT
+          const nextWave = Math.sin(nextT * 12 + (c + 1) * 1.5) * 15 * nextLife * nextLife
           const nextX = sx1 + ddx * nextEase + wnx * nextWave
           const nextY = sy1 + ddy * nextEase + wny * nextWave
           ctx.beginPath()
           ctx.moveTo(orbX, orbY)
           ctx.lineTo(nextX, nextY)
-          ctx.strokeStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.2})`
-          ctx.lineWidth = 3 * orbLife
+          ctx.strokeStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.25})`
+          ctx.lineWidth = 3.5 * orbLife
           ctx.stroke()
         }
+      }
+
+      // Energy sparks along stream
+      if (Math.random() < 0.3) {
+        const sparkSpeed = 15 + Math.random() * 25
+        const sa = Math.random() * Math.PI * 2
+        spawnParticle(
+          fx.originX + (tx - fx.originX) * orbEase + wnx * wave,
+          fx.originY + (ty - fx.originY) * orbEase + wny * wave,
+          Math.cos(sa) * sparkSpeed, Math.sin(sa) * sparkSpeed,
+          fx.r, fx.g, fx.b, 0.1 + Math.random() * 0.08, 2 + Math.random() * 1.5)
       }
     }
     ctx.lineCap = 'butt'
@@ -713,11 +731,13 @@ export function resetRenderer(): void {
   outerPulseIntensity = 0
   dashSweepIntensity = 0
   dashSweepPath = []
+  shieldDisplayProgress = 0
 }
 
 export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0, dt = 0.016, cam?: Camera): void {
   perfStart('R_TOTAL')
   lastDt = dt
+  frameDt = dt
   if (cam) {
     camX = cam.x - width / 2
     camY = cam.y - height / 2
@@ -730,7 +750,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
 
   // Update global beat pulse — used by all beat-sync visuals
   if (player.attackTimer >= 0) {
-    const buildup = Math.min(player.attackTimer / ATTACK_EXPAND_TIME, 1)
+    const buildup = Math.min(player.attackTimer / (ATTACK_EXPAND_TIME * 0.8), 1)
     const target = buildup * buildup * 0.5
     if (target > globalBeatPulse) globalBeatPulse = target
   } else {
@@ -866,7 +886,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
         const sy = pt.y - camY
         ctx.beginPath()
         ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 80, 80, ${0.06 * fade})`
+        ctx.strokeStyle = `rgba(255, 80, 80, ${0.09 * fade})`
         ctx.lineWidth = grace * 2
         ctx.stroke()
       }
@@ -878,7 +898,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
           ctx.moveTo(sx + edgeR, sy)
           ctx.arc(sx, sy, edgeR, 0, Math.PI * 2)
         }
-        ctx.strokeStyle = `rgba(255, 80, 80, ${0.25 * fade})`
+        ctx.strokeStyle = `rgba(255, 80, 80, ${0.32 * fade})`
         ctx.lineWidth = 1
         ctx.stroke()
       }
@@ -1567,6 +1587,7 @@ function drawXPOrbs(player: Player): void {
 }
 
 function drawPlayer(player: Player): void {
+  const baseRadius = getBodyRadius(player)
   let sx = player.x - camX
   let sy = player.y - camY
 
@@ -1580,9 +1601,9 @@ function drawPlayer(player: Player): void {
   // Glow aura — soft radial gradient behind player, pulses on beat
   {
     const beatPulse = globalBeatPulse
-    const glowRadius = PLAYER_RADIUS * (2.5 + beatPulse * 0.8)
+    const glowRadius = baseRadius * (2.5 + beatPulse * 0.8)
     const glowAlpha = 0.18 + beatPulse * 0.22
-    const grad = ctx.createRadialGradient(sx, sy, PLAYER_RADIUS * 0.3, sx, sy, glowRadius)
+    const grad = ctx.createRadialGradient(sx, sy, baseRadius * 0.3, sx, sy, glowRadius)
     grad.addColorStop(0, `rgba(79, 195, 247, ${glowAlpha})`)
     grad.addColorStop(0.4, `rgba(79, 195, 247, ${glowAlpha * 0.4})`)
     grad.addColorStop(1, 'rgba(79, 195, 247, 0)')
@@ -1617,7 +1638,7 @@ function drawPlayer(player: Player): void {
     const ty = t.y - camY
     const alpha = (i / player.trail.length) * 0.12
     ctx.beginPath()
-    ctx.arc(tx, ty, PLAYER_RADIUS * (0.5 + 0.5 * i / player.trail.length), 0, Math.PI * 2)
+    ctx.arc(tx, ty, baseRadius * (0.5 + 0.5 * i / player.trail.length), 0, Math.PI * 2)
     ctx.fillStyle = `rgba(79, 195, 247, ${alpha})`
     ctx.fill()
   }
@@ -1630,12 +1651,12 @@ function drawPlayer(player: Player): void {
   }
 
   // Hit shrink + color fade
-  let drawRadius = PLAYER_RADIUS
-  let fillColor = isGhostDashing ? 'rgba(255, 255, 255, 0.2)' : 'rgba(79, 195, 247, 0.15)'
+  let drawRadius = baseRadius
+  let fillColor = isGhostDashing ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 255, 255, 0.22)'
   let strokeColor = isGhostDashing ? '#FFFFFF' : COLOR_PLAYER
   if (player.hitFlash > 0) {
     const t = player.hitFlash / HIT_FLASH_DURATION // 1 = just hit, 0 = recovered
-    drawRadius = PLAYER_RADIUS * (0.7 + 0.3 * (1 - t)) // shrinks to 70% then bounces back
+    drawRadius = baseRadius * (0.7 + 0.3 * (1 - t)) // shrinks to 70% then bounces back
     fillColor = `rgba(255, ${Math.floor(30 + 225 * (1 - t))}, ${Math.floor(30 + 217 * (1 - t))}, ${0.2 + 0.5 * t})`
     strokeColor = `rgb(255, ${Math.floor(30 + 225 * (1 - t))}, ${Math.floor(30 + 217 * (1 - t))})`
   }
@@ -1672,20 +1693,19 @@ function drawPlayer(player: Player): void {
     }
   }
 
-  // Hit particles — red burst from pie edge on hit
-  if (player.hitFlash > HIT_FLASH_DURATION - 0.02) {
-    const dmgFraction = 1 / player.maxHp  // enemy.damage is always 1
-    const intensity = Math.min(Math.max(dmgFraction / 0.002, 1), 4)
-    const count = Math.floor(8 * intensity)
+  // Hit particles — red burst from pie edge on hit (only when HP actually lost, not shield)
+  if (player.hitFlash > HIT_FLASH_DURATION - 0.02 && player.shieldBreakFlash <= 0) {
+    const dmgFraction = 1 / player.maxHp
+    const intensity = Math.min(Math.max(dmgFraction / 0.05, 1), 3)
+    const count = Math.floor(6 * intensity)
     const biteAngle = -Math.PI / 2 + (player.hp / player.maxHp) * Math.PI * 2
     for (let i = 0; i < count; i++) {
       const spread = (Math.random() - 0.5) * (0.6 + intensity * 0.15)
       const angle = biteAngle + spread
-      const dist = drawRadius * (0.5 + Math.random() * 0.5)
-      const px = player.x + Math.cos(angle) * dist
-      const py = player.y + Math.sin(angle) * dist
-      const speed = (30 + Math.random() * 50) * (0.8 + intensity * 0.2)
-      const size = (4 + Math.random() * 4) * (0.8 + intensity * 0.2)
+      const px = player.x + Math.cos(angle) * drawRadius
+      const py = player.y + Math.sin(angle) * drawRadius
+      const speed = (80 + Math.random() * 100) * (0.8 + intensity * 0.2)
+      const size = (2.5 + Math.random() * 2.5) * (0.8 + intensity * 0.2)
       spawnParticle(px, py, Math.cos(angle) * speed, Math.sin(angle) * speed,
         255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, size)
     }
@@ -1724,21 +1744,320 @@ function drawPlayer(player: Player): void {
       ctx.fill()
     }
 
-    // Main HP fill
-    const mainEnd = hpStart + actualPlayerHp * Math.PI * 2
+    // Main HP fill — use displayHp for smooth fill animation
+    const fillFraction = Math.min(hpFraction, actualPlayerHp)
+    const mainEnd = hpStart + fillFraction * Math.PI * 2
     ctx.beginPath()
     ctx.moveTo(sx, sy)
     ctx.arc(sx, sy, drawRadius, hpStart, mainEnd)
     ctx.closePath()
     ctx.fillStyle = fillColor
     ctx.fill()
+
+    // Heal juice — glowing leading edge + particles when filling
+    const healGap = actualPlayerHp - hpFraction
+    if (healGap > 0.01) {
+      const tipAngle = mainEnd
+      const tipX = sx + Math.cos(tipAngle) * drawRadius * 0.7
+      const tipY = sy + Math.sin(tipAngle) * drawRadius * 0.7
+      // Leading edge glow
+      const glowR = drawRadius * 0.4
+      const healGlow = ctx.createRadialGradient(tipX, tipY, 0, tipX, tipY, glowR)
+      healGlow.addColorStop(0, 'rgba(100, 255, 160, 0.35)')
+      healGlow.addColorStop(1, 'rgba(100, 255, 160, 0)')
+      ctx.beginPath()
+      ctx.arc(tipX, tipY, glowR, 0, Math.PI * 2)
+      ctx.fillStyle = healGlow
+      ctx.fill()
+      // Bright tip dot
+      const edgeX = sx + Math.cos(tipAngle) * drawRadius
+      const edgeY = sy + Math.sin(tipAngle) * drawRadius
+      ctx.beginPath()
+      ctx.arc(edgeX, edgeY, 3, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(150, 255, 200, 0.8)'
+      ctx.fill()
+      // Heal particles — spawn occasionally from the tip
+      if (Math.random() < 0.3) {
+        const pAngle = tipAngle + (Math.random() - 0.5) * 0.5
+        const pDist = drawRadius * (0.5 + Math.random() * 0.5)
+        spawnParticle(
+          player.x + Math.cos(pAngle) * pDist,
+          player.y + Math.sin(pAngle) * pDist,
+          Math.cos(pAngle) * 30, Math.sin(pAngle) * 30,
+          100, 255, 160, 0.25 + Math.random() * 0.15, 2 + Math.random() * 2)
+      }
+    }
+
+    // HP segment lines — only on remaining health
+    if (player.maxHp <= 40) {
+      const segStart = player.hp < player.maxHp ? 1 : 0
+      const now = performance.now()
+      const segInner = drawRadius * (0.60 - globalBeatPulse * 0.30)
+      for (let i = segStart; i < player.hp; i++) {
+        const phase = (i / player.maxHp) * Math.PI * 2
+        const wave = 0.5 + 0.5 * Math.sin(now / 800 - phase * 1.5)
+        const segAlpha = 0.12 + wave * 0.18
+        const segAngle = hpStart + (i / player.maxHp) * Math.PI * 2
+        const ix = sx + Math.cos(segAngle) * segInner
+        const iy = sy + Math.sin(segAngle) * segInner
+        const ox = sx + Math.cos(segAngle) * drawRadius
+        const oy = sy + Math.sin(segAngle) * drawRadius
+        // Glow layer — soft white-cyan
+        ctx.beginPath()
+        ctx.moveTo(ix, iy)
+        ctx.lineTo(ox, oy)
+        ctx.strokeStyle = `rgba(180, 230, 255, ${segAlpha * 0.6})`
+        ctx.lineWidth = 4
+        ctx.stroke()
+        // Core line — bright white-pink
+        ctx.beginPath()
+        ctx.moveTo(ix, iy)
+        ctx.lineTo(ox, oy)
+        ctx.strokeStyle = `rgba(230, 210, 255, ${segAlpha + 0.12})`
+        ctx.lineWidth = 1.5
+        ctx.stroke()
+      }
+    }
   }
 
-  ctx.beginPath()
-  ctx.arc(sx, sy, drawRadius, 0, Math.PI * 2)
-  ctx.strokeStyle = strokeColor
-  ctx.lineWidth = 2.5
-  ctx.stroke()
+  // ── Shield on body stroke ──
+  if (player.shieldCharges > 0) {
+    // Shielded — pulsing energy field
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 300)
+    const fastPulse = 0.5 + 0.5 * Math.sin(performance.now() / 120)
+    // Activation flash — bright white-pink flare that fades quickly
+    const activFlash = shieldRestoreAnim > 0 ? Math.min(shieldRestoreAnim / 0.12, 1) : 0
+    if (activFlash > 0) {
+      ctx.beginPath()
+      ctx.arc(sx, sy, drawRadius + 1, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 220, 255, ${activFlash * 0.4})`
+      ctx.lineWidth = 4 + activFlash * 2
+      ctx.stroke()
+    }
+
+    // Wide soft outer glow
+    ctx.beginPath()
+    ctx.arc(sx, sy, drawRadius + 2, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(255, 50, 200, ${0.12 + pulse * 0.1})`
+    ctx.lineWidth = 5 + pulse * 2
+    ctx.stroke()
+
+    // Core energy ring
+    ctx.beginPath()
+    ctx.arc(sx, sy, drawRadius, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(255, 50, 200, ${0.85 + fastPulse * 0.15})`
+    ctx.lineWidth = 2.5 + pulse * 0.5
+    ctx.stroke()
+
+    // Hot inner edge
+    ctx.beginPath()
+    ctx.arc(sx, sy, drawRadius - 0.5, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(255, 180, 240, ${0.25 + fastPulse * 0.15})`
+    ctx.lineWidth = 1
+    ctx.stroke()
+
+    // Beat pulse on shield — flares on beat
+    if (globalBeatPulse > 0.3) {
+      const beatAlpha = globalBeatPulse * 0.15
+      ctx.beginPath()
+      ctx.arc(sx, sy, drawRadius + 3 + globalBeatPulse * 4, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 120, 220, ${beatAlpha})`
+      ctx.lineWidth = 2 + globalBeatPulse * 2
+      ctx.stroke()
+    }
+
+    // Ambient shield sparks — evenly around circumference
+    const sparkCount = globalBeatPulse > 0.5 ? 3 : 1
+    for (let s = 0; s < sparkCount; s++) {
+      if (Math.random() < 0.5) {
+        const sparkAngle = Math.random() * Math.PI * 2
+        const outAngle = sparkAngle + (Math.random() - 0.5) * 1.2
+        const speed = 35 + Math.random() * 60
+        spawnParticle(
+          player.x + Math.cos(sparkAngle) * drawRadius,
+          player.y + Math.sin(sparkAngle) * drawRadius,
+          Math.cos(outAngle) * speed, Math.sin(outAngle) * speed,
+          255, 100 + Math.floor(Math.random() * 100), 220,
+          0.14 + Math.random() * 0.1, 3.5)
+      }
+    }
+  } else if (player.shieldRechargeTimer > 0) {
+    // Recharging — normal stroke underneath, purple arc filling on top
+    const progress = 1 - (player.shieldRechargeTimer / player.shieldRechargeTime)
+
+    // Smooth display progress — snaps forward, retreats fast on hit
+    if (progress > shieldDisplayProgress) {
+      shieldDisplayProgress += (progress - shieldDisplayProgress) * 12 * frameDt
+      if (progress - shieldDisplayProgress < 0.005) shieldDisplayProgress = progress
+    } else {
+      shieldDisplayProgress -= (shieldDisplayProgress - progress) * 8 * frameDt
+      if (shieldDisplayProgress - progress < 0.005) shieldDisplayProgress = progress
+    }
+
+    // Base stroke (normal)
+    ctx.beginPath()
+    ctx.arc(sx, sy, drawRadius, 0, Math.PI * 2)
+    ctx.strokeStyle = strokeColor
+    ctx.lineWidth = 2.5
+    ctx.stroke()
+
+    // Magenta progress arc clockwise from top — pulses throughout, intensifies near end
+    const visProgress = Math.max(0, shieldDisplayProgress)
+    if (visProgress > 0) {
+      const eighthNote = BEAT_SEC * 500  // 8th note period in ms
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() * Math.PI * 2 / eighthNote)
+      const nearEnd = visProgress > 0.5 ? (visProgress - 0.5) / 0.5 : 0
+      const flash = pulse * (0.5 + nearEnd * 0.5)
+      ctx.beginPath()
+      ctx.arc(sx, sy, drawRadius, -Math.PI / 2, -Math.PI / 2 + visProgress * Math.PI * 2)
+      const r = 255
+      const g = Math.round(50 + flash * 150)
+      const b = Math.round(200 + flash * 40)
+
+      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${0.6 + progress * 0.35 + flash * 0.05})`
+      ctx.lineWidth = 3 + flash
+      ctx.stroke()
+
+      // Leading tip glow + sparks
+      const tipAngle = -Math.PI / 2 + visProgress * Math.PI * 2
+      const tipX = sx + Math.cos(tipAngle) * drawRadius
+      const tipY = sy + Math.sin(tipAngle) * drawRadius
+
+      // Sparks from the tip
+      for (let s = 0; s < 2; s++) {
+        if (Math.random() < 0.25 + visProgress * 0.25) {
+          const sparkAngle = tipAngle + (Math.random() - 0.5) * 1.5
+          const speed = 50 + Math.random() * 90
+          spawnParticle(
+            player.x + Math.cos(tipAngle) * drawRadius,
+            player.y + Math.sin(tipAngle) * drawRadius,
+            Math.cos(sparkAngle) * speed, Math.sin(sparkAngle) * speed,
+            255, 100 + Math.floor(Math.random() * 100), 220,
+            0.2 + Math.random() * 0.12, 5 + Math.random() * 3)
+        }
+      }
+    }
+  } else {
+    // No shield, not recharging — normal stroke
+    ctx.beginPath()
+    ctx.arc(sx, sy, drawRadius, 0, Math.PI * 2)
+    ctx.strokeStyle = strokeColor
+    ctx.lineWidth = 2.5
+    ctx.stroke()
+  }
+
+  // Shield break particles — explosive burst from body edge
+  if (player.shieldBreakFlash > SHIELD_BREAK_FLASH - 0.02 && player.shieldBreakFlash <= SHIELD_BREAK_FLASH) {
+    for (let i = 0; i < 35; i++) {
+      const angle = (i / 35) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
+      const px = player.x + Math.cos(angle) * drawRadius
+      const py = player.y + Math.sin(angle) * drawRadius
+      const speed = 438 + Math.random() * 375
+      spawnParticle(px, py,
+        Math.cos(angle) * speed, Math.sin(angle) * speed,
+        255, 50, 200, 0.3 + Math.random() * 0.15, 5.5 + Math.random() * 5.5)
+    }
+    // Hot white core sparks
+    for (let i = 0; i < 12; i++) {
+      const angle = Math.random() * Math.PI * 2
+      const px = player.x + Math.cos(angle) * drawRadius
+      const py = player.y + Math.sin(angle) * drawRadius
+      const speed = 563 + Math.random() * 313
+      spawnParticle(px, py,
+        Math.cos(angle) * speed, Math.sin(angle) * speed,
+        255, 220, 255, 0.3 + Math.random() * 0.15, 3.3 + Math.random() * 2.2)
+    }
+  }
+
+  // Shield restore — detect trigger
+  if (prevShieldCharges === 0 && player.shieldCharges > 0) {
+    shieldRestoreAnim = 0.47
+  }
+  prevShieldCharges = player.shieldCharges
+
+  // Shield restore — spiral converge + impact shockwave
+  if (shieldRestoreAnim > 0) {
+    shieldRestoreAnim -= frameDt
+    const totalDur = 0.47
+    const convergeDur = 0.28  // spiral phase
+    const shockDur = 0.19     // shockwave phase
+    const elapsed = totalDur - shieldRestoreAnim
+
+    if (elapsed < convergeDur) {
+      // Phase 1: spiral inward
+      const t = elapsed / convergeDur  // 0→1
+      const outerR = drawRadius + 136
+      const currentR = outerR * (1 - t * t * t)  // cubic ease
+      const spiralRot = t * Math.PI * 3  // 3 full rotations
+      const alpha = 0.5 + t * 0.5
+      const count = 12
+      for (let i = 0; i < count; i++) {
+        const baseAngle = (i / count) * Math.PI * 2
+        const angle = baseAngle + spiralRot
+        const dx = Math.cos(angle) * currentR
+        const dy = Math.sin(angle) * currentR
+        const size = 3 + t * t * 8
+        const white = 1 - t
+        const cr = 255
+        const cg = Math.round(200 * white + 50 * (1 - white))
+        const cb = Math.round(255 * white + 200 * (1 - white))
+        ctx.beginPath()
+        ctx.arc(sx + dx, sy + dy, size, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha})`
+        ctx.fill()
+
+        // Trailing sparks behind each dot
+        if (Math.random() < 0.5 + t * 0.5) {
+          const trailAngle = angle + Math.PI + (Math.random() - 0.5) * 0.8
+          const trailSpeed = 20 + Math.random() * 40
+          spawnParticle(
+            player.x + dx, player.y + dy,
+            Math.cos(trailAngle) * trailSpeed, Math.sin(trailAngle) * trailSpeed,
+            cr, cg, cb, 0.15 + Math.random() * 0.1, 2 + Math.random() * 2)
+        }
+      }
+    } else {
+      // Phase 2: impact shockwave
+      const shockT = (elapsed - convergeDur) / shockDur  // 0→1
+      const shockR = drawRadius + shockT * 45
+      const shockAlpha = (1 - shockT)
+
+      // Expanding shockwave ring
+      ctx.beginPath()
+      ctx.arc(sx, sy, shockR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 150, 230, ${shockAlpha * 0.6})`
+      ctx.lineWidth = 4 * (1 - shockT) + 1
+      ctx.stroke()
+
+      // Second tighter ring
+      const innerShockR = drawRadius + shockT * 20
+      ctx.beginPath()
+      ctx.arc(sx, sy, innerShockR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 220, 255, ${shockAlpha * 0.5})`
+      ctx.lineWidth = 2 * (1 - shockT)
+      ctx.stroke()
+
+      // Full body flash
+      ctx.beginPath()
+      ctx.arc(sx, sy, drawRadius + 1, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 180, 240, ${shockAlpha * 0.2})`
+      ctx.fill()
+
+      // Impact sparks burst
+      if (shockT < 0.12) {
+        for (let i = 0; i < 16; i++) {
+          const a = (i / 16) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
+          const speed = 80 + Math.random() * 120
+          spawnParticle(
+            player.x + Math.cos(a) * drawRadius,
+            player.y + Math.sin(a) * drawRadius,
+            Math.cos(a) * speed, Math.sin(a) * speed,
+            255, 120 + Math.floor(Math.random() * 100), 230,
+            0.15 + Math.random() * 0.1, 4 + Math.random() * 3)
+        }
+      }
+    }
+  }
 
   // Beat anticipation — 10 chained rings shrinking toward player body
   if (player.attackTimer >= 0 && player.attackTimer < ATTACK_EXPAND_TIME) {
@@ -1835,7 +2154,7 @@ function drawPlayer(player: Player): void {
   const beatGlow = player.ring.phase > 0.8 ? (player.ring.phase - 0.8) / 0.2 : 0
   if (beatGlow > 0) {
     ctx.beginPath()
-    ctx.arc(sx, sy + PLAYER_RADIUS + 10, 3, 0, Math.PI * 2)
+    ctx.arc(sx, sy + baseRadius + 10, 3, 0, Math.PI * 2)
     ctx.fillStyle = `rgba(255, 255, 255, ${beatGlow})`
     ctx.fill()
   }
@@ -1992,8 +2311,8 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const outAngle = Math.atan2(py - enemy.y, px - enemy.x)
       const vx = Math.cos(outAngle) * speed
       const vy = Math.sin(outAngle) * speed
-      const sizeScale = r / 44
-      const size = (4 + Math.random() * 4) * (0.8 + intensity * 0.2) * sizeScale
+      const sizeScale = Math.min(r / 44, 1)
+      const size = (3 + Math.random() * 3) * (0.8 + intensity * 0.2) * sizeScale
       spawnParticle(px, py, vx, vy, 255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, size)
     }
     // Blood spray from center — enemy colored
@@ -2001,8 +2320,8 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     for (let i = 0; i < sprayCount; i++) {
       const angle = Math.random() * Math.PI * 2
       const speed = 40 + Math.random() * 100 * intensity
-      const sizeScale = r / 44
-      const size = (3 + Math.random() * 4) * (0.8 + intensity * 0.2) * sizeScale
+      const sizeScale2 = Math.min(r / 44, 1)
+      const size = (2.5 + Math.random() * 3) * (0.8 + intensity * 0.2) * sizeScale2
       spawnParticle(enemy.x, enemy.y,
         Math.cos(angle) * speed, Math.sin(angle) * speed,
         230 + Math.floor(Math.random() * 25), 40 + Math.floor(Math.random() * 40), 40, 0.4 + Math.random() * 0.3, size)
@@ -2112,7 +2431,8 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       ctx.fill()
     }
 
-    const mainEnd = startAngle + actualHpFraction * Math.PI * 2
+    const enemyFillFraction = Math.min(hpFraction, actualHpFraction)
+    const mainEnd = startAngle + enemyFillFraction * Math.PI * 2
     const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
     grad.addColorStop(0, `rgba(${hr}, ${hg}, ${hb}, 0.7)`)
     grad.addColorStop(0.7, `rgba(${hr}, ${hg}, ${hb}, 0.5)`)

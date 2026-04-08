@@ -61,7 +61,11 @@
             5.5,
             6.5,
             7.5
-          ]
+          ],
+          "edgeMode": false,
+          "edgePoints": 3,
+          "edgeActive": 1,
+          "edgeSwitchBeats": 1
         }
       ],
       "blocksRings": false,
@@ -72,9 +76,12 @@
       "blinkBeats": 2,
       "volatile": true,
       "volatileRange": 340,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
       "movePattern": "pursue",
       "totemSpawn": "",
-      "dropType": "xp"
+      "dropType": "hp"
     },
     {
       "name": "Enemy4",
@@ -155,7 +162,11 @@
             5.5,
             6.5,
             7.5
-          ]
+          ],
+          "edgeMode": false,
+          "edgePoints": 3,
+          "edgeActive": 1,
+          "edgeSwitchBeats": 1
         }
       ],
       "blocksRings": false,
@@ -164,9 +175,14 @@
       "magnetRange": 200,
       "blink": false,
       "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
       "movePattern": "lunge",
       "totemSpawn": "Enemy5",
-      "dropType": "xp"
+      "dropType": "hp"
     },
     {
       "name": "Enemy5",

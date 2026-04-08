@@ -14,6 +14,10 @@ import {
   PLAYER_MAX_HP,
   PLAYER_BASE_DAMAGE,
   HP_DRAIN_SPEED,
+  HIT_FLASH_DURATION,
+  SHIELD_MAX_CHARGES,
+  SHIELD_RECHARGE_TIME,
+  SHIELD_BREAK_FLASH,
 } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import { COLOR_PLAYER } from '../utils/constants.ts'
@@ -31,6 +35,8 @@ export interface PlayerModifiers {
   dashDistanceMult: number
   dashChargeMult: number
   xpMult: number
+  shieldRechargeMult: number
+  sizeMult: number
 }
 
 export function createDefaultModifiers(): PlayerModifiers {
@@ -42,6 +48,8 @@ export function createDefaultModifiers(): PlayerModifiers {
     dashDistanceMult: 1.0,
     dashChargeMult: 1.0,
     xpMult: 1.0,
+    shieldRechargeMult: 1.0,
+    sizeMult: 1.0,
   }
 }
 
@@ -77,6 +85,12 @@ export interface Player {
   dashDuration: number
   dashChargeTime: number
   dashDistance: number
+  damageCooldown: number  // immunity window after taking a hit
+  shieldCharges: number
+  shieldMaxCharges: number
+  shieldRechargeTimer: number  // counts down to 0; -1 = fully charged
+  shieldBreakFlash: number
+  shieldRechargeTime: number   // base 5s, modified by upgrades
   modifiers: PlayerModifiers
 }
 
@@ -112,6 +126,12 @@ export function createPlayer(x: number, y: number): Player {
     dashDuration: DASH_DURATION,
     dashChargeTime: DASH_CHARGE_TIME,
     dashDistance: DASH_DISTANCE,
+    damageCooldown: 0,
+    shieldCharges: SHIELD_MAX_CHARGES,
+    shieldMaxCharges: SHIELD_MAX_CHARGES,
+    shieldRechargeTimer: -1,
+    shieldBreakFlash: 0,
+    shieldRechargeTime: SHIELD_RECHARGE_TIME,
     modifiers: createDefaultModifiers(),
   }
 }
@@ -142,6 +162,12 @@ export function resetPlayer(player: Player): void {
   player.xp = 0
   player.extraRingTimers = [-1, -1, -1, -1]
   player.extraRingCount = 0
+  player.damageCooldown = 0
+  player.shieldCharges = SHIELD_MAX_CHARGES
+  player.shieldMaxCharges = SHIELD_MAX_CHARGES
+  player.shieldRechargeTimer = -1
+  player.shieldBreakFlash = 0
+  player.shieldRechargeTime = SHIELD_RECHARGE_TIME
   player.modifiers = createDefaultModifiers()
 }
 
@@ -149,13 +175,63 @@ export function getEffectiveRadius(player: Player): number {
   return player.ring.radius * player.modifiers.ringRadiusMult
 }
 
+export function getBodyRadius(player: Player): number {
+  return PLAYER_RADIUS * player.modifiers.sizeMult
+}
+
+const DAMAGE_COOLDOWN = 0.1  // seconds of immunity after taking a hit
+
+/** Try to deal damage to the player. Returns true if a hit was registered. */
+export function hurtPlayer(player: Player, amount: number): boolean {
+  if (player.damageCooldown > 0) return false
+
+  // Shield absorb — no HP loss
+  if (player.shieldCharges > 0) {
+    player.shieldCharges--
+    player.shieldBreakFlash = SHIELD_BREAK_FLASH
+    player.hitFlash = HIT_FLASH_DURATION
+    player.shieldRechargeTimer = player.shieldRechargeTime
+    player.damageCooldown = DAMAGE_COOLDOWN
+    emit('player:shieldBreak', player)
+    return true
+  }
+
+  // No shield — take HP damage
+  player.hp -= amount
+  if (player.hp <= 0) player.hp = 0
+  player.hitFlash = HIT_FLASH_DURATION
+  player.damageCooldown = DAMAGE_COOLDOWN
+
+  // Restart shield recharge when taking HP damage
+  if (player.shieldRechargeTimer > 0) {
+    player.shieldRechargeTimer = player.shieldRechargeTime
+  }
+
+  return true
+}
+
 export function updatePlayer(player: Player, dt: number): void {
   if (player.hitFlash > 0) player.hitFlash -= dt
+  if (player.damageCooldown > 0) player.damageCooldown -= dt
+  if (player.shieldBreakFlash > 0) player.shieldBreakFlash -= dt
 
-  // Smooth HP display
+  // Shield recharge
+  if (player.shieldRechargeTimer > 0) {
+    player.shieldRechargeTimer -= dt
+    if (player.shieldRechargeTimer <= 0) {
+      player.shieldRechargeTimer = -1
+      player.shieldCharges = Math.min(player.shieldCharges + 1, player.shieldMaxCharges)
+      emit('player:shieldRestore', player)
+    }
+  }
+
+  // Smooth HP display — drain fast, fill smooth
   if (player.displayHp > player.hp) {
     player.displayHp -= (player.displayHp - player.hp) * HP_DRAIN_SPEED * dt
     if (player.displayHp - player.hp < 0.01) player.displayHp = player.hp
+  } else if (player.displayHp < player.hp) {
+    player.displayHp += (player.hp - player.displayHp) * 6 * dt
+    if (player.hp - player.displayHp < 0.01) player.displayHp = player.hp
   }
 
   // Dash charge regen — each slot charges independently
@@ -205,11 +281,13 @@ export function updatePlayer(player: Player, dt: number): void {
   }
 
   // Clamp to arena — wall slide preserves tangential movement
+  const bodyR = PLAYER_RADIUS * player.modifiers.sizeMult
+  player.hitRadius = bodyR
   if (getArenaShape() === 'circle') {
     const dx = player.x - ARENA_CX
     const dy = player.y - ARENA_CY
     const dist = Math.sqrt(dx * dx + dy * dy)
-    const maxDist = ARENA_RADIUS - PLAYER_RADIUS
+    const maxDist = ARENA_RADIUS - bodyR
     if (dist > maxDist && dist > 0.1) {
       // How far past the wall
       const overshoot = dist - maxDist
@@ -239,7 +317,7 @@ export function updatePlayer(player: Player, dt: number): void {
       }
     }
   } else {
-    const clamped = clampToArena(player.x, player.y, PLAYER_RADIUS)
+    const clamped = clampToArena(player.x, player.y, bodyR)
     player.x = clamped.x
     player.y = clamped.y
   }

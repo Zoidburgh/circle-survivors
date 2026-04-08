@@ -195,12 +195,15 @@ export function updateCamera(
   const leadX = playerX + moveX * CAMERA_LEAD_AMOUNT
   const leadY = playerY + moveY * CAMERA_LEAD_AMOUNT
 
-  // Smooth follow
+  // Smooth follow — boost when player is far from camera (fast dash)
   cam.targetX = leadX
   cam.targetY = leadY
-  const smoothing = 6
-  cam.x += (cam.targetX - cam.x) * smoothing * dt
-  cam.y += (cam.targetY - cam.y) * smoothing * dt
+  const dx = cam.targetX - cam.x
+  const dy = cam.targetY - cam.y
+  const dist = Math.sqrt(dx * dx + dy * dy)
+  const smoothing = dist > 80 ? 6 + (dist - 80) * 0.08 : 6
+  cam.x += dx * smoothing * dt
+  cam.y += dy * smoothing * dt
 
   // Clamp camera
   const halfW = screenW / 2

@@ -20,13 +20,13 @@ export const GRID_ALPHA = 0.15
 export const GRID_CELL_PX = 64
 
 // ── Colors ──
-export const COLOR_PLAYER = '#4FC3F7'
+export const COLOR_PLAYER = '#00FFFF'
 export const COLOR_BG = '#0D0A1A'
 
 // ── Player ──
 export const PLAYER_RADIUS = 43
 export const PLAYER_SPEED = 280
-export const PLAYER_MAX_HP = 1000
+export const PLAYER_MAX_HP = 8
 export const PLAYER_BASE_DAMAGE = 1
 
 // ── Gameplay tuning ──
@@ -42,6 +42,12 @@ export const AUDIO_THROTTLE_INTERVAL = 0.04
 // ── Magnet ──
 export const MAGNET_RANGE = 200      // pull radius in px
 export const MAGNET_STRENGTH = 80    // pull speed in px/s
+
+// ── Shield ──
+export const SHIELD_MAX_CHARGES = 1
+export const SHIELD_RECHARGE_TIME = 4.0       // seconds to regen one charge
+export const SHIELD_BREAK_FLASH = 0.3         // visual break effect duration
+export const SHIELD_ORBIT_RADIUS_OFFSET = 12  // px outside player body
 
 // ── Chill / Frostbite upgrade ──
 export const CHILL_SLOW_PER_STACK = 0.10   // 10% slow per stack

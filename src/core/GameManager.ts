@@ -1,19 +1,20 @@
 import * as Input from '../game/InputManager.ts'
 import * as Renderer from '../render/Renderer.ts'
-import { updatePlayer } from '../entities/Player.ts'
+import { updatePlayer, hurtPlayer } from '../entities/Player.ts'
 import { createEnemy, updateEnemy, updateDeath, damageEnemy } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { advanceGlobalTime } from './RhythmClock.ts'
 import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
 import { advancePatternClock } from '../audio/PatternClock.ts'
 import { getPlayer, getEnemies, getGrid, getCamera, getPhase, getXpForNextLevel } from './GameState.ts'
-import { updateOrbs, cleanupOrbs, getOrbs, spawnOrb } from '../entities/XPOrb.ts'
+import { updateOrbs, cleanupOrbs, getOrbs, spawnOrb, collectOrb } from '../entities/XPOrb.ts'
+import type { XPOrb } from '../entities/XPOrb.ts'
 import { updateCamera, clampToArena, getArenaShape, setArenaShape } from '../game/Arena.ts'
 import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils/constants.ts'
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
-import { on } from './EventBus.ts'
+import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat } from '../audio/PatternClock.ts'
-import { playPlayerHit } from '../audio/AudioEngine.ts'
+import { playPlayerHit, playShieldBreak, playShieldRestore } from '../audio/AudioEngine.ts'
 import { HIT_FLASH_DURATION } from '../utils/constants.ts'
 import { perfStart, perfEnd, exportPerfLog, addSpawnEffect, addVolatileExplosion, setPendingExplosions } from '../render/Renderer.ts'
 import { getEnemyType } from '../entities/EnemyTypes.ts'
@@ -124,6 +125,8 @@ interface PendingRevenge {
   damage: number
   timer: number
   expandTime: number  // synced to next beat
+  consume: boolean
+  enemy: Enemy  // source enemy for consume healing
 }
 const pendingRevenges: PendingRevenge[] = []
 
@@ -138,7 +141,7 @@ on('enemy:revenge', (enemy: Enemy) => {
     origins.push({ x: ox, y: oy })
     Renderer.spawnRevengeRingParticles(ox, oy, enemy.revengeRadius, enemy.cr, enemy.cg, enemy.cb, expandTime)
   }
-  pendingRevenges.push({ origins, radius: enemy.revengeRadius, damage: enemy.damage, timer: 0, expandTime })
+  pendingRevenges.push({ origins, radius: enemy.revengeRadius, damage: enemy.damage, timer: 0, expandTime, consume: enemy.consume, enemy })
 })
 
 // Queue volatile explosion on death
@@ -151,6 +154,10 @@ on('enemy:killed', (enemy: Enemy) => {
     timer: 0,
   })
 })
+
+// Shield audio events
+on('player:shieldBreak', () => playShieldBreak())
+on('player:shieldRestore', () => playShieldRestore())
 
 export function update(dt: number): void {
   const phase = getPhase()
@@ -218,14 +225,32 @@ export function update(dt: number): void {
         const pdx = player.x - origin.x
         const pdy = player.y - origin.y
         const pDist = Math.sqrt(pdx * pdx + pdy * pdy)
-        if (Math.abs(pDist - pr.radius) < PLAYER_RADIUS) {
+        if (Math.abs(pDist - pr.radius) < player.hitRadius) {
           if (!(player.dashTimer >= 0 && hasBonus('ghostDash'))) {
-            player.hp -= pr.damage
-            player.hitFlash = HIT_FLASH_DURATION
-            playPlayerHit()
-            if (player.hp <= 0) player.hp = 0
+            if (hurtPlayer(player, pr.damage)) playPlayerHit()
           }
           break  // only hit once per revenge burst
+        }
+      }
+      // Consume: eat orbs at ring peak, heal source enemy
+      if (pr.consume) {
+        const allOrbs = getOrbs()
+        for (const orb of allOrbs) {
+          if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
+          for (const origin of pr.origins) {
+            const odx = orb.x - origin.x
+            const ody = orb.y - origin.y
+            const oDist = Math.sqrt(odx * odx + ody * ody)
+            if (Math.abs(oDist - pr.radius) < orb.radius + 2) {
+              collectOrb(orb, 'enemy')
+              if (pr.enemy.alive && !pr.enemy.dying && pr.enemy.hp < pr.enemy.maxHp) {
+                pr.enemy.hp = Math.min(pr.enemy.hp + 1, pr.enemy.maxHp)
+              }
+              const isHP = orb.orbType === 'hp'
+              Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 140 : 255, isHP ? 140 : 200, pr.enemy.x, pr.enemy.y)
+              break  // one origin per orb
+            }
+          }
         }
       }
       pendingRevenges[i] = pendingRevenges[pendingRevenges.length - 1]!
@@ -257,6 +282,10 @@ export function update(dt: number): void {
         if (inRange || destInRange) {
           const wasDying = enemy.dying
           damageEnemy(enemy, 1)
+          // Trigger revenge ring if hit enemy has revenge tag (including killing blow)
+          if (enemy.revenge) {
+            emit('enemy:revenge', enemy)
+          }
           // Spawn orb if killed by explosion
           if (enemy.dying && !wasDying && enemy.dropType !== 'none') {
             spawnOrb(enemy.x, enemy.y, 1, enemy.dropType)
@@ -266,12 +295,9 @@ export function update(dt: number): void {
       // Damage player if in range
       const pdx = player.x - exp.x
       const pdy = player.y - exp.y
-      const playerHitRange = exp.range + PLAYER_RADIUS
+      const playerHitRange = exp.range + player.hitRadius
       if (pdx * pdx + pdy * pdy <= playerHitRange * playerHitRange) {
-        player.hp -= 1
-        player.hitFlash = HIT_FLASH_DURATION
-        playPlayerHit()
-        if (player.hp <= 0) player.hp = 0
+        if (hurtPlayer(player, 1)) playPlayerHit()
       }
       // Visual explosion + particles spread across blast circle
       addVolatileExplosion(exp.x, exp.y, exp.range, exp.r, exp.g, exp.b)
@@ -412,7 +438,7 @@ export function update(dt: number): void {
       const pdx = orb.x - player.x
       const pdy = orb.y - player.y
       const pDist = Math.sqrt(pdx * pdx + pdy * pdy)
-      const pMin = orb.radius + PLAYER_RADIUS
+      const pMin = orb.radius + player.hitRadius
       if (pDist < pMin && pDist > 0.1) {
         const overlap = pMin - pDist
         orb.x += (pdx / pDist) * overlap
@@ -460,7 +486,7 @@ export function update(dt: number): void {
     // Player vs enemies + orbs
     for (const enemy of enemies) {
       if (!enemy.alive || enemy.dying) continue
-      const minDist = enemy.radius + PLAYER_RADIUS
+      const minDist = enemy.radius + player.hitRadius
       const dx = player.x - enemy.x
       const dy = player.y - enemy.y
       const dist = Math.sqrt(dx * dx + dy * dy)
@@ -487,7 +513,7 @@ export function update(dt: number): void {
       }
     }
     // Orbs never push player — already handled by player-pushes-orbs pass above
-    const pc = clampToArena(player.x, player.y, PLAYER_RADIUS)
+    const pc = clampToArena(player.x, player.y, player.hitRadius)
     player.x = pc.x
     player.y = pc.y
   }
