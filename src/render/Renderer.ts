@@ -2054,6 +2054,53 @@ function drawPlayer(player: Player): void {
     ctx.stroke()
   }
 
+  // Missing HP glow — inside the empty pie section
+  if (actualPlayerHp < 1 && actualPlayerHp > 0) {
+    const missingStart = hpStart + actualPlayerHp * Math.PI * 2
+    const missingEnd = hpStart + Math.PI * 2
+    const hpBeat = player.attackTimer >= 0 ? Math.min(player.attackTimer / (ATTACK_EXPAND_TIME * 0.5), 1) : globalBeatPulse * 1.5
+    const missPulse = 0.5 + Math.min(hpBeat, 1) * 0.5
+
+    // Inner glow fill along the missing wedge
+    ctx.save()
+    ctx.beginPath()
+    ctx.moveTo(sx, sy)
+    ctx.arc(sx, sy, drawRadius, missingStart, missingEnd)
+    ctx.closePath()
+    ctx.clip()
+    // Radial glow from edge inward — pulses hard with beat
+    const glowGrad = ctx.createRadialGradient(sx, sy, drawRadius * 0.2, sx, sy, drawRadius)
+    glowGrad.addColorStop(0, 'rgba(255, 50, 50, 0)')
+    glowGrad.addColorStop(0.5, `rgba(255, 50, 50, ${0.08 * missPulse})`)
+    glowGrad.addColorStop(0.8, `rgba(255, 50, 50, ${0.22 * missPulse})`)
+    glowGrad.addColorStop(1, `rgba(255, 50, 50, ${0.45 * missPulse})`)
+    ctx.beginPath()
+    ctx.arc(sx, sy, drawRadius, 0, Math.PI * 2)
+    ctx.fillStyle = glowGrad
+    ctx.fill()
+
+    // Glow bleed along the pie edges (same color as radial glow)
+    for (const edgeAngle of [missingStart, missingEnd]) {
+      const edgeGrad = ctx.createLinearGradient(
+        sx, sy,
+        sx + Math.cos(edgeAngle) * drawRadius,
+        sy + Math.sin(edgeAngle) * drawRadius
+      )
+      edgeGrad.addColorStop(0, `rgba(255, 50, 50, ${0.01 * missPulse})`)
+      edgeGrad.addColorStop(1, `rgba(255, 50, 50, ${0.2 * missPulse})`)
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.lineTo(
+        sx + Math.cos(edgeAngle) * drawRadius,
+        sy + Math.sin(edgeAngle) * drawRadius
+      )
+      ctx.strokeStyle = edgeGrad
+      ctx.lineWidth = 6
+      ctx.stroke()
+    }
+    ctx.restore()
+  }
+
   // Shield break particles — explosive burst from body edge
   if (player.shieldBreakFlash > SHIELD_BREAK_FLASH - 0.02 && player.shieldBreakFlash <= SHIELD_BREAK_FLASH) {
     for (let i = 0; i < 35; i++) {
