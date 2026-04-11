@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "build:itch": "vite build && node scripts/inline-build.js",
     "preview": "vite preview"
   },
   "devDependencies": {

@@ -3,6 +3,17 @@ import fs from 'fs'
 import path from 'path'
 
 export default defineConfig({
+  base: './',
+  build: {
+    modulePreload: false,
+    target: 'es2020',
+    rollupOptions: {
+      output: {
+        format: 'iife',
+        entryFileNames: 'assets/game.js',
+      },
+    },
+  },
   plugins: [
     {
       name: 'save-enemies',

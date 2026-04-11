@@ -667,8 +667,8 @@ export function init(c: HTMLCanvasElement): void {
 }
 
 function resize(): void {
-  width = window.innerWidth
-  height = window.innerHeight
+  width = canvas.clientWidth || window.innerWidth
+  height = canvas.clientHeight || window.innerHeight
   canvas.width = width
   canvas.height = height
 }

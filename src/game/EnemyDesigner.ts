@@ -1,4 +1,5 @@
 import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
+import defaultEnemies from '../../data/enemies.json'
 import type { EnemyType } from '../entities/EnemyTypes.ts'
 import type { SongPattern } from '../audio/SongPatterns.ts'
 import { setPattern, getPattern, getLoopPosition, getLoopLength } from '../audio/PatternClock.ts'
@@ -97,7 +98,15 @@ function saveToStorage(): void {
 function loadFromStorage(): DesignedEnemy[] {
   try {
     const raw = localStorage.getItem(SAVE_KEY)
-    if (!raw) return []
+    if (!raw) {
+      // First time — use bundled default enemies
+      const def = (defaultEnemies as SaveData).enemies ?? []
+      if (def.length > 0) {
+        localStorage.setItem(SAVE_KEY, JSON.stringify(defaultEnemies))
+        return def
+      }
+      return []
+    }
     const data = JSON.parse(raw) as SaveData
     if (data.version !== SAVE_VERSION) return [] // future: migrate
     return data.enemies ?? []
