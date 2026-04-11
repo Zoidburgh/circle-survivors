@@ -965,15 +965,15 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   drawXPOrbs(player)
   perfEnd('orbs')
 
-  perfStart('particles')
-  drawParticles()
-  perfEnd('particles')
-
   ctx.restore()
 
   perfStart('player')
   drawPlayer(player)
   perfEnd('player')
+
+  perfStart('particles')
+  drawParticles()
+  perfEnd('particles')
 
   updateAndDrawSpawnEffects(lastDt)
   updateAndDrawAbsorbEffects(lastDt, player)
@@ -1793,29 +1793,35 @@ function drawPlayer(player: Player): void {
     }
   }
 
-  // Hit particles — red burst from pie edge on hit (only when HP actually lost, not shield)
+  // HP fractions — needed by both blood particles and pie chart
+  const hpFraction = player.displayHp / player.maxHp
+  const actualPlayerHp = player.hp / player.maxHp
+  const hpStart = -Math.PI / 2
+  const hpEnd = hpStart + hpFraction * Math.PI * 2
+
+  // Hit particles — burst from inside the damage wedge (same as enemy blood)
   if (player.hitFlash > HIT_FLASH_DURATION - 0.02 && player.shieldBreakFlash <= 0) {
     const dmgFraction = 1 / player.maxHp
     const intensity = Math.min(Math.max(dmgFraction / 0.05, 1), 3)
-    const count = Math.floor(6 * intensity)
-    const biteAngle = -Math.PI / 2 + (player.hp / player.maxHp) * Math.PI * 2
+    const count = Math.floor(8 * intensity)
+    // Damage arc: from current HP to where displayHp was (the fresh bite)
+    const dmgArcStart = hpStart + actualPlayerHp * Math.PI * 2
+    const dmgArcEnd = dmgArcStart + dmgFraction * Math.PI * 2
+    const arcSpan = dmgArcEnd - dmgArcStart
     for (let i = 0; i < count; i++) {
-      const spread = (Math.random() - 0.5) * (0.6 + intensity * 0.15)
-      const angle = biteAngle + spread
-      const px = player.x + Math.cos(angle) * drawRadius
-      const py = player.y + Math.sin(angle) * drawRadius
+      const angle = dmgArcStart + Math.random() * arcSpan
+      const dist = Math.random() * drawRadius
+      const px = player.x + Math.cos(angle) * dist
+      const py = player.y + Math.sin(angle) * dist
       const speed = (80 + Math.random() * 100) * (0.8 + intensity * 0.2)
+      const outAngle = Math.atan2(py - player.y, px - player.x)
       const size = (2.5 + Math.random() * 2.5) * (0.8 + intensity * 0.2)
-      spawnParticle(px, py, Math.cos(angle) * speed, Math.sin(angle) * speed,
+      spawnParticle(px, py, Math.cos(outAngle) * speed, Math.sin(outAngle) * speed,
         255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, size)
     }
   }
 
   // HP pie chart
-  const hpFraction = player.displayHp / player.maxHp
-  const actualPlayerHp = player.hp / player.maxHp
-  const hpStart = -Math.PI / 2
-  const hpEnd = hpStart + hpFraction * Math.PI * 2
 
   // Background — gradient
   {
@@ -1900,7 +1906,10 @@ function drawPlayer(player: Player): void {
     if (player.maxHp <= 40) {
       const segStart = player.hp < player.maxHp ? 1 : 0
       const now = performance.now()
-      const segInner = drawRadius * (0.60 - globalBeatPulse * 0.30)
+      const segBeat = player.attackTimer >= 0 && player.attackTimer < ATTACK_EXPAND_TIME
+        ? Math.min(player.attackTimer / (ATTACK_EXPAND_TIME * 0.80), 0.6)
+        : globalBeatPulse
+      const segInner = drawRadius * (0.60 - segBeat * 0.30)
       for (let i = segStart; i < player.hp; i++) {
         const phase = (i / player.maxHp) * Math.PI * 2
         const wave = 0.5 + 0.5 * Math.sin(now / 800 - phase * 1.5)
@@ -2058,7 +2067,9 @@ function drawPlayer(player: Player): void {
   if (actualPlayerHp < 1 && actualPlayerHp > 0) {
     const missingStart = hpStart + actualPlayerHp * Math.PI * 2
     const missingEnd = hpStart + Math.PI * 2
-    const hpBeat = player.attackTimer >= 0 ? Math.min(player.attackTimer / (ATTACK_EXPAND_TIME * 0.5), 1) : globalBeatPulse * 1.5
+    const hpBeat = player.attackTimer >= 0 && player.attackTimer < ATTACK_EXPAND_TIME
+      ? Math.min(player.attackTimer / (ATTACK_EXPAND_TIME * 0.35), 1)
+      : globalBeatPulse * 1.5
     const missPulse = 0.5 + Math.min(hpBeat, 1) * 0.5
 
     // Inner glow fill along the missing wedge
@@ -2068,12 +2079,13 @@ function drawPlayer(player: Player): void {
     ctx.arc(sx, sy, drawRadius, missingStart, missingEnd)
     ctx.closePath()
     ctx.clip()
-    // Radial glow from edge inward — pulses hard with beat
-    const glowGrad = ctx.createRadialGradient(sx, sy, drawRadius * 0.2, sx, sy, drawRadius)
+    // Radial glow from edge inward — pulses hard with beat, grows inward on beat
+    const glowInner = drawRadius * (0.2 - missPulse * 0.2)
+    const glowGrad = ctx.createRadialGradient(sx, sy, glowInner, sx, sy, drawRadius)
     glowGrad.addColorStop(0, 'rgba(255, 50, 50, 0)')
-    glowGrad.addColorStop(0.5, `rgba(255, 50, 50, ${0.08 * missPulse})`)
-    glowGrad.addColorStop(0.8, `rgba(255, 50, 50, ${0.22 * missPulse})`)
-    glowGrad.addColorStop(1, `rgba(255, 50, 50, ${0.45 * missPulse})`)
+    glowGrad.addColorStop(0.4, `rgba(255, 50, 50, ${0.1 * missPulse})`)
+    glowGrad.addColorStop(0.7, `rgba(255, 50, 50, ${0.25 * missPulse})`)
+    glowGrad.addColorStop(1, `rgba(255, 50, 50, ${0.5 * missPulse})`)
     ctx.beginPath()
     ctx.arc(sx, sy, drawRadius, 0, Math.PI * 2)
     ctx.fillStyle = glowGrad
