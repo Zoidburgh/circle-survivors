@@ -23,7 +23,7 @@ import { hexToRgba } from '../utils/math.ts'
 import { COLOR_PLAYER } from '../utils/constants.ts'
 
 const DASH_DISTANCE = 413
-const DASH_DURATION = 0.5
+const DASH_DURATION = 0.6
 export const DASH_CHARGE_TIME = 3.0  // seconds to regen one charge
 export const DASH_MAX_CHARGES = 2
 
@@ -382,19 +382,21 @@ export function updatePlayer(player: Player, dt: number): void {
     }
   }
 
+  // Track last non-zero movement direction for dash buffering
+  {
+    const dir = Input.getMovementDir()
+    if (dir.x !== 0 || dir.y !== 0) {
+      player.facingAngle = Math.atan2(dir.y, dir.x)
+    }
+  }
+
   // Dash input — need a charge AND not mid-dash
   if (Input.consumeLeftClick() || Input.consumeSpace()) {
     const readySlot = player.dashSlots.findIndex(t => t <= 0)
     if (readySlot >= 0) {
-      const dir = Input.getMovementDir()
-      if (dir.x !== 0 || dir.y !== 0) {
-        player.dashDirX = dir.x
-        player.dashDirY = dir.y
-        player.facingAngle = Math.atan2(dir.y, dir.x)
-      } else {
-        player.dashDirX = Math.cos(player.facingAngle)
-        player.dashDirY = Math.sin(player.facingAngle)
-      }
+      // Always use facingAngle — it's updated every frame from input above
+      player.dashDirX = Math.cos(player.facingAngle)
+      player.dashDirY = Math.sin(player.facingAngle)
       player.dashPath = [{ x: player.x, y: player.y }]
       player.dashStartX = player.x
       player.dashStartY = player.y

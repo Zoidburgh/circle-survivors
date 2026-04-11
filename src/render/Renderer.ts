@@ -61,6 +61,7 @@ let dashSweepPath: { x: number; y: number }[] = []
 let prevShieldCharges = -1  // track for restore particle trigger
 let shieldRestoreAnim = 0   // countdown for restore converge effect
 let shieldDisplayProgress = 0  // smoothed recharge progress for retreat animation
+let prevDashSlots: number[] = []  // track dash slot states for burst detection
 let frameDt = 0.016         // render dt stored for use in draw functions
 const wavePts: number[] = []  // reused per frame for all waveforms
 
@@ -292,14 +293,15 @@ function updateAndDrawVolatileEffects(dt: number): void {
   for (const p of pendingExplosionVisuals) {
     const sx = p.x - camX, sy = p.y - camY
     const progress = Math.min(p.timer / BEAT_SEC, 1)  // 0→1 over 1 second
-    const ease = progress * progress  // ease-in: slow start, accelerates
-    const ringR = ease * p.range
+    const ringR = progress * p.range
     const alpha = 0.15 + progress * 0.25
 
-    // Blend enemy color toward red as it expands
-    const rr = Math.min(255, p.r + Math.floor(progress * (255 - p.r) * 0.7))
-    const rg = Math.floor(p.g * (1 - progress * 0.6))
-    const rb = Math.floor(p.b * (1 - progress * 0.6))
+    // Start red, blend slightly toward enemy color mid-way, then back to red
+    const redBase = 0.6  // 60% red from the start
+    const redBlend = redBase + (1 - redBase) * progress
+    const rr = Math.min(255, Math.floor(p.r + (255 - p.r) * redBlend))
+    const rg = Math.floor(p.g * (1 - redBlend * 0.8))
+    const rb = Math.floor(p.b * (1 - redBlend * 0.8))
 
     // Dark fill inside swept area — "claimed" zone, intensifies smoothly
     ctx.beginPath()
@@ -320,6 +322,41 @@ function updateAndDrawVolatileEffects(dt: number): void {
     ctx.strokeStyle = `rgba(${rr}, ${rg}, ${rb}, ${alpha + progress * 0.2})`
     ctx.lineWidth = 2 + progress * 4
     ctx.stroke()
+
+    // Fire particles inside the ring — intensify toward detonation
+    const fireRate = progress * progress * 0.8  // accelerates: sparse early, dense late
+    if (ringR > 5) {
+      for (let f = 0; f < 3; f++) {
+        if (Math.random() < fireRate) {
+          const a = Math.random() * Math.PI * 2
+          const dist = Math.random() * ringR * 0.9
+          const px = p.x + Math.cos(a) * dist
+          const py = p.y + Math.sin(a) * dist
+          // Rise upward + drift outward
+          const outA = Math.atan2(py - p.y, px - p.x)
+          const speed = 15 + Math.random() * 30
+          const fr = Math.min(255, rr + Math.floor(Math.random() * 40))
+          const fg = Math.floor(40 + Math.random() * 60 * (1 - progress))
+          spawnParticle(px, py,
+            Math.cos(outA) * speed * 0.5, -20 - Math.random() * 40 + Math.sin(outA) * speed * 0.3,
+            fr, fg, 20, 0.2 + progress * 0.2, 3 + Math.random() * 3)
+        }
+      }
+      // Edge sparks along the expanding ring — inside and outside
+      for (let e = 0; e < 2; e++) {
+        if (Math.random() < fireRate * 1.5) {
+          const a = Math.random() * Math.PI * 2
+          const edgeDist = ringR + (Math.random() - 0.5) * 16  // straddle the ring edge
+          const speed = 40 + Math.random() * 60
+          const inward = Math.random() < 0.5 ? -1 : 1
+          spawnParticle(
+            p.x + Math.cos(a) * edgeDist, p.y + Math.sin(a) * edgeDist,
+            Math.cos(a) * speed * inward, Math.sin(a) * speed * inward - 15,
+            255, 120 + Math.floor(Math.random() * 80), 30,
+            0.12 + Math.random() * 0.1, 2 + Math.random() * 2)
+        }
+      }
+    }
   }
 
   // Explosion flashes
@@ -544,22 +581,15 @@ function updateAndDrawDeathRipples(dt: number): void {
     const alpha = (1 - t) * (1 - t)
     const sx = rip.x - camX
     const sy = rip.y - camY
-    // Smooth gradient donut — no hard edges
-    const bandScale = Math.max(1, rip.startRadius / 44)
-    const bandW = (16 + 4 * bandScale) * (1 - t)
-    const innerR = Math.max(0, radius - bandW)
-    const outerR = radius + bandW
-    const peak = alpha * 0.04
-    const grad = ctx.createRadialGradient(sx, sy, innerR, sx, sy, outerR)
-    grad.addColorStop(0, `rgba(${rip.r}, ${rip.g}, ${rip.b}, 0)`)
-    grad.addColorStop(0.4, `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${peak})`)
-    grad.addColorStop(0.5, `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${peak})`)
-    grad.addColorStop(0.6, `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${peak})`)
-    grad.addColorStop(1, `rgba(${rip.r}, ${rip.g}, ${rip.b}, 0)`)
+    // Dashed dissolve ring — distinct from solid attack rings
+    const dashLen = 6 + t * 12  // gaps widen as it expands
+    ctx.setLineDash([dashLen, dashLen * (0.8 + t)])
     ctx.beginPath()
-    ctx.arc(sx, sy, outerR, 0, Math.PI * 2)
-    ctx.fillStyle = grad
-    ctx.fill()
+    ctx.arc(sx, sy, radius, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${rip.r}, ${rip.g}, ${rip.b}, ${alpha * 0.17})`
+    ctx.lineWidth = 2.5 * (1 - t * 0.4)
+    ctx.stroke()
+    ctx.setLineDash([])
   }
 }
 
@@ -788,7 +818,6 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   drawArenaBorder(player)
   perfStart('ripples')
   updateAndDrawDeathRipples(lastDt)
-  updateAndDrawVolatileEffects(lastDt)
   perfEnd('ripples')
 
   // Clip rings and particles to arena bounds
@@ -814,6 +843,8 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   }
   ctx.clip()
   perfEnd('clip')
+
+  updateAndDrawVolatileEffects(lastDt)
 
   perfStart('e_occlusion')
   // Pre-compute blocked arcs for all enemies with active rings
@@ -886,7 +917,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
         const sy = pt.y - camY
         ctx.beginPath()
         ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 80, 80, ${0.09 * fade})`
+        ctx.strokeStyle = `rgba(255, 80, 80, ${0.13 * fade})`
         ctx.lineWidth = grace * 2
         ctx.stroke()
       }
@@ -898,7 +929,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
           ctx.moveTo(sx + edgeR, sy)
           ctx.arc(sx, sy, edgeR, 0, Math.PI * 2)
         }
-        ctx.strokeStyle = `rgba(255, 80, 80, ${0.32 * fade})`
+        ctx.strokeStyle = `rgba(255, 80, 80, ${0.4 * fade})`
         ctx.lineWidth = 1
         ctx.stroke()
       }
@@ -1525,14 +1556,22 @@ function drawXPOrbs(player: Player): void {
           addAbsorbEffect(orb.x, orb.y, absR, absG, absB)
         }
 
-        // Explosion burst — small, orb-colored
-        for (let i = 0; i < 6; i++) {
-          const angle = (i / 6) * Math.PI * 2 + Math.random() * 0.5
-          const speed = 30 + Math.random() * 50
+        // Spark explosion — orb-colored burst
+        for (let i = 0; i < 18; i++) {
+          const angle = (i / 18) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
+          const speed = 765 + Math.random() * 425
           spawnParticle(orb.x, orb.y,
             Math.cos(angle) * speed, Math.sin(angle) * speed,
-            Math.min(255, orbR + 40), Math.min(255, orbG + 30), Math.min(255, orbB + 30),
-            0.3 + Math.random() * 0.15, 15 + Math.random() * 5)
+            Math.min(255, orbR + 60), Math.min(255, orbG + 50), Math.min(255, orbB + 50),
+            0.15 + Math.random() * 0.1, 2.5 + Math.random() * 2)
+        }
+        // Hot white core sparks
+        for (let i = 0; i < 8; i++) {
+          const angle = Math.random() * Math.PI * 2
+          const speed = 850 + Math.random() * 425
+          spawnParticle(orb.x, orb.y,
+            Math.cos(angle) * speed, Math.sin(angle) * speed,
+            255, 255, 255, 0.12 + Math.random() * 0.1, 1.5 + Math.random() * 1.5)
         }
 
         const rippleColor = isHP ? '#E63B3B' : (isDouble ? '#64D732' : '#64FFc8')
@@ -1579,10 +1618,71 @@ function drawXPOrbs(player: Player): void {
     ctx.fillStyle = bodyGrad
     ctx.fill()
 
-    // Edge stroke
-    ctx.strokeStyle = ringOver ? '#FFFFFF' : `rgba(${orbR}, ${orbG}, ${orbB}, ${isDouble ? 0.6 : 0.4})`
-    ctx.lineWidth = isDouble ? 1.5 : 1
+    // Edge glow — wider faint stroke underneath
+    if (ringOver) {
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)'
+    } else if (isHP) {
+      ctx.strokeStyle = `rgba(255, 100, 200, ${isDouble ? 0.2 : 0.15})`
+    } else {
+      ctx.strokeStyle = `rgba(0, 230, 255, ${isDouble ? 0.2 : 0.15})`
+    }
+    ctx.lineWidth = isDouble ? 4 : 3.5
     ctx.stroke()
+
+    // Edge stroke — magenta for HP, cyan for XP
+    if (ringOver) {
+      ctx.strokeStyle = '#FFFFFF'
+    } else if (isHP) {
+      ctx.strokeStyle = `rgba(255, 100, 200, ${isDouble ? 0.7 : 0.55})`
+    } else {
+      ctx.strokeStyle = `rgba(0, 230, 255, ${isDouble ? 0.7 : 0.55})`
+    }
+    ctx.lineWidth = isDouble ? 1.8 : 1.3
+    ctx.stroke()
+
+    // Icon — procedural heart (HP) or plus (XP)
+    const heartBeat = player.attackTimer >= 0 ? Math.min(player.attackTimer / (ATTACK_EXPAND_TIME * 0.65), 1) : globalBeatPulse * 1.5
+    const orbBeat = Math.min(heartBeat, 1)
+    const beatPulse = 1 + orbBeat * (isHP ? 0.4 : 0.15)
+    const iconScale = (r / 4.5) * beatPulse  // scale to orb size, breathes with beat
+    const iconAlpha = ringOver ? 0.9 : (0.6 + globalBeatPulse * 0.15)
+    ctx.fillStyle = `rgba(255, 255, 255, ${iconAlpha})`
+    ctx.strokeStyle = `rgba(255, 255, 255, ${iconAlpha})`
+    if (isHP) {
+      // Heart — single combined path
+      const hs = iconScale * 2.2
+      const cy = sy - hs * 0.1
+      const humpR = hs * 0.45
+      const lx = sx - humpR * 0.9  // left hump center
+      const rx = sx + humpR * 0.9  // right hump center
+      const hy = cy - hs * 0.15    // hump center y
+      ctx.beginPath()
+      // Start at bottom tip
+      ctx.moveTo(sx, cy + hs * 0.85)
+      // Left side up to left hump
+      ctx.lineTo(lx - humpR, hy)
+      // Left hump arc (bottom to top to right)
+      ctx.arc(lx, hy, humpR, Math.PI, 0)
+      // Right hump arc
+      ctx.arc(rx, hy, humpR, Math.PI, 0)
+      // Right side down to tip
+      ctx.lineTo(sx, cy + hs * 0.85)
+      ctx.closePath()
+      ctx.fill()
+    } else {
+      // Plus / cross
+      const ps = iconScale * 2.2
+      const pw = iconScale * 0.8
+      ctx.lineWidth = pw
+      ctx.lineCap = 'round'
+      ctx.beginPath()
+      ctx.moveTo(sx, sy - ps)
+      ctx.lineTo(sx, sy + ps)
+      ctx.moveTo(sx - ps, sy)
+      ctx.lineTo(sx + ps, sy)
+      ctx.stroke()
+      ctx.lineCap = 'butt'
+    }
   }
 }
 
@@ -1761,9 +1861,9 @@ function drawPlayer(player: Player): void {
       const tipX = sx + Math.cos(tipAngle) * drawRadius * 0.7
       const tipY = sy + Math.sin(tipAngle) * drawRadius * 0.7
       // Leading edge glow
-      const glowR = drawRadius * 0.4
+      const glowR = drawRadius * 0.5
       const healGlow = ctx.createRadialGradient(tipX, tipY, 0, tipX, tipY, glowR)
-      healGlow.addColorStop(0, 'rgba(100, 255, 160, 0.35)')
+      healGlow.addColorStop(0, 'rgba(100, 255, 160, 0.45)')
       healGlow.addColorStop(1, 'rgba(100, 255, 160, 0)')
       ctx.beginPath()
       ctx.arc(tipX, tipY, glowR, 0, Math.PI * 2)
@@ -1773,18 +1873,26 @@ function drawPlayer(player: Player): void {
       const edgeX = sx + Math.cos(tipAngle) * drawRadius
       const edgeY = sy + Math.sin(tipAngle) * drawRadius
       ctx.beginPath()
-      ctx.arc(edgeX, edgeY, 3, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(150, 255, 200, 0.8)'
+      ctx.arc(edgeX, edgeY, 4, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(150, 255, 200, 0.9)'
       ctx.fill()
-      // Heal particles — spawn occasionally from the tip
-      if (Math.random() < 0.3) {
-        const pAngle = tipAngle + (Math.random() - 0.5) * 0.5
-        const pDist = drawRadius * (0.5 + Math.random() * 0.5)
-        spawnParticle(
-          player.x + Math.cos(pAngle) * pDist,
-          player.y + Math.sin(pAngle) * pDist,
-          Math.cos(pAngle) * 30, Math.sin(pAngle) * 30,
-          100, 255, 160, 0.25 + Math.random() * 0.15, 2 + Math.random() * 2)
+      // Outer glow on tip
+      ctx.beginPath()
+      ctx.arc(edgeX, edgeY, 8, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(100, 255, 160, 0.15)'
+      ctx.fill()
+      // Heal particles — spawn from the tip
+      for (let hp = 0; hp < 2; hp++) {
+        if (Math.random() < 0.4) {
+          const pAngle = tipAngle + (Math.random() - 0.5) * 0.8
+          const pDist = drawRadius * (0.6 + Math.random() * 0.4)
+          const speed = 25 + Math.random() * 40
+          spawnParticle(
+            player.x + Math.cos(pAngle) * pDist,
+            player.y + Math.sin(pAngle) * pDist,
+            Math.cos(pAngle) * speed, Math.sin(pAngle) * speed,
+            100, 255, 160, 0.2 + Math.random() * 0.15, 3.5 + Math.random() * 3)
+        }
       }
     }
 
@@ -2097,6 +2205,20 @@ function drawPlayer(player: Player): void {
     const dotX = sx + Math.cos(baseAngle) * orbitR
     const dotY = sy + Math.sin(baseAngle) * orbitR
     const timer = player.dashSlots[i]!
+    const prevTimer = prevDashSlots[i] ?? 0
+
+    // Dash charge just consumed — green particle explosion
+    if (timer > 0 && prevTimer <= 0) {
+      const worldX = player.x + Math.cos(baseAngle) * orbitR
+      const worldY = player.y + Math.sin(baseAngle) * orbitR
+      for (let p = 0; p < 30; p++) {
+        const a = (p / 30) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
+        const speed = 250 + Math.random() * 250
+        spawnParticle(worldX, worldY,
+          Math.cos(a) * speed, Math.sin(a) * speed,
+          100, 255, 120, 0.25 + Math.random() * 0.15, 3 + Math.random() * 2.5)
+      }
+    }
 
     if (timer <= 0) {
       // Ready — green dot
@@ -2125,6 +2247,7 @@ function drawPlayer(player: Player): void {
       }
     }
   }
+  prevDashSlots = player.dashSlots.map(t => t)
 
   // Green dash particles — trail behind during entire dash
   if (player.dashTimer >= 0 && player.dashTimer > 0) {
@@ -2192,12 +2315,12 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     if (dt < 0.02) {
       for (let i = 0; i < 10; i++) {
         const angle = Math.random() * Math.PI * 2
-        const dist = r * (0.5 + Math.random() * 0.5)
+        const dist = r * Math.random() * 0.5
         const px = enemy.x + Math.cos(angle) * dist
         const py = enemy.y + Math.sin(angle) * dist
-        const speed = 40 + Math.random() * 70
+        const speed = 300 + Math.random() * 350
         spawnParticle(px, py, Math.cos(angle) * speed, Math.sin(angle) * speed,
-          255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, 6.2 + Math.random() * 4)
+          255, 80 + Math.floor(Math.random() * 50), 70, 0.25 + Math.random() * 0.15, 5 + Math.random() * 3)
       }
     }
 
@@ -2208,9 +2331,9 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         const dist = Math.random() * r
         const px = enemy.x + Math.cos(angle) * dist
         const py = enemy.y + Math.sin(angle) * dist
-        const speed = 30 + Math.random() * 80
-        const vx = Math.cos(angle) * speed + (Math.random() - 0.5) * 40
-        const vy = Math.sin(angle) * speed + (Math.random() - 0.5) * 40 - 20
+        const speed = 200 + Math.random() * 300
+        const vx = Math.cos(angle) * speed + (Math.random() - 0.5) * 60
+        const vy = Math.sin(angle) * speed + (Math.random() - 0.5) * 60 - 20
         const isWhite = Math.random() < 0.3
         spawnParticle(px, py, vx, vy,
           isWhite ? 255 : hr, isWhite ? 255 : hg, isWhite ? 255 : hb,
@@ -2720,6 +2843,20 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     ctx.lineWidth = 1
     ctx.stroke()
     ctx.restore()
+
+    // Ambient fire embers — rising from body edge, scales with enemy size
+    const fireScale = Math.min(r / 44, 1.4)
+    if (Math.random() < 0.2 + fireScale * 0.1) {
+      const a = Math.random() * Math.PI * 2
+      const edgeDist = r * (0.7 + Math.random() * 0.3)
+      const px = enemy.x + Math.cos(a) * edgeDist
+      const py = enemy.y + Math.sin(a) * edgeDist
+      const tint = Math.random()
+      spawnParticle(px, py,
+        (Math.random() - 0.5) * 20, -25 - Math.random() * 35,
+        255, Math.floor(60 + tint * 80), Math.floor(tint * 30),
+        0.15 + Math.random() * 0.12, (3 + Math.random() * 2.5) * fireScale)
+    }
   }
 
   // Consume indicator — rotating arcs inside
@@ -2749,29 +2886,51 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     }
   }
 
-  // Immovable indicator — corner brackets
+  // Immovable indicator — glowing anchor brackets
   if (enemy.immovable && r > 5) {
     const scale = r / 44
     const br = r + 6 * scale
     const bLen = r * 0.3
-    ctx.strokeStyle = `rgba(255, 255, 255, 0.55)`
-    ctx.lineWidth = 6 * scale
+    const anchorPulse = 0.5 + 0.5 * Math.sin(performance.now() / 600)
+    const amberR = 255
+    const amberG = Math.round(180 + anchorPulse * 40)
+    const amberB = Math.round(60 + anchorPulse * 30)
+
     ctx.lineCap = 'round'
-    // 4 corners at 45°, 135°, 225°, 315°
+    ctx.lineJoin = 'round'
     for (let i = 0; i < 4; i++) {
       const a = Math.PI / 4 + i * Math.PI / 2
       const cx = sx + Math.cos(a) * br
       const cy = sy + Math.sin(a) * br
-      // Two arms of the L-bracket, perpendicular to the diagonal
       const arm1A = a + Math.PI / 2
       const arm2A = a
+
+      // Dark red outline
       ctx.beginPath()
       ctx.moveTo(cx + Math.cos(arm1A) * bLen, cy + Math.sin(arm1A) * bLen)
       ctx.lineTo(cx, cy)
       ctx.lineTo(cx - Math.cos(arm2A) * bLen, cy - Math.sin(arm2A) * bLen)
+      ctx.strokeStyle = 'rgba(180, 30, 20, 0.6)'
+      ctx.lineWidth = 9 * scale
       ctx.stroke()
+
+      // Core bracket
+      ctx.beginPath()
+      ctx.moveTo(cx + Math.cos(arm1A) * bLen, cy + Math.sin(arm1A) * bLen)
+      ctx.lineTo(cx, cy)
+      ctx.lineTo(cx - Math.cos(arm2A) * bLen, cy - Math.sin(arm2A) * bLen)
+      ctx.strokeStyle = `rgba(${amberR}, ${amberG}, ${amberB}, ${0.7 + anchorPulse * 0.25})`
+      ctx.lineWidth = 6.5 * scale
+      ctx.stroke()
+
+      // Anchor dot at corner
+      ctx.beginPath()
+      ctx.arc(cx, cy, 3 * scale + anchorPulse * 1.5, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 240, 180, ${0.8 + anchorPulse * 0.2})`
+      ctx.fill()
     }
     ctx.lineCap = 'butt'
+    ctx.lineJoin = 'miter'
   }
 
   if (enemy.blink && enemy.blinkPreview > 0) ctx.globalAlpha = 1

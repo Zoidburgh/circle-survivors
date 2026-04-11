@@ -286,6 +286,10 @@ export function update(dt: number): void {
           if (enemy.revenge) {
             emit('enemy:revenge', enemy)
           }
+          // Totem: spawn enemy on hit
+          if (enemy.totemSpawn) {
+            emit('totem:spawn', enemy)
+          }
           // Spawn orb if killed by explosion
           if (enemy.dying && !wasDying && enemy.dropType !== 'none') {
             spawnOrb(enemy.x, enemy.y, 1, enemy.dropType)

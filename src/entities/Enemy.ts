@@ -186,7 +186,7 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
 }
 
 export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: SpatialGrid): void {
-  if (!enemy.alive) return
+  if (!enemy.alive || enemy.dying) return
 
   if (enemy.hitFlash > 0) enemy.hitFlash -= dt
 

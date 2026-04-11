@@ -26,9 +26,11 @@ export function initHitDetection(): void {
         activeTimer = t
       }
     }
-    const ringRadius = getEffectiveRadius(player) * getRingExpansion(activeTimer)
-
     const isDashing = player.dashTimer >= 0
+    // During dash, use full ring radius to match visual sweep band
+    const ringRadius = isDashing
+      ? getEffectiveRadius(player)
+      : getEffectiveRadius(player) * getRingExpansion(activeTimer)
     const grace = isDashing ? HIT_GRACE + 6 : HIT_GRACE
     const hitEnemies = new Set<Enemy>()
     const killedEnemies: Enemy[] = []
@@ -36,15 +38,11 @@ export function initHitDetection(): void {
     // Build sweep positions — curved dash path or straight line
     const sweepPositions: { x: number; y: number }[] = []
     if (isDashing && player.dashPath.length > 1) {
-      // Use last 30% of recorded dash path
+      // Use last 30% of recorded dash path — ALL points, no sampling gaps
       const DASH_SWEEP_CAP = 0.3
       const startIdx = Math.floor(player.dashPath.length * (1 - DASH_SWEEP_CAP))
-      const pathSlice = player.dashPath.slice(startIdx)
-      // Sample up to 8 points from the slice
-      const steps = Math.min(8, pathSlice.length)
-      for (let s = 0; s < steps; s++) {
-        const idx = Math.floor(s / steps * pathSlice.length)
-        sweepPositions.push(pathSlice[idx]!)
+      for (let s = startIdx; s < player.dashPath.length; s++) {
+        sweepPositions.push(player.dashPath[s]!)
       }
       sweepPositions.push({ x: player.x, y: player.y })
     } else {
@@ -116,7 +114,8 @@ export function initHitDetection(): void {
         const odx = sx - orb.x
         const ody = sy - orb.y
         const oDist = Math.sqrt(odx * odx + ody * ody)
-        if (Math.abs(oDist - ringRadius) < orb.radius + grace) {
+        const orbGrace = isDashing ? grace + 4 : grace
+        if (Math.abs(oDist - ringRadius) < orb.radius + orbGrace) {
           collectOrb(orb)
           collectedOrbs.add(orb)
         }
