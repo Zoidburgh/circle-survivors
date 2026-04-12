@@ -654,7 +654,7 @@ function drawParticles(): void {
     const alpha = t * t  // ease-out: stays visible longer, fades smoothly at end
     const sx = p.x - camX
     const sy = p.y - camY
-    const spin = p.life * 1.8 + (p.x * 0.01)  // spin based on lifetime + unique offset
+    const spin = p.life * 2.7 + (p.x * 0.01)  // spin based on lifetime + unique offset
     const hs = p.size / 2
     ctx.fillStyle = `rgba(${p.r}, ${p.g}, ${p.b}, ${alpha})`
     ctx.save()
@@ -1473,7 +1473,7 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   const lineW = 1.5 + 2.5 * buildup
   // Red ring visible from peak for a short fade-out
   const pastPeak = attackTimer - expandTime
-  const showRedRing = pastPeak >= 0 && pastPeak < 0.11
+  const showRedRing = pastPeak >= 0 && pastPeak < 0.2
 
   // Trail particles — reduced count to leave room for explosions
   if (buildup > 0.3) {
@@ -1481,13 +1481,37 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
     spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, trailCount, 20 + buildup * 40, 0.3, 2, blockedArcs)
   }
 
-  // Explosion at peak — count scales with ring size for even distribution
+  // Explosion at peak — interleave white + colored for even distribution
   if (showRedRing && pastPeak < lastDt * 2 && particles.length < MAX_PARTICLES - 20) {
-    const ringScale = Math.max(1, currentRadius / 140)  // 140 = baseline ring radius
-    const whiteCount = Math.round(15 * ringScale)
-    const colorCount = Math.round(10 * ringScale)
-    spawnRingParticles(worldX, worldY, currentRadius, 255, 255, 255, whiteCount, 20, 0.5, 8, blockedArcs)
-    spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, colorCount, 15, 0.6, 7, blockedArcs)
+    const ringScale = Math.max(1, currentRadius / 140)
+    const totalCount = Math.round(25 * ringScale)
+    const angleOffset = Math.random() * Math.PI * 2
+    for (let i = 0; i < totalCount; i++) {
+      const angle = angleOffset + (i / totalCount) * Math.PI * 2 + (Math.random() - 0.5) * (Math.PI * 2 / totalCount) * 0.3
+      if (blockedArcs.length > 0) {
+        let skip = false
+        const na = ((angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)
+        for (const arc of blockedArcs) {
+          const as = ((arc.start % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)
+          const ae = ((arc.end % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)
+          if (as <= ae ? (na >= as && na <= ae) : (na >= as || na <= ae)) { skip = true; break }
+        }
+        if (skip) continue
+      }
+      const px = worldX + Math.cos(angle) * currentRadius
+      const py = worldY + Math.sin(angle) * currentRadius
+      const isWhite = i % 3 === 0  // every 3rd is white
+      const sp = isWhite ? 20 : 15
+      const sv = sp * (0.5 + Math.random())
+      const vx = Math.cos(angle) * sv + (Math.random() - 0.5) * sv * 0.7
+      const vy = Math.sin(angle) * sv + (Math.random() - 0.5) * sv * 0.7
+      const lt = (isWhite ? 0.5 : 0.6) * (0.8 + Math.random() * 0.2)
+      const sz = (isWhite ? 8 : 7) * 1.1
+      const pr = isWhite ? 255 : ri
+      const pg = isWhite ? 255 : gi
+      const pb = isWhite ? 255 : bi
+      spawnParticle(px, py, vx, vy, pr, pg, pb, lt, sz)
+    }
   }
 
   // Soft outer glow
@@ -1507,9 +1531,13 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
 
   // Red flash at peak
   if (showRedRing) {
-    const redAlpha = 0.8 * (1 - pastPeak / 0.11)
+    const redAlpha = 0.8 * (1 - pastPeak / 0.2)
+    // Wide outer glow
+    ctx.strokeStyle = `rgba(255, 100, 100, ${redAlpha * 0.08})`
+    ctx.lineWidth = 26
+    drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
     // Soft red glow
-    ctx.strokeStyle = `rgba(255, 100, 100, ${redAlpha * 0.15})`
+    ctx.strokeStyle = `rgba(255, 100, 100, ${redAlpha * 0.18})`
     ctx.lineWidth = 10
     drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
     // Mid red
@@ -2776,6 +2804,18 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     ctx.stroke()
   }
 
+  // Punchy hit flash — drawn ON TOP of everything
+  if (enemy.hitFlash > 0 && !enemy.summon) {
+    const flashT = enemy.hitFlash / HIT_FLASH_DURATION
+    if (flashT > 0.6) {
+      const hardFlash = (flashT - 0.6) / 0.4
+      ctx.beginPath()
+      ctx.arc(sx, sy, r, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 255, 255, ${hardFlash * 0.45})`
+      ctx.fill()
+    }
+  }
+
   // Blink phase — telegraph → snap on half-beat → coil back
   if (enemy.blink && enemy.blinkPreview > 0) {
     const totalDur = BEAT_SEC
@@ -3062,9 +3102,15 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     const activeIdx = enemy.summonBeatCount % N
     const beatFrac = getLoopPosition() % 1
 
-    // Colors
-    const baseCr = 255, baseCg = 215, baseCb = 64  // gold
-    const lockCr = 0, lockCg = 255, lockCb = 255   // cyan when locked
+    // Check if current phase is SHOP
+    const currentPhase = enemy.summonPhases[enemy.summonCurrentPhase]
+    const isShopPhase = currentPhase && currentPhase.spawns.length === 1 && currentPhase.spawns[0]!.enemyName.toUpperCase() === 'SHOP'
+
+    // Colors — gold base for all, cyan/teal when locked
+    const baseCr = 255
+    const baseCg = 215
+    const baseCb = 64
+    const lockCr = 0, lockCg = 255, lockCb = isShopPhase ? 200 : 255  // cyan/teal when locked
 
     const prevActiveIdx = ((enemy.summonBeatCount - 1 + N * 100) % N)
 
@@ -3078,6 +3124,143 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const cr = isLocked ? lockCr : baseCr
       const cg = isLocked ? lockCg : baseCg
       const cb = isLocked ? lockCb : baseCb
+
+      // Shop phase — plus icon IS the node
+      if (isShopPhase) {
+        const plusSize = nodeR * 0.6
+        const plusW = nodeR * 0.22
+
+        if (isLocked) {
+          // Locked — bright cyan/teal plus, energized, bigger than active
+          const lockPulse = 0.5 + 0.5 * Math.sin(now / 250)
+          const lockSize = plusSize * 1.15 + lockPulse * 1.5
+          const lockW = plusW * 1.25 + lockPulse * 0.5
+          // Glow circle behind
+          ctx.beginPath()
+          ctx.arc(nx, ny, nodeR + 3, 0, Math.PI * 2)
+          ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.25 + lockPulse * 0.1})`
+          ctx.fill()
+          // Crisp border ring
+          ctx.beginPath()
+          ctx.arc(nx, ny, nodeR + 2, 0, Math.PI * 2)
+          ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.6 + lockPulse * 0.3})`
+          ctx.lineWidth = 3 + lockPulse
+          ctx.stroke()
+          // Plus — thick, bright, bigger
+          ctx.lineCap = 'round'
+          ctx.lineWidth = lockW
+          ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.8 + lockPulse * 0.2})`
+          ctx.beginPath()
+          ctx.moveTo(nx, ny - lockSize)
+          ctx.lineTo(nx, ny + lockSize)
+          ctx.moveTo(nx - lockSize, ny)
+          ctx.lineTo(nx + lockSize, ny)
+          ctx.stroke()
+          // White inner plus
+          ctx.lineWidth = lockW * 0.4
+          ctx.strokeStyle = `rgba(255, 255, 255, ${0.5 + lockPulse * 0.3})`
+          ctx.beginPath()
+          ctx.moveTo(nx, ny - lockSize * 0.75)
+          ctx.lineTo(nx, ny + lockSize * 0.75)
+          ctx.moveTo(nx - lockSize * 0.75, ny)
+          ctx.lineTo(nx + lockSize * 0.75, ny)
+          ctx.stroke()
+          ctx.lineCap = 'butt'
+          // Lock flash
+          if (enemy.summonLockFlash[i]! > 0) {
+            const f = enemy.summonLockFlash[i]! / 0.3
+            ctx.beginPath()
+            ctx.arc(nx, ny, nodeR + (1 - f) * 20, 0, Math.PI * 2)
+            ctx.fillStyle = `rgba(255, 255, 255, ${f * 0.4})`
+            ctx.fill()
+            if (enemy.summonLockFlash[i]! > 0.28) {
+              const worldNx = enemy.x + Math.cos(angle) * orbitR
+              const worldNy = enemy.y + Math.sin(angle) * orbitR
+              for (let p = 0; p < 12; p++) {
+                const pa = (p / 12) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
+                const speed = 400 + Math.random() * 350
+                spawnParticle(worldNx, worldNy, Math.cos(pa) * speed, Math.sin(pa) * speed,
+                  cr, cg, cb, 0.25 + Math.random() * 0.15, 4 + Math.random() * 3)
+              }
+            }
+          }
+        } else if (isActive) {
+          // Active — bright pulsing plus with clear hitbox ring
+          const flash = Math.max(0, 1 - beatFrac * 2.5)
+          // Glow halo
+          ctx.beginPath()
+          ctx.arc(nx, ny, nodeR + 4 + flash * 5, 0, Math.PI * 2)
+          ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.06 + flash * 0.12})`
+          ctx.fill()
+          // BG circle
+          ctx.beginPath()
+          ctx.arc(nx, ny, nodeR, 0, Math.PI * 2)
+          ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.1 + flash * 0.15})`
+          ctx.fill()
+          // Hitbox ring
+          ctx.beginPath()
+          ctx.arc(nx, ny, nodeR, 0, Math.PI * 2)
+          ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.4 + flash * 0.4})`
+          ctx.lineWidth = 2 + flash
+          ctx.stroke()
+          // Plus — pulses
+          const activeSize = plusSize + flash * 3
+          const activeW = plusW + flash * 2
+          ctx.lineCap = 'round'
+          ctx.lineWidth = activeW
+          ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.6 + flash * 0.35})`
+          ctx.beginPath()
+          ctx.moveTo(nx, ny - activeSize)
+          ctx.lineTo(nx, ny + activeSize)
+          ctx.moveTo(nx - activeSize, ny)
+          ctx.lineTo(nx + activeSize, ny)
+          ctx.stroke()
+          // White flash center
+          if (flash > 0.3) {
+            ctx.lineWidth = activeW * 0.4
+            ctx.strokeStyle = `rgba(255, 255, 255, ${flash * 0.5})`
+            ctx.beginPath()
+            ctx.moveTo(nx, ny - activeSize * 0.7)
+            ctx.lineTo(nx, ny + activeSize * 0.7)
+            ctx.moveTo(nx - activeSize * 0.7, ny)
+            ctx.lineTo(nx + activeSize * 0.7, ny)
+            ctx.stroke()
+          }
+          ctx.lineCap = 'butt'
+        } else if (isPrevActive) {
+          // Fading out
+          const fadeOut = Math.max(0, 1 - beatFrac * 8)
+          ctx.lineCap = 'round'
+          ctx.lineWidth = plusW
+          ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.15 + fadeOut * 0.35})`
+          ctx.beginPath()
+          ctx.moveTo(nx, ny - plusSize)
+          ctx.lineTo(nx, ny + plusSize)
+          ctx.moveTo(nx - plusSize, ny)
+          ctx.lineTo(nx + plusSize, ny)
+          ctx.stroke()
+          ctx.lineCap = 'butt'
+        } else {
+          // Idle — plus with hitbox ring
+          ctx.beginPath()
+          ctx.arc(nx, ny, nodeR, 0, Math.PI * 2)
+          ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, 0.15)`
+          ctx.lineWidth = 1.5
+          ctx.stroke()
+          // Plus
+          ctx.lineCap = 'round'
+          ctx.lineWidth = plusW
+          ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, 0.25)`
+          ctx.beginPath()
+          ctx.moveTo(nx, ny - plusSize)
+          ctx.lineTo(nx, ny + plusSize)
+          ctx.moveTo(nx - plusSize, ny)
+          ctx.lineTo(nx + plusSize, ny)
+          ctx.stroke()
+          ctx.lineCap = 'butt'
+        }
+        continue  // skip normal node rendering
+      }
 
       if (isLocked) {
         // Locked — energized cyberpunk core
@@ -3327,35 +3510,26 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         ctx.lineCap = 'butt'
       }
 
-      // Pulsing target — big glow + ring + inner flash
+      // Target indicator — 4 white arrows breathing inward
       const targetPulse = 0.5 + 0.5 * Math.sin(now / 150)
-
-      // Outer breathing glow halo
-      ctx.beginPath()
-      ctx.arc(tx, ty, nodeR + 10 + targetPulse * 8 + bPulse * 6, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${baseCr}, ${baseCg}, ${baseCb}, ${0.06 + bPulse * 0.08})`
-      ctx.fill()
-
-      // Pulsing ring
-      ctx.beginPath()
-      ctx.arc(tx, ty, nodeR + 4 + targetPulse * 5, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(${baseCr}, ${baseCg}, ${baseCb}, ${0.3 + bPulse * 0.4 + targetPulse * 0.15})`
-      ctx.lineWidth = 2.5 + bPulse * 1.5
-      ctx.stroke()
-
-      // Inner bright fill on beat
-      if (bPulse > 0.2) {
+      const arrowDist = nodeR + 16 + targetPulse * 5
+      const arrowLen = 8 + bPulse * 4
+      const arrowAlpha = 0.4 + bPulse * 0.4 + targetPulse * 0.15
+      ctx.lineCap = 'round'
+      ctx.lineWidth = 3.5 + bPulse * 1.5
+      ctx.strokeStyle = `rgba(${baseCr}, ${baseCg}, ${baseCb}, ${arrowAlpha})`
+      for (let a = 0; a < 4; a++) {
+        const dir = a * Math.PI / 2 + Math.PI / 4
+        const ax = tx + Math.cos(dir) * arrowDist
+        const ay = ty + Math.sin(dir) * arrowDist
+        const inX = tx + Math.cos(dir) * (arrowDist - arrowLen)
+        const inY = ty + Math.sin(dir) * (arrowDist - arrowLen)
         ctx.beginPath()
-        ctx.arc(tx, ty, nodeR, 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(${baseCr}, ${baseCg}, ${baseCb}, ${bPulse * 0.25})`
-        ctx.fill()
+        ctx.moveTo(ax, ay)
+        ctx.lineTo(inX, inY)
+        ctx.stroke()
       }
-
-      // White hot center dot pulsing
-      ctx.beginPath()
-      ctx.arc(tx, ty, 3 + targetPulse * 3, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(255, 255, 255, ${0.3 + targetPulse * 0.3})`
-      ctx.fill()
+      ctx.lineCap = 'butt'
     }
 
     // Activation animation — dissolving energy burst

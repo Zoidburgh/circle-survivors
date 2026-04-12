@@ -63,7 +63,7 @@ window.addEventListener('keydown', e => {
       summonNodes: 3,
       summonPhases: [
         { spawns: [{ enemyName: 'Enemy3', count: 2 }] },
-        { spawns: [{ enemyName: 'Enemy3', count: 3 }] },
+        { spawns: [{ enemyName: 'SHOP', count: 1 }] },
       ],
       dropType: 'none',
     })

@@ -165,28 +165,33 @@ on('player:shieldRestore', () => playShieldRestore())
 on('summon:phase', (enemy: Enemy) => {
   const phase = enemy.summonPhases[enemy.summonCurrentPhase]
   if (phase) {
-    // Parse color for tethers
-    const er = parseInt(enemy.color.slice(1, 3), 16)
-    const eg = parseInt(enemy.color.slice(3, 5), 16)
-    const eb = parseInt(enemy.color.slice(5, 7), 16)
-    let totalSpawns = 0
-    for (const s of phase.spawns) totalSpawns += s.count
-    let spawnIdx = 0
-    for (const spawn of phase.spawns) {
-      const type = getEnemyType(spawn.enemyName)
-      if (!type) continue
-      for (let i = 0; i < spawn.count; i++) {
-        const angle = (spawnIdx / totalSpawns) * Math.PI * 2
-        spawnIdx++
-        const dist = enemy.radius + (type.radius ?? 40) + 30
-        const sx = enemy.x + Math.cos(angle) * dist
-        const sy = enemy.y + Math.sin(angle) * dist
-        const clamped = clampToArena(sx, sy, type.radius ?? 40)
-        const newEnemy = createEnemy(clamped.x, clamped.y, type)
-        getEnemies().push(newEnemy)
-        // Spawn tether from summoner to new enemy
-        Renderer.addAbsorbEffect(enemy.x, enemy.y, er, eg, eb, clamped.x, clamped.y)
-        Renderer.addSpawnEffect(enemy.x, enemy.y, type.radius ?? 40, clamped.x, clamped.y, type.color)
+    // Check if this is a SHOP phase
+    const isShop = phase.spawns.length === 1 && phase.spawns[0]!.enemyName.toUpperCase() === 'SHOP'
+    if (isShop) {
+      openShop()
+    } else {
+      // Normal spawn phase
+      const er = parseInt(enemy.color.slice(1, 3), 16)
+      const eg = parseInt(enemy.color.slice(3, 5), 16)
+      const eb = parseInt(enemy.color.slice(5, 7), 16)
+      let totalSpawns = 0
+      for (const s of phase.spawns) totalSpawns += s.count
+      let spawnIdx = 0
+      for (const spawn of phase.spawns) {
+        const type = getEnemyType(spawn.enemyName)
+        if (!type) continue
+        for (let i = 0; i < spawn.count; i++) {
+          const angle = (spawnIdx / totalSpawns) * Math.PI * 2
+          spawnIdx++
+          const dist = enemy.radius + (type.radius ?? 40) + 30
+          const sx = enemy.x + Math.cos(angle) * dist
+          const sy = enemy.y + Math.sin(angle) * dist
+          const clamped = clampToArena(sx, sy, type.radius ?? 40)
+          const newEnemy = createEnemy(clamped.x, clamped.y, type)
+          getEnemies().push(newEnemy)
+          Renderer.addAbsorbEffect(enemy.x, enemy.y, er, eg, eb, clamped.x, clamped.y)
+          Renderer.addSpawnEffect(enemy.x, enemy.y, type.radius ?? 40, clamped.x, clamped.y, type.color)
+        }
       }
     }
   }
@@ -509,8 +514,13 @@ export function update(dt: number): void {
       const pMin = orb.radius + player.hitRadius
       if (pDist < pMin && pDist > 0.1) {
         const overlap = pMin - pDist
-        orb.x += (pdx / pDist) * overlap
-        orb.y += (pdy / pDist) * overlap
+        const nx = pdx / pDist
+        const ny = pdy / pDist
+        // Push both — orb gets most, player nudges slightly
+        orb.x += nx * overlap * 0.85
+        orb.y += ny * overlap * 0.85
+        player.x -= nx * overlap * 0.15
+        player.y -= ny * overlap * 0.15
       }
     }
 

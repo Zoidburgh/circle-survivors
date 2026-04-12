@@ -460,7 +460,7 @@
         {
           "spawns": [
             {
-              "enemyName": "Enemy4",
+              "enemyName": "SHOP",
               "count": 1
             }
           ]
