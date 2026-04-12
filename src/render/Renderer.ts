@@ -626,9 +626,10 @@ function spawnRingParticles(
     }
     const px = cx + Math.cos(angle) * radius
     const py = cy + Math.sin(angle) * radius
-    const vx = Math.cos(angle) * speed * (0.5 + Math.random())
-    const vy = Math.sin(angle) * speed * (0.5 + Math.random())
-    spawnParticle(px, py, vx, vy, ri, gi, bi, lifetime * (0.5 + Math.random() * 0.5), size)
+    const s = speed * (0.5 + Math.random())
+    const vx = Math.cos(angle) * s + (Math.random() - 0.5) * s * 0.7
+    const vy = Math.sin(angle) * s + (Math.random() - 0.5) * s * 0.7
+    spawnParticle(px, py, vx, vy, ri, gi, bi, lifetime * (0.8 + Math.random() * 0.2), size * 1.1)
   }
 }
 
@@ -653,8 +654,14 @@ function drawParticles(): void {
     const alpha = t * t  // ease-out: stays visible longer, fades smoothly at end
     const sx = p.x - camX
     const sy = p.y - camY
+    const spin = p.life * 1.8 + (p.x * 0.01)  // spin based on lifetime + unique offset
+    const hs = p.size / 2
     ctx.fillStyle = `rgba(${p.r}, ${p.g}, ${p.b}, ${alpha})`
-    ctx.fillRect(sx - p.size / 2, sy - p.size / 2, p.size, p.size)
+    ctx.save()
+    ctx.translate(sx, sy)
+    ctx.rotate(spin)
+    ctx.fillRect(-hs, -hs, p.size, p.size)
+    ctx.restore()
   }
 }
 
@@ -966,6 +973,10 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   drawXPOrbs(player)
   perfEnd('orbs')
 
+  perfStart('particles')
+  drawParticles()
+  perfEnd('particles')
+
   ctx.restore()
 
   drawRitualNodes()
@@ -973,10 +984,6 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfStart('player')
   drawPlayer(player)
   perfEnd('player')
-
-  perfStart('particles')
-  drawParticles()
-  perfEnd('particles')
 
   updateAndDrawSpawnEffects(lastDt)
   updateAndDrawAbsorbEffects(lastDt, player)
@@ -2494,8 +2501,8 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const py = enemy.y + Math.sin(angle) * dist
       const speed = (100 + Math.random() * 180) * (0.8 + intensity * 0.2)
       const outAngle = Math.atan2(py - enemy.y, px - enemy.x)
-      const vx = Math.cos(outAngle) * speed
-      const vy = Math.sin(outAngle) * speed
+      const vx = Math.cos(outAngle) * speed + (Math.random() - 0.5) * speed * 0.15
+      const vy = Math.sin(outAngle) * speed + (Math.random() - 0.5) * speed * 0.15
       const sizeScale = Math.min(r / 44, 1)
       const size = (3 + Math.random() * 3) * (0.8 + intensity * 0.2) * sizeScale
       spawnParticle(px, py, vx, vy, 255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, size)
