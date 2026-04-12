@@ -5,13 +5,14 @@ import { damageEnemy, getRingOrigins } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { getRingExpansion, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { distance } from '../utils/math.ts'
-import { HIT_GRACE, CHILL_MAX_STACKS } from '../utils/constants.ts'
+import { HIT_GRACE, CHILL_MAX_STACKS, BEAT_SEC } from '../utils/constants.ts'
 import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playCollect } from '../audio/AudioEngine.ts'
 import { getBlockedArcs, isTargetBlocked } from './RingOcclusion.ts'
 import { spawnOrb, collectOrb, ORB_HP_HEAL } from '../entities/XPOrb.ts'
 import type { XPOrb } from '../entities/XPOrb.ts'
 import { addAbsorbEffect } from '../render/Renderer.ts'
 import { hasBonus } from './UpgradeManager.ts'
+import { getRitualGroups, hitRitualNode, missRitualNode, getActiveIndex } from './RitualNodes.ts'
 
 export function initHitDetection(): void {
   on('player:beat', () => {
@@ -64,6 +65,7 @@ export function initHitDetection(): void {
         if (!('hp' in entity)) continue  // skip orbs
         const enemy = entity as Enemy
         if (!enemy.alive || hitEnemies.has(enemy)) continue
+        if (enemy.summon) continue  // summoners only interact via their nodes
         const dist = distance({ x: sx, y: sy }, { x: enemy.x, y: enemy.y })
         // Also check blink destination if mid-phase
         let hitAtDest = false
@@ -132,6 +134,88 @@ export function initHitDetection(): void {
         }
       }
       playCollect()
+    }
+
+    // Ritual node check
+    const ritualGroups = getRitualGroups()
+    for (const group of ritualGroups) {
+      if (group.completed) continue
+      const activeIdx = getActiveIndex(group)
+      const node = group.nodes[activeIdx]!
+
+      let hitNode = false
+      for (const { x: sx, y: sy } of sweepPositions) {
+        const ndx = sx - node.x
+        const ndy = sy - node.y
+        const nDist = Math.sqrt(ndx * ndx + ndy * ndy)
+        if (Math.abs(nDist - ringRadius) < node.radius + grace) {
+          hitNode = true
+          break
+        }
+      }
+
+      if (hitNode) {
+        hitRitualNode(group, activeIdx)
+      } else {
+        missRitualNode(group)
+      }
+    }
+
+    // Summon node check — orbiting nodes inside summon enemies
+    for (const enemy of grid.query({ x: player.x, y: player.y, radius: ringRadius + 200 })) {
+      if (!('hp' in enemy)) continue
+      const e = enemy as Enemy
+      if (!e.alive || e.dying || !e.summon) continue
+      const N = e.summonNodes
+      const activeIdx = e.summonBeatCount % N
+      const orbitR = e.radius * 0.55
+      const nodeR = Math.max(8, e.radius * 0.34)
+      const baseRot = performance.now() / 2000
+      const nodeAngle = baseRot + (activeIdx / N) * Math.PI * 2
+      const nodeX = e.x + Math.cos(nodeAngle) * orbitR
+      const nodeY = e.y + Math.sin(nodeAngle) * orbitR
+
+      let hitNode = false
+      for (const { x: sx, y: sy } of sweepPositions) {
+        const ndx = sx - nodeX
+        const ndy = sy - nodeY
+        const nDist = Math.sqrt(ndx * ndx + ndy * ndy)
+        if (Math.abs(nDist - ringRadius) < nodeR + grace) {
+          hitNode = true
+          break
+        }
+      }
+
+      if (hitNode) {
+        if (e.summonProgress === 0) {
+          // Starting fresh — lock at any active node
+          e.summonNodeStates[activeIdx] = 'locked'
+          e.summonLockFlash[activeIdx] = 0.3
+          e.summonStartOffset = activeIdx
+          e.summonProgress = 1
+        } else {
+          const expected = (e.summonStartOffset + e.summonProgress) % N
+          if (activeIdx === expected) {
+            e.summonNodeStates[activeIdx] = 'locked'
+            e.summonLockFlash[activeIdx] = 0.3
+            e.summonProgress++
+          } else {
+            // Wrong node — reset
+            e.summonProgress = 0
+            e.summonStartOffset = 0
+            for (let i = 0; i < N; i++) e.summonNodeStates[i] = 'idle'
+          }
+        }
+        // Check phase completion — start activation animation
+        if (e.summonProgress >= N && e.summonActivationTimer <= 0) {
+          e.summonActivationTimer = BEAT_SEC * 0.5  // half beat for activation
+        }
+      } else if (e.summonProgress > 0) {
+        // Miss — reset
+        e.summonProgress = 0
+        e.summonStartOffset = 0
+        for (let i = 0; i < N; i++) e.summonNodeStates[i] = 'idle'
+      }
     }
 
     playMiss()

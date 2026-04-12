@@ -482,6 +482,14 @@ function addEnemyForm(existing?: DesignedEnemy): void {
             <input id="ed-revenge-${id}" type="checkbox" ${existing?.revenge ? 'checked' : ''}>
             <span style="color:#FF5252;font:11px monospace;">Revenge</span>
           </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input id="ed-summon-${id}" type="checkbox" ${existing?.summon ? 'checked' : ''}>
+            <span style="color:#FFD740;font:11px monospace;">Summon</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input id="ed-totem-check-${id}" type="checkbox" ${existing?.totemSpawn ? 'checked' : ''}>
+            <span style="color:#66BB6A;font:11px monospace;">Totem</span>
+          </label>
         </div>
         <div id="ed-magnet-range-wrap-${id}" style="margin-top:6px;display:${existing?.magnet ? 'block' : 'none'};">
           <span style="color:#50B4FF;font:10px monospace;">Range: <span id="ed-magnet-range-val-${id}">${existing?.magnetRange ?? 200}</span></span>
@@ -501,6 +509,25 @@ function addEnemyForm(existing?: DesignedEnemy): void {
             <div style="flex:1;"><span style="color:#FF5252;font:9px monospace;">Range: <span id="ed-revenge-radius-val-${id}">${existing?.revengeRadius ?? 120}</span></span><input id="ed-revenge-radius-${id}" type="range" min="60" max="300" step="10" value="${existing?.revengeRadius ?? 120}" style="width:100%;"></div>
           </div>
         </div>
+        <div id="ed-summon-wrap-${id}" style="margin-top:4px;display:${existing?.summon ? 'block' : 'none'};">
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span style="color:#FFD740;font:10px monospace;">Nodes: <span id="ed-summon-nodes-val-${id}">${existing?.summonNodes ?? 3}</span></span>
+            <input id="ed-summon-nodes-${id}" type="range" min="3" max="7" step="1" value="${existing?.summonNodes ?? 3}" style="flex:1;">
+          </div>
+          <div id="ed-summon-phases-${id}" style="margin-top:4px;">
+            ${(existing?.summonPhases ?? [{ spawns: [] }]).map((phase: any, pi: number) =>
+              `<div style="display:flex;gap:4px;align-items:center;margin-top:2px;">
+                <span style="color:#FFD740;font:9px monospace;">P${pi + 1}:</span>
+                <input class="ed-summon-phase" data-phase="${pi}" type="text" value="${(phase.spawns ?? []).map((s: any) => s.enemyName + ':' + s.count).join(', ')}" placeholder="enemy:count, enemy:count" style="flex:1;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+              </div>`
+            ).join('')}
+          </div>
+          <button id="ed-summon-add-phase-${id}" style="margin-top:4px;padding:3px 8px;cursor:pointer;background:rgba(255,215,64,0.1);border:1px solid rgba(255,215,64,0.3);color:#FFD740;font:9px monospace;border-radius:3px;">+ Phase</button>
+        </div>
+        <div id="ed-totem-wrap-${id}" style="margin-top:4px;display:${existing?.totemSpawn ? 'block' : 'none'};">
+          <span style="color:#66BB6A;font:10px monospace;">Spawn:</span>
+          <input id="ed-totem-${id}" type="text" value="${existing?.totemSpawn ?? ''}" placeholder="enemy name" style="width:100%;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+        </div>
       </div>
       <!-- Behavior section -->
       <div style="margin-top:8px;display:flex;gap:8px;">
@@ -511,10 +538,6 @@ function addEnemyForm(existing?: DesignedEnemy): void {
             <option value="hp" ${existing?.dropType === 'hp' ? 'selected' : ''}>HP</option>
             <option value="none" ${existing?.dropType === 'none' ? 'selected' : ''}>None</option>
           </select>
-        </div>
-        <div style="flex:2;">
-          <span style="${labelCSS}">Totem Spawn</span>
-          <input id="ed-totem-${id}" type="text" value="${existing?.totemSpawn ?? ''}" placeholder="enemy name" style="width:100%;padding:4px 6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
         </div>
       </div>
     </div>
@@ -726,6 +749,32 @@ function addEnemyForm(existing?: DesignedEnemy): void {
   revengeRingsInput.addEventListener('input', () => { revengeRingsVal.textContent = revengeRingsInput.value })
   revengeRadiusInput.addEventListener('input', () => { revengeRadiusVal.textContent = revengeRadiusInput.value })
 
+  // Summon tag wiring
+  const summonCheckbox = body.querySelector(`#ed-summon-${id}`) as HTMLInputElement
+  const summonWrap = body.querySelector(`#ed-summon-wrap-${id}`) as HTMLDivElement
+  const summonNodesInput = body.querySelector(`#ed-summon-nodes-${id}`) as HTMLInputElement
+  const summonNodesVal = body.querySelector(`#ed-summon-nodes-val-${id}`) as HTMLSpanElement
+  const summonPhasesDiv = body.querySelector(`#ed-summon-phases-${id}`) as HTMLDivElement
+  const summonAddPhase = body.querySelector(`#ed-summon-add-phase-${id}`) as HTMLButtonElement
+  summonCheckbox.addEventListener('change', () => {
+    summonWrap.style.display = summonCheckbox.checked ? 'block' : 'none'
+  })
+  summonNodesInput.addEventListener('input', () => { summonNodesVal.textContent = summonNodesInput.value })
+  summonAddPhase.addEventListener('click', () => {
+    const phaseCount = summonPhasesDiv.querySelectorAll('.ed-summon-phase').length
+    const row = document.createElement('div')
+    row.style.cssText = 'display:flex;gap:4px;align-items:center;margin-top:2px;'
+    row.innerHTML = `<span style="color:#FFD740;font:9px monospace;">P${phaseCount + 1}:</span><input class="ed-summon-phase" data-phase="${phaseCount}" type="text" value="" placeholder="enemy:count, enemy:count" style="flex:1;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">`
+    summonPhasesDiv.appendChild(row)
+  })
+
+  // Totem tag wiring
+  const totemCheckbox = body.querySelector(`#ed-totem-check-${id}`) as HTMLInputElement
+  const totemWrap = body.querySelector(`#ed-totem-wrap-${id}`) as HTMLDivElement
+  totemCheckbox.addEventListener('change', () => {
+    totemWrap.style.display = totemCheckbox.checked ? 'block' : 'none'
+  })
+
   function updatePreview(): void {
     const form = readForm()
     const newRings: PreviewRing[] = form.rings.map((rc, i) => {
@@ -801,13 +850,26 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const revengeRings = parseInt((div.querySelector(`#ed-revenge-rings-${id}`) as HTMLInputElement).value) || 4
     const revengeRadius = parseInt((div.querySelector(`#ed-revenge-radius-${id}`) as HTMLInputElement).value) || 120
     const totemSpawn = (div.querySelector(`#ed-totem-${id}`) as HTMLInputElement).value.trim()
+    const summon = (div.querySelector(`#ed-summon-${id}`) as HTMLInputElement).checked
+    const summonNodes = parseInt((div.querySelector(`#ed-summon-nodes-${id}`) as HTMLInputElement).value) || 3
+    const summonPhaseInputs = div.querySelectorAll(`#ed-summon-phases-${id} .ed-summon-phase`) as NodeListOf<HTMLInputElement>
+    const summonPhases: import('../entities/EnemyTypes.ts').SummonPhase[] = []
+    summonPhaseInputs.forEach(input => {
+      const text = input.value.trim()
+      if (!text) return
+      const spawns = text.split(',').map(s => s.trim()).filter(Boolean).map(s => {
+        const [name, count] = s.split(':')
+        return { enemyName: name?.trim() ?? '', count: parseInt(count ?? '1') || 1 }
+      }).filter(s => s.enemyName)
+      if (spawns.length > 0) summonPhases.push({ spawns })
+    })
     const dropType = (div.querySelector(`#ed-drop-${id}`) as HTMLSelectElement).value as 'xp' | 'hp' | 'none'
     const movePattern = (div.querySelector(`#ed-move-${id}`) as HTMLSelectElement).value as import('../entities/EnemyTypes.ts').MovePattern
     const rings: RingConfig[] = readRingForms()
     const sound = (rings[0]?.sound ?? 'pop') as SoundName
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
-    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, movePattern, totemSpawn, dropType }
+    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, movePattern, totemSpawn, dropType, summon, summonNodes, summonPhases }
   }
 
 

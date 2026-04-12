@@ -15,6 +15,8 @@ import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } 
 import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat } from '../audio/PatternClock.ts'
 import { playPlayerHit, playShieldBreak, playShieldRestore } from '../audio/AudioEngine.ts'
+import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
+import { openShop, updateShopScreen, drawShopScreen } from '../game/ShopScreen.ts'
 import { HIT_FLASH_DURATION } from '../utils/constants.ts'
 import { perfStart, perfEnd, exportPerfLog, addSpawnEffect, addVolatileExplosion, setPendingExplosions } from '../render/Renderer.ts'
 import { getEnemyType } from '../entities/EnemyTypes.ts'
@@ -159,11 +161,61 @@ on('enemy:killed', (enemy: Enemy) => {
 on('player:shieldBreak', () => playShieldBreak())
 on('player:shieldRestore', () => playShieldRestore())
 
+// Summon phase completion — spawn enemies, advance or kill summoner
+on('summon:phase', (enemy: Enemy) => {
+  const phase = enemy.summonPhases[enemy.summonCurrentPhase]
+  if (phase) {
+    // Parse color for tethers
+    const er = parseInt(enemy.color.slice(1, 3), 16)
+    const eg = parseInt(enemy.color.slice(3, 5), 16)
+    const eb = parseInt(enemy.color.slice(5, 7), 16)
+    let totalSpawns = 0
+    for (const s of phase.spawns) totalSpawns += s.count
+    let spawnIdx = 0
+    for (const spawn of phase.spawns) {
+      const type = getEnemyType(spawn.enemyName)
+      if (!type) continue
+      for (let i = 0; i < spawn.count; i++) {
+        const angle = (spawnIdx / totalSpawns) * Math.PI * 2
+        spawnIdx++
+        const dist = enemy.radius + (type.radius ?? 40) + 30
+        const sx = enemy.x + Math.cos(angle) * dist
+        const sy = enemy.y + Math.sin(angle) * dist
+        const clamped = clampToArena(sx, sy, type.radius ?? 40)
+        const newEnemy = createEnemy(clamped.x, clamped.y, type)
+        getEnemies().push(newEnemy)
+        // Spawn tether from summoner to new enemy
+        Renderer.addAbsorbEffect(enemy.x, enemy.y, er, eg, eb, clamped.x, clamped.y)
+        Renderer.addSpawnEffect(enemy.x, enemy.y, type.radius ?? 40, clamped.x, clamped.y, type.color)
+      }
+    }
+  }
+  // Advance to next phase or kill summoner
+  enemy.summonCurrentPhase++
+  if (enemy.summonCurrentPhase >= enemy.summonPhases.length) {
+    // All phases done — kill summoner
+    enemy.dying = true
+    enemy.deathTimer = 0
+    emit('enemy:killed', enemy)
+  } else {
+    // Reset nodes for next phase
+    enemy.summonProgress = 0
+    enemy.summonStartOffset = 0
+    for (let i = 0; i < enemy.summonNodes; i++) {
+      enemy.summonNodeStates[i] = 'idle'
+    }
+  }
+})
+
 export function update(dt: number): void {
   const phase = getPhase()
 
   if (phase === 'upgrading') {
     updateUpgradeScreen(dt)
+    return
+  }
+  if (phase === 'shopping') {
+    updateShopScreen(dt)
     return
   }
 
@@ -195,6 +247,18 @@ export function update(dt: number): void {
   advanceGlobalTime(dt)
   advancePatternClock(dt)
   updatePreviewEnemy(dt)
+  updateRitualNodes(dt)
+
+  // Handle completed ritual node groups
+  for (const group of getRitualGroups()) {
+    if (group.completed && group.completionTimer <= 0) {
+      if (group.type === 'shop') {
+        openShop()
+      }
+      removeGroup(group.id)
+      break  // array mutated, exit loop
+    }
+  }
 
   // Build grid before player update so beat hit-detection can query enemies + orbs
   perfStart('u_grid')
@@ -563,5 +627,8 @@ export function render(alpha: number): void {
 
   if (getPhase() === 'upgrading') {
     drawUpgradeScreen(ctx, canvas.width, canvas.height)
+  }
+  if (getPhase() === 'shopping') {
+    drawShopScreen(ctx, canvas.width, canvas.height)
   }
 }

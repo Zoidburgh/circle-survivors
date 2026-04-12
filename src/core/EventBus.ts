@@ -10,6 +10,7 @@ export interface GameEventMap {
   'enemy:revenge': [enemy: Enemy]
   'player:shieldBreak': [player: Player]
   'player:shieldRestore': [player: Player]
+  'summon:phase': [enemy: Enemy]
 }
 
 type EventName = keyof GameEventMap

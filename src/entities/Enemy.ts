@@ -8,7 +8,7 @@ import { emit } from '../core/EventBus.ts'
 import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import type { Player } from './Player.ts'
-import type { EnemyType, MovePattern } from './EnemyTypes.ts'
+import type { EnemyType, MovePattern, SummonPhase } from './EnemyTypes.ts'
 import { SpatialGrid } from '../core/SpatialGrid.ts'
 import { getChillRank } from '../game/UpgradeManager.ts'
 
@@ -85,6 +85,17 @@ export interface Enemy {
   blinkFromX: number    // position before teleport (for trail)
   blinkFromY: number
   blinkPreview: number  // >0 = showing ghost, counts down
+  summon: boolean
+  summonNodes: number
+  summonPhases: SummonPhase[]
+  summonProgress: number          // nodes locked in current sequence
+  summonStartOffset: number       // which node player started at
+  summonCurrentPhase: number      // which phase we're on
+  summonNodeStates: ('idle' | 'locked')[]
+  summonLockFlash: number[]       // per-node flash timer
+  summonBeatCount: number         // monotonic beat counter
+  summonLastBeat: number          // last whole beat seen
+  summonActivationTimer: number   // >0 = activation animation playing, counts down
 }
 
 /** Get the world positions a ring fires from (center or edge offsets) */
@@ -182,11 +193,39 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     blinkFromX: 0,
     blinkFromY: 0,
     blinkPreview: 0,
+    summon: type.summon ?? false,
+    summonNodes: type.summonNodes ?? 3,
+    summonPhases: type.summonPhases ?? [],
+    summonProgress: 0,
+    summonStartOffset: 0,
+    summonCurrentPhase: 0,
+    summonNodeStates: Array(type.summonNodes ?? 3).fill('idle'),
+    summonLockFlash: Array(type.summonNodes ?? 3).fill(0),
+    summonBeatCount: 0,
+    summonLastBeat: -1,
+    summonActivationTimer: 0,
   }
 }
 
 export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: SpatialGrid): void {
   if (!enemy.alive || enemy.dying) return
+  // Summon beat counter — must run before any early returns
+  if (enemy.summon) {
+    const cb = Math.floor(getLoopPosition())
+    if (cb !== enemy.summonLastBeat) {
+      if (enemy.summonLastBeat >= 0) enemy.summonBeatCount++
+      enemy.summonLastBeat = cb
+    }
+    for (let i = 0; i < enemy.summonLockFlash.length; i++) {
+      if (enemy.summonLockFlash[i]! > 0) enemy.summonLockFlash[i]! -= dt
+    }
+    if (enemy.summonActivationTimer > 0) {
+      enemy.summonActivationTimer -= dt
+      if (enemy.summonActivationTimer <= 0) {
+        emit('summon:phase', enemy)
+      }
+    }
+  }
 
   if (enemy.hitFlash > 0) enemy.hitFlash -= dt
 
@@ -301,6 +340,16 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
 
   enemy.moveTimer += dt
   if (enemy.revenge) enemy.revengeAngle += dt * 0.5  // slow rotation ~0.5 rad/s
+
+  // (summon beat counter moved above early-return check)
+
+  // Don't move during spawn-in animation
+  if (enemy.spawnTimer < 1) {
+    // Skip movement but still apply velocity dampening
+    enemy.vx *= 0.9
+    enemy.vy *= 0.9
+    return
+  }
 
   switch (enemy.movePattern) {
     case 'pursue':

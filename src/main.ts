@@ -14,6 +14,11 @@ import { SONG_DEFAULT } from './audio/SongPatterns.ts'
 import { getSpawnPos } from './game/Arena.ts'
 import { spawnOrb } from './entities/XPOrb.ts'
 import { handleUpgradeClick, handleUpgradeHover } from './game/UpgradeScreen.ts'
+import { handleShopClick, handleShopHover, closeShop } from './game/ShopScreen.ts'
+import { createNodeGroup, resetRitualNodes } from './game/RitualNodes.ts'
+import { ARENA_W, ARENA_H } from './game/Arena.ts'
+
+let debugNodeType = 0  // 0 = triangle shop, 1 = pentagon star
 
 // ── Init ──
 const canvas = document.getElementById('game') as HTMLCanvasElement
@@ -40,12 +45,75 @@ window.addEventListener('keydown', e => {
       return
     }
   }
+  if (e.key === 'v') {
+    // Debug: spawn a test summoner enemy
+    const player = getPlayer()
+    const pos = getSpawnPos(player.x, player.y, 200)
+    const summoner = createEnemy(pos.x, pos.y, {
+      name: 'Summoner',
+      color: '#FFD740',
+      hp: 20,
+      moveSpeed: 0,
+      radius: 80,
+      ringRadius: 0,
+      key: '',
+      role: 'bass',
+      movePattern: 'immovable',
+      summon: true,
+      summonNodes: 3,
+      summonPhases: [
+        { spawns: [{ enemyName: 'Enemy3', count: 2 }] },
+        { spawns: [{ enemyName: 'Enemy3', count: 3 }] },
+      ],
+      dropType: 'none',
+    })
+    getEnemies().push(summoner)
+    console.log('Spawned: summoner')
+    return
+  }
   if (e.key === '9') {
     const player = getPlayer()
     for (let i = 0; i < 50; i++) {
       const pos = getSpawnPos(player.x, player.y, 50)
       spawnOrb(pos.x, pos.y, 1, 'hp')
     }
+    return
+  }
+  if (e.key === 'b') {
+    resetRitualNodes()
+    const cx = ARENA_W / 2, cy = ARENA_H / 2
+
+    if (debugNodeType === 0) {
+      // Triangle shop
+      const spread = 90
+      createNodeGroup('shop', [
+        { x: cx, y: cy - spread },
+        { x: cx - spread * 0.87, y: cy + spread * 0.5 },
+        { x: cx + spread * 0.87, y: cy + spread * 0.5 },
+      ])
+      console.log('Spawned: triangle shop')
+    } else {
+      // Pentagon star — random star pattern (connect every 2nd point)
+      const spread = 130
+      const baseAngle = -Math.PI / 2 + Math.random() * Math.PI * 2
+      const points: { x: number; y: number }[] = []
+      // Place 5 points in a circle
+      for (let i = 0; i < 5; i++) {
+        const a = baseAngle + (i / 5) * Math.PI * 2
+        points.push({ x: cx + Math.cos(a) * spread, y: cy + Math.sin(a) * spread })
+      }
+      // Star order: skip every other point (0, 2, 4, 1, 3)
+      const starOrder = [0, 2, 4, 1, 3]
+      const starPoints = starOrder.map(i => points[i]!)
+      createNodeGroup('spawn', starPoints)
+      console.log('Spawned: pentagon star')
+    }
+
+    debugNodeType = (debugNodeType + 1) % 2
+    return
+  }
+  if (e.key === 'Escape' && getPhase() === 'shopping') {
+    closeShop()
     return
   }
   if (e.key === '0') {
@@ -63,7 +131,10 @@ window.addEventListener('keydown', e => {
 })
 
 canvas.addEventListener('click', e => {
-  // Upgrade screen takes priority
+  if (getPhase() === 'shopping') {
+    handleShopClick(e.clientX, e.clientY, canvas.width, canvas.height)
+    return
+  }
   if (getPhase() === 'upgrading') {
     handleUpgradeClick(e.clientX, e.clientY, canvas.width, canvas.height)
     return
@@ -76,6 +147,7 @@ canvas.addEventListener('click', e => {
 
 canvas.addEventListener('mousemove', e => {
   handleUpgradeHover(e.clientX, e.clientY, canvas.width, canvas.height)
+  handleShopHover(e.clientX, e.clientY, canvas.width, canvas.height)
 })
 
 // ── Start game loop ──

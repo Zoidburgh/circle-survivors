@@ -1,4 +1,5 @@
 import { createPlayer, resetPlayer } from '../entities/Player.ts'
+import { resetRitualNodes } from '../game/RitualNodes.ts'
 import type { Player } from '../entities/Player.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { SpatialGrid } from './SpatialGrid.ts'
@@ -6,7 +7,7 @@ import { createCamera, ARENA_W, ARENA_H } from '../game/Arena.ts'
 import type { Camera } from '../game/Arena.ts'
 import { GRID_CELL_SIZE } from '../utils/constants.ts'
 
-export type GamePhase = 'playing' | 'upgrading'
+export type GamePhase = 'playing' | 'upgrading' | 'shopping'
 
 const player: Player = createPlayer(ARENA_W / 2, ARENA_H / 2)
 const enemies: Enemy[] = []
@@ -48,4 +49,5 @@ export function resetGameState(): void {
   phase = 'playing'
   xpForNextLevel = 15
   level = 1
+  resetRitualNodes()
 }

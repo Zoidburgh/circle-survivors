@@ -49,6 +49,12 @@ export const SHIELD_RECHARGE_TIME = 4.0       // seconds to regen one charge
 export const SHIELD_BREAK_FLASH = 0.3         // visual break effect duration
 export const SHIELD_ORBIT_RADIUS_OFFSET = 12  // px outside player body
 
+// ── Ritual Nodes ──
+export const RITUAL_NODE_RADIUS = 37
+export const RITUAL_LOCK_FLASH = 0.3
+export const RITUAL_COMPLETION_TIME = 0.5
+export const SHOP_UPGRADE_COST = 1
+
 // ── Chill / Frostbite upgrade ──
 export const CHILL_SLOW_PER_STACK = 0.10   // 10% slow per stack
 export const CHILL_MAX_STACKS = 5           // max stacks on a single enemy

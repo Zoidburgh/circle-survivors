@@ -6,7 +6,7 @@
       "color": "#ba68c8",
       "hp": 20,
       "moveSpeed": 150,
-      "radius": 100,
+      "radius": 60,
       "ringRadius": 120,
       "key": "2",
       "role": "pop",
@@ -17,9 +17,9 @@
       "consume": true,
       "magnet": false,
       "magnetRange": 430,
-      "blink": true,
+      "blink": false,
       "blinkBeats": 4,
-      "volatile": true,
+      "volatile": false,
       "volatileRange": 150,
       "revenge": true,
       "revengeRings": 1,
@@ -419,6 +419,53 @@
       "movePattern": "stationary",
       "totemSpawn": "",
       "dropType": "xp"
+    },
+    {
+      "name": "Enemy9",
+      "color": "#ef5350",
+      "hp": 2,
+      "moveSpeed": 50,
+      "radius": 130,
+      "ringRadius": 120,
+      "key": "9",
+      "role": "pop",
+      "sound": "pop",
+      "beats": [],
+      "rings": [],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "movePattern": "pursue",
+      "totemSpawn": "",
+      "dropType": "xp",
+      "summon": true,
+      "summonNodes": 3,
+      "summonPhases": [
+        {
+          "spawns": [
+            {
+              "enemyName": "Enemy3",
+              "count": 2
+            }
+          ]
+        },
+        {
+          "spawns": [
+            {
+              "enemyName": "Enemy4",
+              "count": 1
+            }
+          ]
+        }
+      ]
     }
   ]
 }

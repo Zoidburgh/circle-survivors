@@ -34,6 +34,13 @@ export interface EnemyType {
   revenge?: boolean                 // fires rings on next beat after being hit
   revengeRings?: number             // how many rings fire (default: 4)
   revengeRadius?: number            // ring attack radius (default: 120)
+  summon?: boolean                  // has orbiting ritual nodes, phased spawning
+  summonNodes?: number              // how many nodes (3 = triangle, 5 = pentagon, default 3)
+  summonPhases?: SummonPhase[]      // each phase = one completed sequence, spawns enemies
+}
+
+export interface SummonPhase {
+  spawns: { enemyName: string; count: number }[]
 }
 
 /** Look up an enemy type by name */
