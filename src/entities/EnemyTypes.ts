@@ -23,7 +23,10 @@ export interface EnemyType {
   blocksRings?: boolean
   movePattern?: MovePattern
   totemSpawn?: string          // if set, this is a totem — name of enemy type it spawns on player hit
-  dropType?: 'xp' | 'hp' | 'none'  // what orb to drop on kill (default: 'xp')
+  dropType?: 'xp' | 'hp' | 'none'  // legacy — use dropXp/dropHp instead
+  dropXp?: number                   // 0-100 chance to drop XP orb (default: 100)
+  dropHp?: number                   // 0-100 chance to drop HP orb (default: 0)
+  dropCount?: number                // how many orbs to drop (default: 1, max 10)
   consume?: boolean                 // ring attack consumes nearby orbs, heals +1 per orb
   magnet?: boolean                  // pulls nearby orbs toward this enemy
   magnetRange?: number              // custom pull range (default: MAGNET_RANGE from constants)

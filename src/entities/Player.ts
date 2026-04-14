@@ -37,6 +37,7 @@ export interface PlayerModifiers {
   xpMult: number
   shieldRechargeMult: number
   sizeMult: number
+  beatBlastMult: number
 }
 
 export function createDefaultModifiers(): PlayerModifiers {
@@ -50,6 +51,7 @@ export function createDefaultModifiers(): PlayerModifiers {
     xpMult: 1.0,
     shieldRechargeMult: 1.0,
     sizeMult: 1.0,
+    beatBlastMult: 1.0,
   }
 }
 
@@ -394,7 +396,17 @@ export function updatePlayer(player: Player, dt: number): void {
   if (Input.consumeLeftClick() || Input.consumeSpace()) {
     const readySlot = player.dashSlots.findIndex(t => t <= 0)
     if (readySlot >= 0) {
-      // Always use facingAngle — it's updated every frame from input above
+      // Check if dash is on-beat (ring is near peak)
+      const nearPeak = player.attackTimer >= 0 && Math.abs(player.attackTimer - ATTACK_EXPAND_TIME) < 0.14
+      // Also check extra ring timers
+      let extraNearPeak = false
+      for (let i = 0; i < player.extraRingCount; i++) {
+        if (player.extraRingTimers[i]! >= 0 && Math.abs(player.extraRingTimers[i]! - ATTACK_EXPAND_TIME) < 0.14) {
+          extraNearPeak = true
+        }
+      }
+      const onBeatDash = nearPeak || extraNearPeak
+
       player.dashDirX = Math.cos(player.facingAngle)
       player.dashDirY = Math.sin(player.facingAngle)
       player.dashPath = [{ x: player.x, y: player.y }]
@@ -403,6 +415,11 @@ export function updatePlayer(player: Player, dt: number): void {
       player.dashTimer = player.dashDuration
       player.dashSlots[readySlot] = player.dashChargeTime * player.modifiers.dashChargeMult
       playDash()
+
+      // On-beat dash — emit shockwave event
+      if (onBeatDash) {
+        emit('player:beatDash', player)
+      }
     }
   }
   Input.consumeRightClick()

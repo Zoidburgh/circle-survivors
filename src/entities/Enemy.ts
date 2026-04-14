@@ -66,6 +66,9 @@ export interface Enemy {
   immovable: boolean   // derived from movePattern === 'immovable'
   totemSpawn: string    // empty = not a totem, otherwise enemy type name to spawn
   dropType: 'xp' | 'hp' | 'none'
+  dropXp: number   // 0-100
+  dropHp: number   // 0-100
+  dropCount: number // how many orbs to drop
   consume: boolean      // ring attack consumes nearby orbs, heals +1
   magnet: boolean       // pulls nearby orbs toward this enemy
   magnetRange: number   // pull radius
@@ -174,6 +177,9 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     immovable: (type.movePattern ?? 'pursue') === 'immovable',
     totemSpawn: type.totemSpawn ?? '',
     dropType: type.dropType ?? 'xp',
+    dropXp: type.dropXp ?? (type.dropType === 'hp' ? 0 : type.dropType === 'none' ? 0 : 100),
+    dropHp: type.dropHp ?? (type.dropType === 'hp' ? 100 : 0),
+    dropCount: type.dropCount ?? 1,
     consume: type.consume ?? false,
     magnet: type.magnet ?? false,
     magnetRange: type.magnetRange ?? MAGNET_RANGE,
@@ -465,8 +471,10 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
       const overlap = minDist - eDist
       const nx = ex / eDist
       const ny = ey / eDist
-      enemy.x += nx * overlap * 0.5
-      enemy.y += ny * overlap * 0.5
+      // Take full overlap if other is immovable, otherwise half
+      const pushFrac = otherEnemy.immovable ? 1.0 : 0.5
+      enemy.x += nx * overlap * pushFrac
+      enemy.y += ny * overlap * pushFrac
       if (isBounce) {
         // Reflect velocity off the collision normal
         const dot = enemy.bounceVx * nx + enemy.bounceVy * ny
@@ -595,6 +603,31 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
 }
 
 export const DEATH_DURATION = 0.3
+
+/** Spawn all drops for a killed enemy — handles count, proportions, and cluster positioning */
+export function spawnDrops(enemy: Enemy, orbValue: number, spawnOrb: (x: number, y: number, value: number, type: 'xp' | 'hp') => void): void {
+  const count = enemy.dropCount
+  for (let i = 0; i < count; i++) {
+    const drop = rollDrop(enemy)
+    if (!drop) continue
+    // Cluster offset — spiral outward from enemy center
+    const angle = (i / count) * Math.PI * 2 + Math.random() * 0.3
+    const dist = count > 1 ? 8 + (i / count) * 12 : 0
+    const ox = enemy.x + Math.cos(angle) * dist
+    const oy = enemy.y + Math.sin(angle) * dist
+    spawnOrb(ox, oy, orbValue, drop)
+  }
+}
+
+/** Roll drop type based on percentage chances. Returns 'xp', 'hp', or null (no drop) */
+export function rollDrop(enemy: Enemy): 'xp' | 'hp' | null {
+  const total = enemy.dropXp + enemy.dropHp
+  if (total <= 0) return null
+  const roll = Math.random() * Math.max(total, 100)
+  if (roll < enemy.dropXp) return 'xp'
+  if (roll < enemy.dropXp + enemy.dropHp) return 'hp'
+  return null
+}
 
 export function damageEnemy(enemy: Enemy, amount: number): void {
   if (enemy.dying) return

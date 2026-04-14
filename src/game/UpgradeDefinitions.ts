@@ -26,6 +26,7 @@ export const UPGRADE_POOL: UpgradeDef[] = [
   { id: 'ghost_dash', name: 'Ghost Dash', description: 'Invincible during dash', bonus: { ghostDash: true }, color: '#E0E0E0', tier: 'game', maxStacks: 1 },
   { id: 'extra_hp', name: 'Vitality', description: '+1 max HP', bonus: { extraHp: 1 }, color: '#FF5252', maxStacks: 30 },
   { id: 'small', name: 'Compact', description: '-10% player size', bonus: { sizeMult: -0.10 }, color: '#80CBC4', maxStacks: 5 },
+  { id: 'beat_blast', name: 'Beat Blast', description: '+10% beat dash radius', bonus: { beatBlastMult: 0.10 }, color: '#FF5252', maxStacks: 5 },
   { id: 'chill_hit', name: 'Frostbite', description: 'Ring hits slow enemies (10%/stack, 5 max)', bonus: { chillHit: true }, color: '#80D8FF', tier: 'game', maxStacks: 2 },
 ]
 

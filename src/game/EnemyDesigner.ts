@@ -516,9 +516,13 @@ function addEnemyForm(existing?: DesignedEnemy): void {
           </div>
           <div id="ed-summon-phases-${id}" style="margin-top:4px;">
             ${(existing?.summonPhases ?? [{ spawns: [] }]).map((phase: any, pi: number) =>
-              `<div style="display:flex;gap:4px;align-items:center;margin-top:2px;">
-                <span style="color:#FFD740;font:9px monospace;">P${pi + 1}:</span>
-                <input class="ed-summon-phase" data-phase="${pi}" type="text" value="${(phase.spawns ?? []).map((s: any) => s.enemyName + ':' + s.count).join(', ')}" placeholder="enemy:count, enemy:count" style="flex:1;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+              `<div class="ed-phase-row" style="display:flex;gap:3px;align-items:center;margin-top:2px;" draggable="true">
+                <span class="ed-phase-handle" style="cursor:grab;color:#666;font:11px monospace;user-select:none;">≡</span>
+                <span class="ed-phase-label" style="color:#FFD740;font:9px monospace;min-width:18px;">P${pi + 1}</span>
+                <input class="ed-summon-phase" type="text" value="${(phase.spawns ?? []).map((s: any) => s.enemyName + ':' + s.count).join(', ')}" placeholder="enemy:count, ..." style="flex:1;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+                <span class="ed-phase-up" style="cursor:pointer;color:#888;font:10px monospace;user-select:none;" title="Move up">▲</span>
+                <span class="ed-phase-down" style="cursor:pointer;color:#888;font:10px monospace;user-select:none;" title="Move down">▼</span>
+                <span class="ed-phase-del" style="cursor:pointer;color:#FF5252;font:12px monospace;user-select:none;" title="Delete">×</span>
               </div>`
             ).join('')}
           </div>
@@ -532,12 +536,16 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       <!-- Behavior section -->
       <div style="margin-top:8px;display:flex;gap:8px;">
         <div style="flex:1;">
-          <span style="${labelCSS}">Drop</span>
-          <select id="ed-drop-${id}" style="width:100%;padding:4px 6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
-            <option value="xp" ${(existing?.dropType ?? 'xp') === 'xp' ? 'selected' : ''}>XP</option>
-            <option value="hp" ${existing?.dropType === 'hp' ? 'selected' : ''}>HP</option>
-            <option value="none" ${existing?.dropType === 'none' ? 'selected' : ''}>None</option>
-          </select>
+          <span style="color:#64FFc8;font:9px monospace;">XP: <span id="ed-drop-xp-val-${id}">${existing?.dropXp ?? 100}</span>%</span>
+          <input id="ed-drop-xp-${id}" type="range" min="0" max="100" step="5" value="${existing?.dropXp ?? 100}" style="width:100%;">
+        </div>
+        <div style="flex:1;">
+          <span style="color:#FF5252;font:9px monospace;">HP: <span id="ed-drop-hp-val-${id}">${existing?.dropHp ?? 0}</span>%</span>
+          <input id="ed-drop-hp-${id}" type="range" min="0" max="100" step="5" value="${existing?.dropHp ?? 0}" style="width:100%;">
+        </div>
+        <div style="flex:0.6;">
+          <span style="color:#aaa;font:9px monospace;">×<span id="ed-drop-count-val-${id}">${existing?.dropCount ?? 1}</span></span>
+          <input id="ed-drop-count-${id}" type="range" min="1" max="10" step="1" value="${existing?.dropCount ?? 1}" style="width:100%;">
         </div>
       </div>
     </div>
@@ -760,13 +768,84 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     summonWrap.style.display = summonCheckbox.checked ? 'block' : 'none'
   })
   summonNodesInput.addEventListener('input', () => { summonNodesVal.textContent = summonNodesInput.value })
-  summonAddPhase.addEventListener('click', () => {
-    const phaseCount = summonPhasesDiv.querySelectorAll('.ed-summon-phase').length
+
+  function renumberPhases(): void {
+    const rows = summonPhasesDiv.querySelectorAll('.ed-phase-row')
+    rows.forEach((row, i) => {
+      const label = row.querySelector('.ed-phase-label') as HTMLSpanElement
+      if (label) label.textContent = `P${i + 1}`
+    })
+  }
+
+  function createPhaseRow(value = ''): HTMLDivElement {
     const row = document.createElement('div')
-    row.style.cssText = 'display:flex;gap:4px;align-items:center;margin-top:2px;'
-    row.innerHTML = `<span style="color:#FFD740;font:9px monospace;">P${phaseCount + 1}:</span><input class="ed-summon-phase" data-phase="${phaseCount}" type="text" value="" placeholder="enemy:count, enemy:count" style="flex:1;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">`
-    summonPhasesDiv.appendChild(row)
+    row.className = 'ed-phase-row'
+    row.style.cssText = 'display:flex;gap:3px;align-items:center;margin-top:2px;'
+    row.draggable = true
+    row.innerHTML = `<span class="ed-phase-handle" style="cursor:grab;color:#666;font:11px monospace;user-select:none;">≡</span><span class="ed-phase-label" style="color:#FFD740;font:9px monospace;min-width:18px;">P1</span><input class="ed-summon-phase" type="text" value="${value}" placeholder="enemy:count, ..." style="flex:1;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;"><span class="ed-phase-up" style="cursor:pointer;color:#888;font:10px monospace;user-select:none;" title="Move up">▲</span><span class="ed-phase-down" style="cursor:pointer;color:#888;font:10px monospace;user-select:none;" title="Move down">▼</span><span class="ed-phase-del" style="cursor:pointer;color:#FF5252;font:12px monospace;user-select:none;" title="Delete">×</span>`
+    return row
+  }
+
+  // Phase controls — delegate clicks on the container
+  summonPhasesDiv.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement
+    const row = target.closest('.ed-phase-row') as HTMLElement | null
+    if (!row) return
+    if (target.classList.contains('ed-phase-up')) {
+      const prev = row.previousElementSibling
+      if (prev) { summonPhasesDiv.insertBefore(row, prev); renumberPhases() }
+    } else if (target.classList.contains('ed-phase-down')) {
+      const next = row.nextElementSibling
+      if (next) { summonPhasesDiv.insertBefore(next, row); renumberPhases() }
+    } else if (target.classList.contains('ed-phase-del')) {
+      row.remove(); renumberPhases()
+    }
   })
+
+  // Drag and drop reorder
+  let dragRow: HTMLElement | null = null
+  summonPhasesDiv.addEventListener('dragstart', (e) => {
+    dragRow = (e.target as HTMLElement).closest('.ed-phase-row')
+    if (dragRow) dragRow.style.opacity = '0.4'
+  })
+  summonPhasesDiv.addEventListener('dragend', () => {
+    if (dragRow) dragRow.style.opacity = '1'
+    dragRow = null
+  })
+  summonPhasesDiv.addEventListener('dragover', (e) => { e.preventDefault() })
+  summonPhasesDiv.addEventListener('drop', (e) => {
+    e.preventDefault()
+    if (!dragRow) return
+    const target = (e.target as HTMLElement).closest('.ed-phase-row') as HTMLElement | null
+    if (target && target !== dragRow) {
+      const rows = Array.from(summonPhasesDiv.querySelectorAll('.ed-phase-row'))
+      const dragIdx = rows.indexOf(dragRow)
+      const dropIdx = rows.indexOf(target)
+      if (dragIdx < dropIdx) {
+        summonPhasesDiv.insertBefore(dragRow, target.nextSibling)
+      } else {
+        summonPhasesDiv.insertBefore(dragRow, target)
+      }
+      renumberPhases()
+    }
+  })
+
+  summonAddPhase.addEventListener('click', () => {
+    const row = createPhaseRow()
+    summonPhasesDiv.appendChild(row)
+    renumberPhases()
+  })
+
+  // Drop sliders
+  const dropXpInput = body.querySelector(`#ed-drop-xp-${id}`) as HTMLInputElement
+  const dropXpVal = body.querySelector(`#ed-drop-xp-val-${id}`) as HTMLSpanElement
+  const dropHpInput = body.querySelector(`#ed-drop-hp-${id}`) as HTMLInputElement
+  const dropHpVal = body.querySelector(`#ed-drop-hp-val-${id}`) as HTMLSpanElement
+  const dropCountInput = body.querySelector(`#ed-drop-count-${id}`) as HTMLInputElement
+  const dropCountVal = body.querySelector(`#ed-drop-count-val-${id}`) as HTMLSpanElement
+  dropXpInput.addEventListener('input', () => { dropXpVal.textContent = dropXpInput.value })
+  dropHpInput.addEventListener('input', () => { dropHpVal.textContent = dropHpInput.value })
+  dropCountInput.addEventListener('input', () => { dropCountVal.textContent = dropCountInput.value })
 
   // Totem tag wiring
   const totemCheckbox = body.querySelector(`#ed-totem-check-${id}`) as HTMLInputElement
@@ -863,13 +942,16 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       }).filter(s => s.enemyName)
       if (spawns.length > 0) summonPhases.push({ spawns })
     })
-    const dropType = (div.querySelector(`#ed-drop-${id}`) as HTMLSelectElement).value as 'xp' | 'hp' | 'none'
+    const dropXp = parseInt((div.querySelector(`#ed-drop-xp-${id}`) as HTMLInputElement).value) || 0
+    const dropHp = parseInt((div.querySelector(`#ed-drop-hp-${id}`) as HTMLInputElement).value) || 0
+    const dropCount = parseInt((div.querySelector(`#ed-drop-count-${id}`) as HTMLInputElement).value) || 1
+    const dropType: 'xp' | 'hp' | 'none' = dropXp > 0 ? 'xp' : dropHp > 0 ? 'hp' : 'none'
     const movePattern = (div.querySelector(`#ed-move-${id}`) as HTMLSelectElement).value as import('../entities/EnemyTypes.ts').MovePattern
     const rings: RingConfig[] = readRingForms()
     const sound = (rings[0]?.sound ?? 'pop') as SoundName
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
-    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, movePattern, totemSpawn, dropType, summon, summonNodes, summonPhases }
+    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases }
   }
 
 

@@ -23,6 +23,7 @@ export interface UpgradeBonus {
   chillHit?: boolean  // ring hits slow enemies
   extraHp?: number             // +1 max HP per stack
   sizeMult?: number            // negative = smaller (e.g. -0.10 = 10% smaller)
+  beatBlastMult?: number       // +10% beat dash blast radius per stack
   shieldRechargeMult?: number  // negative = faster recharge
   shieldMaxCharges?: number    // +1 shield charge per stack
   noShield?: boolean           // tradeoff: removes shield entirely
@@ -111,6 +112,7 @@ export function computeModifiers(): PlayerModifiers {
   let xp = 0
   let shieldRecharge = 0
   let size = 0
+  let beatBlast = 0
 
   for (const u of activeUpgrades) {
     speed += u.bonus.speedMult ?? 0
@@ -122,6 +124,7 @@ export function computeModifiers(): PlayerModifiers {
     xp += u.bonus.xpMult ?? 0
     shieldRecharge += u.bonus.shieldRechargeMult ?? 0
     size += u.bonus.sizeMult ?? 0
+    beatBlast += u.bonus.beatBlastMult ?? 0
   }
 
   return {
@@ -134,6 +137,7 @@ export function computeModifiers(): PlayerModifiers {
     xpMult: 1 + xp,
     shieldRechargeMult: 1 + shieldRecharge,
     sizeMult: 1 + size,
+    beatBlastMult: 1 + beatBlast,
   }
 }
 
@@ -161,6 +165,7 @@ export function applyModifiers(player: { modifiers: PlayerModifiers; dashMaxChar
   player.modifiers.xpMult = mods.xpMult
   player.modifiers.shieldRechargeMult = mods.shieldRechargeMult
   player.modifiers.sizeMult = mods.sizeMult
+  player.modifiers.beatBlastMult = mods.beatBlastMult
 
   // Structural: extra HP
   let extraHp = 0

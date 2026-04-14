@@ -4,7 +4,7 @@
     {
       "name": "Enemy3",
       "color": "#ba68c8",
-      "hp": 20,
+      "hp": 8,
       "moveSpeed": 150,
       "radius": 60,
       "ringRadius": 120,
@@ -13,7 +13,7 @@
       "sound": "pop",
       "beats": [],
       "rings": [],
-      "blocksRings": true,
+      "blocksRings": false,
       "consume": true,
       "magnet": false,
       "magnetRange": 430,
@@ -26,12 +26,18 @@
       "revengeRadius": 300,
       "movePattern": "pursue",
       "totemSpawn": "",
-      "dropType": "xp"
+      "dropType": "hp",
+      "dropXp": 0,
+      "dropHp": 100,
+      "dropCount": 10,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": []
     },
     {
       "name": "Test_Save",
       "color": "#71dd3c",
-      "hp": 2,
+      "hp": 4,
       "moveSpeed": 120,
       "radius": 40,
       "ringRadius": 150,
@@ -81,126 +87,20 @@
       "revengeRadius": 120,
       "movePattern": "pursue",
       "totemSpawn": "",
-      "dropType": "hp"
-    },
-    {
-      "name": "Enemy4",
-      "color": "#7c4dff",
-      "hp": 3,
-      "moveSpeed": 200,
-      "radius": 20,
-      "ringRadius": 140,
-      "key": "4",
-      "role": "rim",
-      "sound": "rim",
-      "beats": [
-        0.5,
-        1.5,
-        2.5,
-        3.5,
-        4.5,
-        5.5,
-        6.5,
-        7.5
-      ],
-      "rings": [
-        {
-          "ringRadius": 140,
-          "sound": "rim",
-          "beats": [
-            0.5,
-            1.5,
-            2.5,
-            3.5,
-            4.5,
-            5.5,
-            6.5,
-            7.5
-          ],
-          "edgeMode": false,
-          "edgePoints": 3,
-          "edgeActive": 1,
-          "edgeSwitchBeats": 1
-        }
-      ],
-      "blocksRings": false,
-      "heavy": true,
-      "consume": true,
-      "magnet": false,
-      "magnetRange": 200,
-      "blink": false,
-      "blinkBeats": 4,
-      "volatile": false,
-      "volatileRange": 150,
-      "revenge": false,
-      "revengeRings": 4,
-      "revengeRadius": 120,
-      "movePattern": "stationary",
-      "totemSpawn": "dsd",
-      "dropType": "hp"
-    },
-    {
-      "name": "Enemy4_2",
-      "color": "#aeea00",
-      "hp": 6,
-      "moveSpeed": 50,
-      "radius": 80,
-      "ringRadius": 200,
-      "key": "4",
-      "role": "rim",
-      "sound": "rim",
-      "beats": [
-        0.5,
-        1.5,
-        2.5,
-        3.5,
-        4.5,
-        5.5,
-        6.5,
-        7.5
-      ],
-      "rings": [
-        {
-          "ringRadius": 200,
-          "sound": "rim",
-          "beats": [
-            0.5,
-            1.5,
-            2.5,
-            3.5,
-            4.5,
-            5.5,
-            6.5,
-            7.5
-          ],
-          "edgeMode": false,
-          "edgePoints": 3,
-          "edgeActive": 1,
-          "edgeSwitchBeats": 1
-        }
-      ],
-      "blocksRings": false,
-      "consume": false,
-      "magnet": false,
-      "magnetRange": 200,
-      "blink": false,
-      "blinkBeats": 4,
-      "volatile": false,
-      "volatileRange": 150,
-      "revenge": false,
-      "revengeRings": 4,
-      "revengeRadius": 120,
-      "movePattern": "stationary",
-      "totemSpawn": "Enemy5",
       "dropType": "hp",
-      "heavy": true
+      "dropXp": 0,
+      "dropHp": 100,
+      "dropCount": 1,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": []
     },
     {
       "name": "Enemy5",
       "color": "#cfd8dc",
-      "hp": 10,
+      "hp": 6,
       "moveSpeed": 50,
-      "radius": 60,
+      "radius": 80,
       "ringRadius": 140,
       "key": "5",
       "role": "rim",
@@ -239,24 +139,30 @@
       "consume": false,
       "magnet": false,
       "magnetRange": 200,
-      "blink": false,
+      "blink": true,
       "blinkBeats": 4,
-      "volatile": false,
-      "volatileRange": 150,
+      "volatile": true,
+      "volatileRange": 400,
       "revenge": false,
       "revengeRings": 4,
       "revengeRadius": 120,
-      "movePattern": "immovable",
+      "movePattern": "pursue",
       "totemSpawn": "Test_Save",
-      "dropType": "xp"
+      "dropType": "hp",
+      "dropXp": 0,
+      "dropHp": 100,
+      "dropCount": 5,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": []
     },
     {
       "name": "Enemy6",
       "color": "#f9a825",
-      "hp": 6,
-      "moveSpeed": 200,
-      "radius": 100,
-      "ringRadius": 200,
+      "hp": 10,
+      "moveSpeed": 80,
+      "radius": 80,
+      "ringRadius": 150,
       "key": "6",
       "role": "rim",
       "sound": "rim",
@@ -280,7 +186,7 @@
       ],
       "rings": [
         {
-          "ringRadius": 200,
+          "ringRadius": 150,
           "sound": "rim",
           "beats": [
             0,
@@ -299,26 +205,41 @@
             6.5,
             7,
             7.5
-          ]
+          ],
+          "edgeMode": false,
+          "edgePoints": 3,
+          "edgeActive": 1,
+          "edgeSwitchBeats": 1
         }
       ],
       "blocksRings": false,
-      "consume": true,
-      "magnet": true,
+      "consume": false,
+      "magnet": false,
       "magnetRange": 370,
       "blink": false,
       "blinkBeats": 4,
-      "movePattern": "lunge",
-      "totemSpawn": "Enemy3",
-      "dropType": "xp"
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "movePattern": "zigzag",
+      "totemSpawn": "Enemy8",
+      "dropType": "hp",
+      "dropXp": 0,
+      "dropHp": 100,
+      "dropCount": 5,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": []
     },
     {
       "name": "Enemy7",
       "color": "#ff5722",
-      "hp": 2,
-      "moveSpeed": 50,
-      "radius": 30,
-      "ringRadius": 210,
+      "hp": 12,
+      "moveSpeed": 130,
+      "radius": 130,
+      "ringRadius": 130,
       "key": "7",
       "role": "rim",
       "sound": "rim",
@@ -334,7 +255,7 @@
       ],
       "rings": [
         {
-          "ringRadius": 210,
+          "ringRadius": 130,
           "sound": "rim",
           "beats": [
             0,
@@ -348,7 +269,25 @@
           ],
           "edgeMode": true,
           "edgePoints": 5,
-          "edgeActive": 2,
+          "edgeActive": 3,
+          "edgeSwitchBeats": 1
+        },
+        {
+          "ringRadius": 270,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ],
+          "edgeMode": false,
+          "edgePoints": 3,
+          "edgeActive": 1,
           "edgeSwitchBeats": 1
         }
       ],
@@ -360,15 +299,24 @@
       "blinkBeats": 4,
       "volatile": false,
       "volatileRange": 150,
-      "movePattern": "pursue",
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "movePattern": "orbit",
       "totemSpawn": "",
-      "dropType": "xp"
+      "dropType": "xp",
+      "dropXp": 100,
+      "dropHp": 0,
+      "dropCount": 10,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": []
     },
     {
       "name": "Enemy8",
       "color": "#e91e63",
-      "hp": 2,
-      "moveSpeed": 50,
+      "hp": 3,
+      "moveSpeed": 160,
       "radius": 40,
       "ringRadius": 140,
       "key": "8",
@@ -405,7 +353,6 @@
         }
       ],
       "blocksRings": false,
-      "heavy": true,
       "consume": false,
       "magnet": false,
       "magnetRange": 200,
@@ -416,9 +363,15 @@
       "revenge": false,
       "revengeRings": 4,
       "revengeRadius": 120,
-      "movePattern": "stationary",
+      "movePattern": "zigzag",
       "totemSpawn": "",
-      "dropType": "xp"
+      "dropType": "hp",
+      "dropXp": 0,
+      "dropHp": 100,
+      "dropCount": 1,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": []
     },
     {
       "name": "Enemy9",
@@ -446,26 +399,412 @@
       "movePattern": "pursue",
       "totemSpawn": "",
       "dropType": "xp",
+      "dropXp": 100,
+      "dropHp": 0,
+      "dropCount": 1,
       "summon": true,
       "summonNodes": 3,
       "summonPhases": [
         {
           "spawns": [
             {
-              "enemyName": "Enemy3",
-              "count": 2
+              "enemyName": "Enemy13",
+              "count": 1
             }
           ]
         },
         {
           "spawns": [
             {
-              "enemyName": "SHOP",
+              "enemyName": "Enemy6",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "spawns": [
+            {
+              "enemyName": "Bounce_Totem",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "spawns": [
+            {
+              "enemyName": "Enemy11",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "spawns": [
+            {
+              "enemyName": "Enemy5",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "spawns": [
+            {
+              "enemyName": "Enemy15",
+              "count": 1
+            }
+          ]
+        },
+        {
+          "spawns": [
+            {
+              "enemyName": "Enemy7",
               "count": 1
             }
           ]
         }
       ]
+    },
+    {
+      "name": "Enemy10",
+      "color": "#ef5350",
+      "hp": 2,
+      "moveSpeed": 340,
+      "radius": 50,
+      "ringRadius": 200,
+      "key": "9",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0.5,
+        1.5,
+        2.5,
+        3.5,
+        4.5,
+        5.5,
+        6.5,
+        7.5
+      ],
+      "rings": [
+        {
+          "ringRadius": 200,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ],
+          "edgeMode": false,
+          "edgePoints": 3,
+          "edgeActive": 1,
+          "edgeSwitchBeats": 1
+        }
+      ],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "movePattern": "bounce",
+      "totemSpawn": "",
+      "dropType": "hp",
+      "dropXp": 0,
+      "dropHp": 100,
+      "dropCount": 1,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": []
+    },
+    {
+      "name": "Enemy11",
+      "color": "#00838f",
+      "hp": 8,
+      "moveSpeed": 50,
+      "radius": 150,
+      "ringRadius": 120,
+      "key": "10",
+      "role": "pop",
+      "sound": "pop",
+      "beats": [],
+      "rings": [],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "movePattern": "immovable",
+      "totemSpawn": "Enemy12",
+      "dropType": "hp",
+      "dropXp": 0,
+      "dropHp": 100,
+      "dropCount": 5,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": []
+    },
+    {
+      "name": "Enemy12",
+      "color": "#039be5",
+      "hp": 6,
+      "moveSpeed": 50,
+      "radius": 85,
+      "ringRadius": 120,
+      "key": "11",
+      "role": "pop",
+      "sound": "pop",
+      "beats": [],
+      "rings": [],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "movePattern": "immovable",
+      "totemSpawn": "",
+      "dropType": "hp",
+      "dropXp": 0,
+      "dropHp": 100,
+      "dropCount": 1,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": []
+    },
+    {
+      "name": "Enemy13",
+      "color": "#9c27b0",
+      "hp": 5,
+      "moveSpeed": 100,
+      "radius": 120,
+      "ringRadius": 180,
+      "key": "12",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0.5,
+        1.5,
+        2.5,
+        3.5,
+        4.5,
+        5.5,
+        6.5,
+        7.5
+      ],
+      "rings": [
+        {
+          "ringRadius": 180,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ],
+          "edgeMode": false,
+          "edgePoints": 3,
+          "edgeActive": 1,
+          "edgeSwitchBeats": 1
+        }
+      ],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "movePattern": "pursue",
+      "totemSpawn": "Enemy14",
+      "dropType": "hp",
+      "dropXp": 0,
+      "dropHp": 100,
+      "dropCount": 5,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": []
+    },
+    {
+      "name": "Enemy14",
+      "color": "#e040fb",
+      "hp": 3,
+      "moveSpeed": 200,
+      "radius": 70,
+      "ringRadius": 140,
+      "key": "13",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0.5,
+        1.5,
+        2.5,
+        3.5,
+        4.5,
+        5.5,
+        6.5,
+        7.5
+      ],
+      "rings": [
+        {
+          "ringRadius": 140,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ],
+          "edgeMode": false,
+          "edgePoints": 3,
+          "edgeActive": 1,
+          "edgeSwitchBeats": 1
+        }
+      ],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "movePattern": "orbit",
+      "totemSpawn": "",
+      "dropType": "hp",
+      "dropXp": 0,
+      "dropHp": 100,
+      "dropCount": 1,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": []
+    },
+    {
+      "name": "Enemy15",
+      "color": "#9c27b0",
+      "hp": 8,
+      "moveSpeed": 50,
+      "radius": 120,
+      "ringRadius": 120,
+      "key": "14",
+      "role": "pop",
+      "sound": "pop",
+      "beats": [],
+      "rings": [],
+      "blocksRings": false,
+      "consume": true,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": true,
+      "revengeRings": 3,
+      "revengeRadius": 100,
+      "movePattern": "pursue",
+      "totemSpawn": "Enemy3",
+      "dropType": "hp",
+      "dropXp": 0,
+      "dropHp": 100,
+      "dropCount": 10,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": []
+    },
+    {
+      "name": "Bounce_Totem",
+      "color": "#aeea00",
+      "hp": 6,
+      "moveSpeed": 330,
+      "radius": 100,
+      "ringRadius": 200,
+      "key": "4",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0.5,
+        1.5,
+        2.5,
+        3.5,
+        4.5,
+        5.5,
+        6.5,
+        7.5
+      ],
+      "rings": [
+        {
+          "ringRadius": 200,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ],
+          "edgeMode": false,
+          "edgePoints": 3,
+          "edgeActive": 1,
+          "edgeSwitchBeats": 1
+        }
+      ],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "movePattern": "bounce",
+      "totemSpawn": "Enemy10",
+      "dropType": "hp",
+      "dropXp": 0,
+      "dropHp": 100,
+      "dropCount": 5,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": []
     }
   ]
 }

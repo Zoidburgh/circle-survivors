@@ -55,6 +55,10 @@ let globalBeatPulse = 0  // 0→1 on ring fire, decays — used by all beat-sync
 let bgPulseSmooth = 0    // smoothed follower for background color
 let outerPulseIntensity = 0
 let dashSweepIntensity = 0
+let beatDashFlash = 0       // countdown for beat dash shockwave visual
+let beatDashX = 0
+let beatDashY = 0
+let beatDashRadius = 0
 let dashSweepRadius = 0
 let ringPeakX = 0  // player position at ring peak — for aligned post-peak effects
 let ringPeakY = 0
@@ -604,6 +608,20 @@ function spawnParticle(
   particles.push({ x, y, vx, vy, r, g, b, life: 0, lifetime, size })
 }
 
+export function triggerBeatDashFlash(x: number, y: number, radius: number): void {
+  beatDashFlash = 0.32
+  beatDashX = x
+  beatDashY = y
+  beatDashRadius = radius
+}
+
+export function spawnParticleExport(
+  x: number, y: number, vx: number, vy: number,
+  r: number, g: number, b: number, lifetime: number, size: number
+): void {
+  spawnParticle(x, y, vx, vy, r, g, b, lifetime, size)
+}
+
 function spawnRingParticles(
   cx: number, cy: number, radius: number,
   ri: number, gi: number, bi: number,
@@ -984,6 +1002,57 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfStart('player')
   drawPlayer(player)
   perfEnd('player')
+
+  // Beat dash shockwave — drawn on top of everything
+  if (beatDashFlash > 0) {
+    beatDashFlash -= lastDt
+    const t = beatDashFlash / 0.32  // 1→0
+    const bsx = beatDashX - camX
+    const bsy = beatDashY - camY
+
+    // White area flash — exact hitbox size
+    ctx.beginPath()
+    ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(255, 255, 255, ${t * t * 0.15})`
+    ctx.fill()
+
+    // Red shockwave expanding to fill attack range — on top
+    const shockExpand = Math.min((1 - t) * 3, 1)  // reaches full in first third
+    const shockR = beatDashRadius * shockExpand
+    if (shockR > 2) {
+      ctx.beginPath()
+      ctx.arc(bsx, bsy, shockR, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 40, 40, ${t * 0.25})`
+      ctx.fill()
+      ctx.strokeStyle = `rgba(255, 60, 60, ${t * 0.6})`
+      ctx.lineWidth = 4 * t
+      ctx.stroke()
+    }
+
+    // Cyan border at exact hitbox edge
+    ctx.beginPath()
+    ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(0, 255, 255, ${t * 0.6})`
+    ctx.lineWidth = 2 * t + 1
+    ctx.stroke()
+
+    // Disintegration particles breaking off the edge
+    if (Math.random() < 0.6 + (1 - t) * 0.4) {
+      const count = Math.ceil(3 + (1 - t) * 4)  // more particles as it fades
+      for (let p = 0; p < count; p++) {
+        const pa = Math.random() * Math.PI * 2
+        const dist = beatDashRadius * (0.6 + Math.random() * 0.4)
+        const px = beatDashX + Math.cos(pa) * dist
+        const py = beatDashY + Math.sin(pa) * dist
+        const speed = 20 + Math.random() * 40
+        const outA = pa + (Math.random() - 0.5) * 1.5
+        spawnParticle(px, py,
+          Math.cos(outA) * speed, Math.sin(outA) * speed - 15,
+          255, 60 + Math.floor(Math.random() * 60), 50 + Math.floor(Math.random() * 50),
+          0.15 + Math.random() * 0.12, 2 + Math.random() * 2)
+      }
+    }
+  }
 
   updateAndDrawSpawnEffects(lastDt)
   updateAndDrawAbsorbEffects(lastDt, player)
@@ -2955,14 +3024,14 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const angle = enemy.revengeAngle + (i / spikeCount) * Math.PI * 2
       const baseX = sx + Math.cos(angle) * r
       const baseY = sy + Math.sin(angle) * r
-      const tipLen = (9 + fireFlash * 5) * scale
-      const glowWidth = (8 + fireFlash * 3) * scale
-      const coreWidth = (4.5 + fireFlash * 2) * scale
+      const tipLen = (12 + fireFlash * 16) * scale
+      const glowWidth = (10 + fireFlash * 10) * scale
+      const coreWidth = (6 + fireFlash * 6.5) * scale
       const tipX = sx + Math.cos(angle) * (r + tipLen)
       const tipY = sy + Math.sin(angle) * (r + tipLen)
       const fR = Math.round(255)
-      const fG = Math.round(60 + fireFlash * 140)
-      const fB = Math.round(40 + fireFlash * 150)
+      const fG = Math.round(60 + fireFlash * 195)
+      const fB = Math.round(40 + fireFlash * 215)
 
       // Glow
       ctx.beginPath()
@@ -3048,8 +3117,8 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   // Immovable indicator — glowing anchor brackets
   if (enemy.immovable && r > 5) {
     const scale = r / 44
-    const br = r + 6 * scale
-    const bLen = r * 0.3
+    const br = r - 2 * scale
+    const bLen = r * 0.22
     const anchorPulse = 0.5 + 0.5 * Math.sin(performance.now() / 600)
     const amberR = 255
     const amberG = Math.round(180 + anchorPulse * 40)

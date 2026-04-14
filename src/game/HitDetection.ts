@@ -1,7 +1,7 @@
 import { on, emit } from '../core/EventBus.ts'
 import { getPlayer, getGrid, getEnemies } from '../core/GameState.ts'
 import { getEffectiveRadius, hurtPlayer } from '../entities/Player.ts'
-import { damageEnemy, getRingOrigins } from '../entities/Enemy.ts'
+import { damageEnemy, getRingOrigins, spawnDrops } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { getRingExpansion, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { distance } from '../utils/math.ts'
@@ -99,8 +99,7 @@ export function initHitDetection(): void {
     const multiKill = killedEnemies.length >= 2 && hasBonus('multiKillBonus')
     const orbValue = multiKill ? 2 : 1
     for (const dead of killedEnemies) {
-      if (dead.dropType === 'none') continue
-      spawnOrb(dead.x, dead.y, orbValue, dead.dropType)
+      spawnDrops(dead, orbValue, spawnOrb)
     }
 
     // Check orbs along the same sweep (grid-accelerated)

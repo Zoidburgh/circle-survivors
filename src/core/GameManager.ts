@@ -1,7 +1,8 @@
 import * as Input from '../game/InputManager.ts'
 import * as Renderer from '../render/Renderer.ts'
-import { updatePlayer, hurtPlayer } from '../entities/Player.ts'
-import { createEnemy, updateEnemy, updateDeath, damageEnemy } from '../entities/Enemy.ts'
+import { updatePlayer, hurtPlayer, getEffectiveRadius } from '../entities/Player.ts'
+import type { Player } from '../entities/Player.ts'
+import { createEnemy, updateEnemy, updateDeath, damageEnemy, spawnDrops } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { advanceGlobalTime } from './RhythmClock.ts'
 import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
@@ -142,6 +143,37 @@ on('enemy:revenge', (enemy: Enemy) => {
     const oy = enemy.y + Math.sin(angle) * enemy.radius
     origins.push({ x: ox, y: oy })
     Renderer.spawnRevengeRingParticles(ox, oy, enemy.revengeRadius, enemy.cr, enemy.cg, enemy.cb, expandTime)
+    // Immediate muzzle burst from spike tip on hit
+    for (let p = 0; p < 12; p++) {
+      const spread = (Math.random() - 0.5) * 1.0
+      const pa = angle + spread
+      const speed = 350 + Math.random() * 400
+      Renderer.spawnParticleExport(ox, oy,
+        Math.cos(pa) * speed, Math.sin(pa) * speed,
+        255, 160 + Math.floor(Math.random() * 60), 50 + Math.floor(Math.random() * 80),
+        0.35 + Math.random() * 0.2, 6 + Math.random() * 5)
+    }
+    for (let p = 0; p < 6; p++) {
+      const spread = (Math.random() - 0.5) * 0.6
+      const pa = angle + spread
+      const speed = 450 + Math.random() * 400
+      Renderer.spawnParticleExport(ox, oy,
+        Math.cos(pa) * speed, Math.sin(pa) * speed,
+        255, 100 + Math.floor(Math.random() * 80), 200 + Math.floor(Math.random() * 55),
+        0.3 + Math.random() * 0.15, 4 + Math.random() * 3)
+    }
+    // Charging particles — converge from outside to the fire point
+    for (let p = 0; p < 12; p++) {
+      const pa = angle + (Math.random() - 0.5) * 2
+      const dist = enemy.revengeRadius * 0.3 + Math.random() * enemy.revengeRadius * 0.5
+      const px = ox + Math.cos(pa) * dist
+      const py = oy + Math.sin(pa) * dist
+      const speed = 120 + Math.random() * 100
+      const toAngle = Math.atan2(oy - py, ox - px)
+      Renderer.spawnParticleExport(px, py,
+        Math.cos(toAngle) * speed, Math.sin(toAngle) * speed,
+        enemy.cr, enemy.cg, enemy.cb, 0.5 + Math.random() * 0.3, 4 + Math.random() * 3)
+    }
   }
   pendingRevenges.push({ origins, radius: enemy.revengeRadius, damage: enemy.damage, timer: 0, expandTime, consume: enemy.consume, enemy })
 })
@@ -155,6 +187,85 @@ on('enemy:killed', (enemy: Enemy) => {
     r: enemy.cr, g: enemy.cg, b: enemy.cb,
     timer: 0,
   })
+})
+
+// On-beat dash shockwave — area damage at dash start position
+on('player:beatDash', (player: Player) => {
+  const shockRadius = getEffectiveRadius(player) * 0.6 * player.modifiers.beatBlastMult
+  const damage = player.damage * player.modifiers.damageMult
+  const enemies = getEnemies()
+  for (const enemy of enemies) {
+    if (!enemy.alive || enemy.dying) continue
+    if (enemy.summon) {
+      // Check if shockwave hits active summon node
+      const N = enemy.summonNodes
+      const activeIdx = enemy.summonBeatCount % N
+      const baseRot = performance.now() / 2000
+      const nodeAngle = baseRot + (activeIdx / N) * Math.PI * 2
+      const orbitR = enemy.radius * 0.55
+      const nodeR = Math.max(8, enemy.radius * 0.34)
+      const nodeX = enemy.x + Math.cos(nodeAngle) * orbitR
+      const nodeY = enemy.y + Math.sin(nodeAngle) * orbitR
+      const ndx = nodeX - player.x
+      const ndy = nodeY - player.y
+      if (ndx * ndx + ndy * ndy <= (shockRadius + nodeR) * (shockRadius + nodeR)) {
+        // Hit the active node — same logic as ring hit
+        if (enemy.summonProgress === 0) {
+          enemy.summonNodeStates[activeIdx] = 'locked'
+          enemy.summonLockFlash[activeIdx] = 0.3
+          enemy.summonStartOffset = activeIdx
+          enemy.summonProgress = 1
+        } else {
+          const expected = (enemy.summonStartOffset + enemy.summonProgress) % N
+          if (activeIdx === expected) {
+            enemy.summonNodeStates[activeIdx] = 'locked'
+            enemy.summonLockFlash[activeIdx] = 0.3
+            enemy.summonProgress++
+          }
+        }
+        if (enemy.summonProgress >= N && enemy.summonActivationTimer <= 0) {
+          enemy.summonActivationTimer = BEAT_SEC * 0.5
+        }
+      }
+      continue
+    }
+    const dx = enemy.x - player.x
+    const dy = enemy.y - player.y
+    const hitRange = shockRadius + enemy.radius
+    if (dx * dx + dy * dy <= hitRange * hitRange) {
+      const wasDying = enemy.dying
+      damageEnemy(enemy, damage)
+      // Totem spawn on hit
+      if (enemy.totemSpawn) {
+        emit('totem:spawn', enemy)
+      }
+      // Revenge on hit
+      if (enemy.revenge) {
+        emit('enemy:revenge', enemy)
+      }
+      if (enemy.dying && !wasDying) {
+        spawnDrops(enemy, 1, spawnOrb)
+      }
+    }
+  }
+  // Collect orbs in blast area
+  const allOrbs = getOrbs()
+  for (const orb of allOrbs) {
+    if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
+    const odx = orb.x - player.x
+    const ody = orb.y - player.y
+    if (odx * odx + ody * ody <= (shockRadius + orb.radius) * (shockRadius + orb.radius)) {
+      collectOrb(orb)
+      if (orb.orbType === 'hp') {
+        player.hp = Math.min(player.hp + 1, player.maxHp)
+      } else {
+        player.xp += orb.value * player.modifiers.xpMult
+      }
+    }
+  }
+  // Visual — shockwave flash on top of everything + particles
+  Renderer.triggerBeatDashFlash(player.x, player.y, shockRadius)
+  Renderer.spawnVolatileParticles(player.x, player.y, shockRadius, 0, 230, 255)
 })
 
 // Shield audio events
@@ -336,7 +447,7 @@ export function update(dt: number): void {
     if (exp.timer >= BEAT_SEC) {
       // Damage all enemies in range (check current pos + blink destination)
       for (const enemy of enemies) {
-        if (!enemy.alive || enemy.dying) continue
+        if (!enemy.alive || enemy.dying || enemy.summon) continue
         const dx = enemy.x - exp.x
         const dy = enemy.y - exp.y
         const hitRange = exp.range + enemy.radius  // include enemy body
@@ -359,9 +470,9 @@ export function update(dt: number): void {
           if (enemy.totemSpawn) {
             emit('totem:spawn', enemy)
           }
-          // Spawn orb if killed by explosion
-          if (enemy.dying && !wasDying && enemy.dropType !== 'none') {
-            spawnOrb(enemy.x, enemy.y, 1, enemy.dropType)
+          // Spawn orbs if killed by explosion
+          if (enemy.dying && !wasDying) {
+            spawnDrops(enemy, 1, spawnOrb)
           }
         }
       }
@@ -463,6 +574,16 @@ export function update(dt: number): void {
             enemy.y += ny * overlap * 0.1
             oe.x -= nx * overlap * 0.9
             oe.y -= ny * overlap * 0.9
+            // Reflect bounce velocity off immovable
+            if (oe.movePattern === 'bounce') {
+              const bnx = -nx  // normal points from oe toward immovable
+              const bny = -ny
+              const dot = oe.bounceVx * bnx + oe.bounceVy * bny
+              if (dot < 0) {
+                oe.bounceVx -= 2 * dot * bnx
+                oe.bounceVy -= 2 * dot * bny
+              }
+            }
           }
         }
       }
@@ -491,6 +612,14 @@ export function update(dt: number): void {
             const overlap = minDist - dist
             enemy.x += nx * overlap
             enemy.y += ny * overlap
+            // Reflect bounce velocity off immovable
+            if (enemy.movePattern === 'bounce') {
+              const dot = enemy.bounceVx * nx + enemy.bounceVy * ny
+              if (dot < 0) {
+                enemy.bounceVx -= 2 * dot * nx
+                enemy.bounceVy -= 2 * dot * ny
+              }
+            }
           } else {
             const overlap = (minDist - dist) * 0.5
             enemy.x += nx * overlap
