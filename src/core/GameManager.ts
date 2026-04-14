@@ -7,7 +7,7 @@ import type { Enemy } from '../entities/Enemy.ts'
 import { advanceGlobalTime } from './RhythmClock.ts'
 import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
 import { advancePatternClock } from '../audio/PatternClock.ts'
-import { getPlayer, getEnemies, getGrid, getCamera, getPhase, getXpForNextLevel } from './GameState.ts'
+import { getPlayer, getEnemies, getGrid, getCamera, getPhase, setPhase, getXpForNextLevel, startRunTimer, advanceRunTimer, isRunTimerActive, isRunComplete, completeRun } from './GameState.ts'
 import { updateOrbs, cleanupOrbs, getOrbs, spawnOrb, collectOrb } from '../entities/XPOrb.ts'
 import type { XPOrb } from '../entities/XPOrb.ts'
 import { updateCamera, clampToArena, getArenaShape, setArenaShape } from '../game/Arena.ts'
@@ -274,6 +274,10 @@ on('player:shieldRestore', () => playShieldRestore())
 
 // Summon phase completion — spawn enemies, advance or kill summoner
 on('summon:phase', (enemy: Enemy) => {
+  // Start run timer on first summon spawn
+  if (!isRunTimerActive() && !isRunComplete()) {
+    startRunTimer()
+  }
   const phase = enemy.summonPhases[enemy.summonCurrentPhase]
   if (phase) {
     // Check if this is a SHOP phase
@@ -326,8 +330,7 @@ on('summon:phase', (enemy: Enemy) => {
 export function update(dt: number): void {
   const phase = getPhase()
 
-  if (phase === 'title') {
-    // Still advance pattern clock so it stays synced with audio
+  if (phase === 'title' || phase === 'dead') {
     advancePatternClock(dt)
     return
   }
@@ -396,6 +399,11 @@ export function update(dt: number): void {
   perfStart('u_player')
   updatePlayer(player, dt)
   perfEnd('u_player')
+
+  // Death check
+  if (player.hp <= 0 && getPhase() === 'playing') {
+    setPhase('dead')
+  }
 
   const dir = Input.getMovementDir()
   updateCamera(cam, player.x, player.y, dir.x, dir.y, window.innerWidth, window.innerHeight, dt)
@@ -744,6 +752,18 @@ export function update(dt: number): void {
 
   // Check for level up
   tryTriggerUpgrade()
+
+  // Run timer
+  advanceRunTimer(dt)
+
+  // Win condition — all enemies dead while timer is running
+  if (isRunTimerActive()) {
+    const anyAlive = enemies.some(e => e.alive)
+    if (!anyAlive) {
+      completeRun()
+    }
+  }
+
   perfEnd('U_TOTAL')
 }
 

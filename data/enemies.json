@@ -4,7 +4,7 @@
     {
       "name": "Enemy3",
       "color": "#ba68c8",
-      "hp": 8,
+      "hp": 6,
       "moveSpeed": 150,
       "radius": 60,
       "ringRadius": 120,
@@ -29,7 +29,7 @@
       "dropType": "hp",
       "dropXp": 0,
       "dropHp": 100,
-      "dropCount": 10,
+      "dropCount": 5,
       "summon": false,
       "summonNodes": 3,
       "summonPhases": []
@@ -151,7 +151,7 @@
       "dropType": "hp",
       "dropXp": 0,
       "dropHp": 100,
-      "dropCount": 5,
+      "dropCount": 3,
       "summon": false,
       "summonNodes": 3,
       "summonPhases": []
@@ -160,7 +160,7 @@
       "name": "Enemy6",
       "color": "#f9a825",
       "hp": 10,
-      "moveSpeed": 80,
+      "moveSpeed": 100,
       "radius": 80,
       "ringRadius": 150,
       "key": "6",
@@ -168,21 +168,13 @@
       "sound": "rim",
       "beats": [
         0,
-        0.5,
         1,
-        1.5,
         2,
-        2.5,
         3,
-        3.5,
         4,
-        4.5,
         5,
-        5.5,
         6,
-        6.5,
-        7,
-        7.5
+        7
       ],
       "rings": [
         {
@@ -190,21 +182,13 @@
           "sound": "rim",
           "beats": [
             0,
-            0.5,
             1,
-            1.5,
             2,
-            2.5,
             3,
-            3.5,
             4,
-            4.5,
             5,
-            5.5,
             6,
-            6.5,
-            7,
-            7.5
+            7
           ],
           "edgeMode": false,
           "edgePoints": 3,
@@ -316,7 +300,7 @@
       "name": "Enemy8",
       "color": "#e91e63",
       "hp": 3,
-      "moveSpeed": 160,
+      "moveSpeed": 190,
       "radius": 40,
       "ringRadius": 140,
       "key": "8",
@@ -467,7 +451,7 @@
       "name": "Enemy10",
       "color": "#ef5350",
       "hp": 2,
-      "moveSpeed": 340,
+      "moveSpeed": 400,
       "radius": 50,
       "ringRadius": 200,
       "key": "9",
@@ -552,7 +536,7 @@
       "dropType": "hp",
       "dropXp": 0,
       "dropHp": 100,
-      "dropCount": 5,
+      "dropCount": 3,
       "summon": false,
       "summonNodes": 3,
       "summonPhases": []
@@ -801,10 +785,61 @@
       "dropType": "hp",
       "dropXp": 0,
       "dropHp": 100,
-      "dropCount": 5,
+      "dropCount": 3,
       "summon": false,
       "summonNodes": 3,
       "summonPhases": []
+    }
+  ],
+  "challenges": [
+    {
+      "name": "Challenge 1",
+      "arenaShape": "pill",
+      "enemies": [
+        {
+          "typeName": "Enemy9",
+          "x": 998,
+          "y": 685.8356572091066
+        }
+      ]
+    },
+    {
+      "name": "Challenge 2",
+      "arenaShape": "hex",
+      "enemies": [
+        {
+          "typeName": "Enemy9",
+          "x": 821.3758167353237,
+          "y": 276.5
+        }
+      ]
+    },
+    {
+      "name": "Challenge 3",
+      "arenaShape": "circle",
+      "enemies": [
+        {
+          "typeName": "Enemy11",
+          "x": 466.99900305678693,
+          "y": 275.5
+        },
+        {
+          "typeName": "Enemy11",
+          "x": 1020,
+          "y": 582.5
+        }
+      ]
+    },
+    {
+      "name": "Challenge 4",
+      "arenaShape": "pill",
+      "enemies": [
+        {
+          "typeName": "Enemy9",
+          "x": 739,
+          "y": 558.5
+        }
+      ]
     }
   ]
 }

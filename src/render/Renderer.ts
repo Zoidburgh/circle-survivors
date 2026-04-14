@@ -11,8 +11,9 @@ import type { Camera } from '../game/Arena.ts'
 import { ARENA_W, ARENA_H, ARENA_RADIUS, ARENA_CX, ARENA_CY, PILL_R, PILL_HALF_W, CROSS_HW, CROSS_HE, getArenaShape, getHexVertices, getCrossVertices } from '../game/Arena.ts'
 import { getBlockedArcs } from '../game/RingOcclusion.ts'
 import { getRitualGroups, getActiveIndex } from '../game/RitualNodes.ts'
+import { isPlaceMode, getPlacingEnemies, getSelectedPlacement } from '../game/ChallengeBuilder.ts'
 import type { BlockedArc } from '../game/RingOcclusion.ts'
-import { getEnemies } from '../core/GameState.ts'
+import { getEnemies, getRunTimer, isRunTimerActive, isRunComplete, getRunFinalTime, getPhase } from '../core/GameState.ts'
 import { hasBonus } from '../game/UpgradeManager.ts'
 import { getOrbs } from '../entities/XPOrb.ts'
 import { getBeatName } from '../audio/AudioEngine.ts'
@@ -1084,6 +1085,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
 
   drawDesignerPreview(player)
   drawSpawnPanel()
+  drawChallengePlacements()
   drawHUD(player, enemies, fps)
   perfEnd('R_TOTAL')
   perfFlush()
@@ -4494,7 +4496,7 @@ export function drawTitleScreen(dt: number): void {
   }
 
   // Start button
-  const btnY = height * 0.55
+  const btnY = height * 0.52
   const btnW = 200
   const btnH = 50
   const btnPulse = 0.5 + 0.5 * Math.sin(now * 3)
@@ -4518,7 +4520,7 @@ export function drawTitleScreen(dt: number): void {
   ctx.fill()
 
   // Button text
-  ctx.font = 'bold 20px monospace'
+  ctx.font = 'bold 26px monospace'
   ctx.textAlign = 'center'
   ctx.fillStyle = `rgba(0, 255, 255, ${0.7 + btnPulse * 0.15 + btnBeat * 0.15})`
   ctx.fillText('S T A R T', cx, btnY + btnH / 2 + 7)
@@ -4584,6 +4586,43 @@ function drawSpawnPanel(): void {
   }
 }
 
+function drawChallengePlacements(): void {
+  if (!isPlaceMode()) return
+  const placements = getPlacingEnemies()
+  const selected = getSelectedPlacement()
+  for (let i = 0; i < placements.length; i++) {
+    const e = placements[i]!
+    const type = ENEMY_TYPES.find(t => t.name === e.typeName)
+    const r = type?.radius ?? 40
+    const sx = e.x - camX
+    const sy = e.y - camY
+    const isSelected = i === selected
+    const hr = parseInt((type?.color ?? '#888888').slice(1, 3), 16)
+    const hg = parseInt((type?.color ?? '#888888').slice(3, 5), 16)
+    const hb = parseInt((type?.color ?? '#888888').slice(5, 7), 16)
+
+    // Ghost body
+    ctx.globalAlpha = 0.5
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, 0.3)`
+    ctx.fill()
+    ctx.strokeStyle = isSelected ? '#FFD740' : `rgba(${hr}, ${hg}, ${hb}, 0.6)`
+    ctx.lineWidth = isSelected ? 3 : 2
+    ctx.setLineDash(isSelected ? [] : [4, 4])
+    ctx.stroke()
+    ctx.setLineDash([])
+    ctx.globalAlpha = 1
+
+    // Name label
+    ctx.font = '10px monospace'
+    ctx.textAlign = 'center'
+    ctx.fillStyle = isSelected ? '#FFD740' : 'rgba(255,255,255,0.5)'
+    ctx.fillText(e.typeName, sx, sy + r + 12)
+    ctx.textAlign = 'left'
+  }
+}
+
 function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
   ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
   ctx.font = '12px monospace'
@@ -4598,6 +4637,121 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
   ctx.fillText(`Beat: ${getBeatName()} | Song: ${pat?.name ?? 'none'} [${loopPos.toFixed(1)}/${loopLen}]`, x - 80, 84)
   ctx.fillText(`WASD=move  LMB=dash  Tab=designer  F1-F11=beats`, 10, height - 12)
   ctx.fillText(`1-5=spawn  0=spawn 100`, 10, height - 28)
+
+  // Run timer — top center
+  if (isRunTimerActive() || isRunComplete()) {
+    const time = isRunComplete() ? getRunFinalTime() : getRunTimer()
+    const mins = Math.floor(time / 60)
+    const secs = Math.floor(time % 60)
+    const ms = Math.floor((time % 1) * 100)
+    const timeStr = `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`
+    ctx.font = 'bold 24px monospace'
+    ctx.textAlign = 'center'
+    ctx.fillStyle = isRunComplete() ? 'rgba(100, 255, 160, 0.9)' : 'rgba(255, 255, 255, 0.7)'
+    ctx.fillText(timeStr, width / 2, 30)
+    ctx.textAlign = 'left'
+  }
+
+  // Victory screen overlay
+  if (isRunComplete()) {
+    const time = getRunFinalTime()
+    const mins = Math.floor(time / 60)
+    const secs = Math.floor(time % 60)
+    const ms = Math.floor((time % 1) * 100)
+    const timeStr = `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`
+
+    // Semi-transparent overlay
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'
+    ctx.fillRect(0, 0, width, height)
+
+    const vcx = width / 2
+    const vcy = height * 0.4
+
+    // Title
+    ctx.font = 'bold 48px monospace'
+    ctx.textAlign = 'center'
+    ctx.fillStyle = 'rgba(100, 255, 160, 0.95)'
+    ctx.fillText('VICTORY', vcx, vcy)
+
+    // Time
+    ctx.font = 'bold 36px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
+    ctx.fillText(timeStr, vcx, vcy + 50)
+
+    // Hint
+    ctx.font = '14px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
+    ctx.fillText('Press Space to return to menu', vcx, vcy + 90)
+
+    ctx.textAlign = 'left'
+  }
+
+  // Death screen
+  if (getPhase() === 'dead') {
+    const time = getRunTimer()
+    const mins = Math.floor(time / 60)
+    const secs = Math.floor(time % 60)
+    const ms = Math.floor((time % 1) * 100)
+    const timeStr = `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`
+
+    // Dark overlay
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'
+    ctx.fillRect(0, 0, width, height)
+
+    // Red vignette
+    const deathVig = ctx.createRadialGradient(width / 2, height / 2, height * 0.2, width / 2, height / 2, height * 0.7)
+    deathVig.addColorStop(0, 'rgba(0, 0, 0, 0)')
+    deathVig.addColorStop(1, 'rgba(180, 20, 20, 0.3)')
+    ctx.fillStyle = deathVig
+    ctx.fillRect(0, 0, width, height)
+
+    const dcx = width / 2
+    const dcy = height * 0.38
+
+    // Title
+    ctx.font = 'bold 48px monospace'
+    ctx.textAlign = 'center'
+    ctx.fillStyle = 'rgba(255, 60, 60, 0.95)'
+    ctx.fillText('DEFEATED', dcx, dcy)
+
+    // Time survived
+    ctx.font = '18px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
+    ctx.fillText(`Time: ${timeStr}`, dcx, dcy + 40)
+
+    // Buttons
+    const btnW = 180
+    const btnH = 44
+    const btnGap = 16
+    const restartY = dcy + 80
+    const menuY = restartY + btnH + btnGap
+
+    // Restart button
+    ctx.beginPath()
+    ctx.roundRect(dcx - btnW / 2, restartY, btnW, btnH, 6)
+    ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)'
+    ctx.lineWidth = 2
+    ctx.stroke()
+    ctx.fillStyle = 'rgba(0, 255, 255, 0.08)'
+    ctx.fill()
+    ctx.font = 'bold 18px monospace'
+    ctx.fillStyle = 'rgba(0, 255, 255, 0.8)'
+    ctx.fillText('R E S T A R T', dcx, restartY + btnH / 2 + 6)
+
+    // Menu button
+    ctx.beginPath()
+    ctx.roundRect(dcx - btnW / 2, menuY, btnW, btnH, 6)
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)'
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'
+    ctx.fill()
+    ctx.font = 'bold 16px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
+    ctx.fillText('M E N U', dcx, menuY + btnH / 2 + 6)
+
+    ctx.textAlign = 'left'
+  }
 }
 
 export function getScreenWidth(): number { return width }

@@ -5,10 +5,12 @@ import { getSpawnPanelClick } from './render/Renderer.ts'
 import * as Audio from './audio/AudioEngine.ts'
 import { createEnemy } from './entities/Enemy.ts'
 import { ENEMY_TYPES } from './entities/EnemyTypes.ts'
-import { getPlayer, getEnemies, getPhase, setPhase } from './core/GameState.ts'
+import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameState } from './core/GameState.ts'
 import { update, render } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
-import { initDesigner } from './game/EnemyDesigner.ts'
+import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, onStartChallenge } from './game/EnemyDesigner.ts'
+import type { Challenge } from './game/ChallengeBuilder.ts'
+import { setArenaShape } from './game/Arena.ts'
 import { setPattern, getPattern } from './audio/PatternClock.ts'
 import { SONG_DEFAULT } from './audio/SongPatterns.ts'
 import { getSpawnPos } from './game/Arena.ts'
@@ -26,6 +28,40 @@ Input.init(canvas)
 Renderer.init(canvas)
 initHitDetection()
 initDesigner()
+
+let lastChallenge: Challenge | null = null
+
+function restartChallenge(): void {
+  if (!lastChallenge) return
+  resetGameState()
+  setArenaShape(lastChallenge.arenaShape as any)
+  for (const ce of lastChallenge.enemies) {
+    const type = ENEMY_TYPES.find(t => t.name === ce.typeName)
+    if (type) getEnemies().push(createEnemy(ce.x, ce.y, type))
+  }
+  setPhase('playing')
+}
+
+// Challenge start handler
+onStartChallenge((ch: Challenge) => {
+  lastChallenge = ch
+  ensureAudio()
+  Audio.switchBeat(0)
+  resetGameState()
+  setArenaShape(ch.arenaShape as any)
+  // Spawn all challenge enemies
+  console.log('Starting challenge:', ch.name, 'enemies:', ch.enemies.length, 'types available:', ENEMY_TYPES.map(t => t.name))
+  for (const ce of ch.enemies) {
+    const type = ENEMY_TYPES.find(t => t.name === ce.typeName)
+    if (type) {
+      getEnemies().push(createEnemy(ce.x, ce.y, type))
+    } else {
+      console.warn('Challenge enemy type not found:', ce.typeName)
+    }
+  }
+  console.log('Spawned enemies:', getEnemies().length)
+  setPhase('playing')
+})
 
 // ── Spawn enemies ──
 function spawnEnemy(type: typeof ENEMY_TYPES[number]): void {
@@ -57,6 +93,22 @@ window.addEventListener('keydown', e => {
       Audio.switchBeat(0)
     }
     if (e.key === ' ' || e.key === 'Enter') startGame()
+    return
+  }
+  // Victory — return to title
+  if (isRunComplete() && (e.key === ' ' || e.key === 'Enter')) {
+    resetGameState()
+    setPhase('title')
+    return
+  }
+  // Death screen
+  if (getPhase() === 'dead') {
+    if (e.key === 'r' || e.key === 'R') {
+      restartChallenge()
+    } else if (e.key === 'Escape' || e.key === ' ') {
+      resetGameState()
+      setPhase('title')
+    }
     return
   }
   // F1-F5: switch beat presets
@@ -153,6 +205,22 @@ window.addEventListener('keydown', e => {
 })
 
 canvas.addEventListener('click', e => {
+  if (getPhase() === 'dead') {
+    const dcx = canvas.width / 2
+    const dcy = canvas.height * 0.38
+    const btnW = 180, btnH = 44, btnGap = 16
+    const restartY = dcy + 80
+    const menuY = restartY + btnH + btnGap
+    if (e.clientX >= dcx - btnW / 2 && e.clientX <= dcx + btnW / 2) {
+      if (e.clientY >= restartY && e.clientY <= restartY + btnH) {
+        restartChallenge()
+      } else if (e.clientY >= menuY && e.clientY <= menuY + btnH) {
+        resetGameState()
+        setPhase('title')
+      }
+    }
+    return
+  }
   if (getPhase() === 'title') {
     // First click anywhere starts music
     if (!audioStarted) {
@@ -162,7 +230,7 @@ canvas.addEventListener('click', e => {
     // Check if click is on the Start button
     const btnW = 200, btnH = 50
     const btnX = canvas.width / 2 - btnW / 2
-    const btnY = canvas.height * 0.55
+    const btnY = canvas.height * 0.52
     if (e.clientX >= btnX && e.clientX <= btnX + btnW && e.clientY >= btnY && e.clientY <= btnY + btnH) {
       startGame()
     }
@@ -176,6 +244,8 @@ canvas.addEventListener('click', e => {
     handleUpgradeClick(e.clientX, e.clientY, canvas.width, canvas.height)
     return
   }
+  // Challenge builder placement
+  if (challengeCanvasClick?.(e.clientX, e.clientY)) return
   const idx = getSpawnPanelClick(e.clientX, e.clientY)
   if (idx >= 0 && idx < ENEMY_TYPES.length) {
     spawnEnemy(ENEMY_TYPES[idx]!)
@@ -185,6 +255,7 @@ canvas.addEventListener('click', e => {
 canvas.addEventListener('mousemove', e => {
   handleUpgradeHover(e.clientX, e.clientY, canvas.width, canvas.height)
   handleShopHover(e.clientX, e.clientY, canvas.width, canvas.height)
+  challengeCanvasMouseMove?.(e.clientX, e.clientY)
 })
 
 // ── Start game loop ──

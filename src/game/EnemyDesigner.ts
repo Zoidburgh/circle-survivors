@@ -1,5 +1,7 @@
 import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
 import defaultEnemies from '../../data/enemies.json'
+import * as ChallengeBuilder from './ChallengeBuilder.ts'
+import type { Challenge } from './ChallengeBuilder.ts'
 import type { EnemyType } from '../entities/EnemyTypes.ts'
 import type { SongPattern } from '../audio/SongPatterns.ts'
 import { setPattern, getPattern, getLoopPosition, getLoopLength } from '../audio/PatternClock.ts'
@@ -124,23 +126,26 @@ function resolveNameConflict(name: string): string {
 }
 
 function exportEnemies(): void {
-  const data: SaveData = { version: SAVE_VERSION, enemies: designedEnemies }
+  const data = {
+    version: SAVE_VERSION,
+    enemies: designedEnemies,
+    challenges: ChallengeBuilder.getChallenges(),
+  }
   const json = JSON.stringify(data, null, 2)
   // Save to project folder via dev server
   fetch('/api/save-enemies', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: json,
-  }).catch(() => {
-    // Fallback: download if dev server unavailable (production)
-    const blob = new Blob([json], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'circle-survivors-enemies.json'
-    a.click()
-    URL.revokeObjectURL(url)
-  })
+  }).catch(() => {})
+  // Always download as file too
+  const blob = new Blob([json], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'beatback-data.json'
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 function importEnemies(): void {
@@ -153,18 +158,24 @@ function importEnemies(): void {
     const reader = new FileReader()
     reader.onload = () => {
       try {
-        const data = JSON.parse(reader.result as string) as SaveData
-        if (!data.enemies?.length) return
-        for (const enemy of data.enemies) {
-          enemy.name = resolveNameConflict(enemy.name)
-          designedEnemies.push(enemy)
-          const typeIdx = ENEMY_TYPES.findIndex(t => t.name === enemy.name)
-          if (typeIdx >= 0) ENEMY_TYPES[typeIdx] = enemy
-          else ENEMY_TYPES.push(enemy)
-          addEnemyForm(enemy)
+        const data = JSON.parse(reader.result as string) as SaveData & { challenges?: Challenge[] }
+        // Import enemies
+        if (data.enemies?.length) {
+          for (const enemy of data.enemies) {
+            enemy.name = resolveNameConflict(enemy.name)
+            designedEnemies.push(enemy)
+            const typeIdx = ENEMY_TYPES.findIndex(t => t.name === enemy.name)
+            if (typeIdx >= 0) ENEMY_TYPES[typeIdx] = enemy
+            else ENEMY_TYPES.push(enemy)
+            addEnemyForm(enemy)
+          }
+          rebuildPattern()
+          saveToStorage()
         }
-        rebuildPattern()
-        saveToStorage()
+        // Import challenges
+        if (data.challenges?.length) {
+          ChallengeBuilder.importChallenges(JSON.stringify(data.challenges))
+        }
       } catch {
         // invalid file, ignore
       }
@@ -207,6 +218,11 @@ export interface PreviewEnemy {
 let previewEnemy: PreviewEnemy | null = null
 
 let enemySectionExpanded = true
+let startChallengeCallback: ((ch: Challenge) => void) | null = null
+export let challengeCanvasClick: ((x: number, y: number) => boolean) | null = null
+export let challengeCanvasMouseMove: ((x: number, y: number) => void) | null = null
+export let challengeCanvasMouseUp: (() => void) | null = null
+export function onStartChallenge(cb: (ch: Challenge) => void): void { startChallengeCallback = cb }
 
 export function getPreviewEnemy(): PreviewEnemy | null {
   return visible && enemySectionExpanded ? previewEnemy : null
@@ -330,6 +346,38 @@ export function initDesigner(): void {
         <button id="ed-upgrade-clear" style="width:100%;padding:5px;margin-top:6px;cursor:pointer;background:rgba(255,80,80,0.1);border:1px solid rgba(255,80,80,0.2);color:#FF5252;font:10px monospace;border-radius:3px;">Clear All Upgrades</button>
       </div>
     </div>
+
+    <!-- Challenge Builder Section -->
+    <div id="ed-challenge-header" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.1);margin-top:12px;margin-bottom:8px;">
+      <span style="color:#FFD740;font-size:13px;font-weight:bold;">Challenge Builder</span>
+      <span id="ed-challenge-toggle" style="color:#666;font-size:12px;">▶</span>
+    </div>
+    <div id="ed-challenge-body" style="display:none;">
+      <div style="display:flex;gap:6px;margin-bottom:6px;">
+        <input id="ed-ch-name" type="text" value="Challenge 1" placeholder="Challenge name" style="flex:1;padding:4px 6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
+        <select id="ed-ch-arena" style="padding:4px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
+          <option value="rect">Rect</option>
+          <option value="circle" selected>Circle</option>
+          <option value="hex">Hex</option>
+          <option value="pill">Pill</option>
+          <option value="cross">Cross</option>
+        </select>
+      </div>
+      <div style="margin-bottom:6px;">
+        <span style="color:#aaa;font:10px monospace;">Click enemy type below, then click arena to place:</span>
+      </div>
+      <div id="ed-ch-types" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;"></div>
+      <div style="display:flex;gap:4px;margin-bottom:6px;">
+        <button id="ed-ch-clear" style="flex:1;padding:5px;cursor:pointer;background:rgba(255,80,80,0.1);border:1px solid rgba(255,80,80,0.2);color:#FF5252;font:10px monospace;border-radius:3px;">Clear All</button>
+        <button id="ed-ch-del-selected" style="flex:1;padding:5px;cursor:pointer;background:rgba(255,80,80,0.1);border:1px solid rgba(255,80,80,0.2);color:#FF5252;font:10px monospace;border-radius:3px;">Delete Selected</button>
+      </div>
+      <div id="ed-ch-placements" style="margin-bottom:6px;font:10px monospace;color:#888;"></div>
+      <div style="display:flex;gap:4px;">
+        <button id="ed-ch-save" style="flex:1;padding:6px;cursor:pointer;background:rgba(255,215,64,0.15);border:1px solid rgba(255,215,64,0.3);color:#FFD740;font:11px monospace;border-radius:3px;">Save Challenge</button>
+        <button id="ed-ch-play" style="flex:1;padding:6px;cursor:pointer;background:rgba(100,255,120,0.15);border:1px solid rgba(100,255,120,0.3);color:#64FF78;font:11px monospace;border-radius:3px;">Play</button>
+      </div>
+      <div id="ed-ch-list" style="margin-top:8px;border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;"></div>
+    </div>
   `
 
   document.body.appendChild(panel)
@@ -364,6 +412,154 @@ export function initDesigner(): void {
   // Build upgrade test UI
   buildUpgradeTestUI()
 
+  // Challenge builder
+  const chBody = panel.querySelector('#ed-challenge-body') as HTMLDivElement
+  const chToggle = panel.querySelector('#ed-challenge-toggle') as HTMLSpanElement
+  let chExpanded = false
+  panel.querySelector('#ed-challenge-header')!.addEventListener('click', () => {
+    chExpanded = !chExpanded
+    chBody.style.display = chExpanded ? 'block' : 'none'
+    chToggle.textContent = chExpanded ? '▼' : '▶'
+  })
+
+  const chTypesDiv = panel.querySelector('#ed-ch-types') as HTMLDivElement
+  const chPlacementsDiv = panel.querySelector('#ed-ch-placements') as HTMLDivElement
+  const chListDiv = panel.querySelector('#ed-ch-list') as HTMLDivElement
+  const chNameInput = panel.querySelector('#ed-ch-name') as HTMLInputElement
+  const chArenaSelect = panel.querySelector('#ed-ch-arena') as HTMLSelectElement
+
+  function rebuildChTypeButtons(): void {
+    chTypesDiv.innerHTML = ''
+    for (const type of ENEMY_TYPES) {
+      const btn = document.createElement('button')
+      btn.textContent = type.name
+      btn.style.cssText = `padding:3px 8px;cursor:pointer;background:${ChallengeBuilder.getPlaceTypeName() === type.name ? 'rgba(255,215,64,0.3)' : 'rgba(255,255,255,0.05)'};border:1px solid ${ChallengeBuilder.getPlaceTypeName() === type.name ? 'rgba(255,215,64,0.5)' : 'rgba(255,255,255,0.15)'};color:${type.color};font:10px monospace;border-radius:3px;`
+      btn.addEventListener('click', () => {
+        ChallengeBuilder.setPlaceMode(type.name)
+        rebuildChTypeButtons()
+      })
+      chTypesDiv.appendChild(btn)
+    }
+  }
+
+  function rebuildChPlacements(): void {
+    const placements = ChallengeBuilder.getPlacingEnemies()
+    if (placements.length === 0) {
+      chPlacementsDiv.textContent = 'No enemies placed'
+      return
+    }
+    chPlacementsDiv.innerHTML = placements.map((e, i) =>
+      `<span style="color:${i === ChallengeBuilder.getSelectedPlacement() ? '#FFD740' : '#888'}">${e.typeName} (${Math.round(e.x)},${Math.round(e.y)})</span>`
+    ).join('<br>')
+  }
+
+  function rebuildChList(): void {
+    const challenges = ChallengeBuilder.getChallenges()
+    if (challenges.length === 0) {
+      chListDiv.innerHTML = '<span style="color:#666;font:10px monospace;">No saved challenges</span>'
+      return
+    }
+    chListDiv.innerHTML = challenges.map(c =>
+      `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;">
+        <span style="color:#FFD740;font:10px monospace;">${c.name} (${c.enemies.length} enemies)</span>
+        <div style="display:flex;gap:3px;">
+          <button class="ch-play-btn" data-name="${c.name}" style="padding:2px 6px;cursor:pointer;background:rgba(100,255,120,0.1);border:1px solid rgba(100,255,120,0.3);color:#64FF78;font:9px monospace;border-radius:2px;">Play</button>
+          <button class="ch-load" data-name="${c.name}" style="padding:2px 6px;cursor:pointer;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);color:#aaa;font:9px monospace;border-radius:2px;">Edit</button>
+          <button class="ch-del" data-name="${c.name}" style="padding:2px 6px;cursor:pointer;background:rgba(255,80,80,0.1);border:1px solid rgba(255,80,80,0.2);color:#FF5252;font:9px monospace;border-radius:2px;">X</button>
+        </div>
+      </div>`
+    ).join('')
+    chListDiv.querySelectorAll('.ch-play-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const name = (btn as HTMLElement).dataset.name!
+        const ch = ChallengeBuilder.getChallenges().find(c => c.name === name)
+        if (ch) {
+          ChallengeBuilder.setActiveChallenge(ch)
+          startChallengeCallback?.(ch)
+        }
+      })
+    })
+    chListDiv.querySelectorAll('.ch-load').forEach(btn => {
+      btn.addEventListener('click', () => {
+        ChallengeBuilder.loadChallenge((btn as HTMLElement).dataset.name!)
+        chNameInput.value = ChallengeBuilder.getChallengeName()
+        chArenaSelect.value = ChallengeBuilder.getChallengeArena()
+        rebuildChPlacements()
+        rebuildChTypeButtons()
+      })
+    })
+    chListDiv.querySelectorAll('.ch-del').forEach(btn => {
+      btn.addEventListener('click', () => {
+        ChallengeBuilder.deleteChallenge((btn as HTMLElement).dataset.name!)
+        rebuildChList()
+      })
+    })
+  }
+
+  chNameInput.addEventListener('input', () => ChallengeBuilder.setChallengeName(chNameInput.value))
+  chArenaSelect.addEventListener('change', () => ChallengeBuilder.setChallengeArena(chArenaSelect.value as Challenge['arenaShape']))
+
+  panel.querySelector('#ed-ch-save')!.addEventListener('click', () => {
+    ChallengeBuilder.saveChallenge()
+    ChallengeBuilder.exitPlaceMode()
+    ChallengeBuilder.clearPlacements()
+    rebuildChTypeButtons()
+    rebuildChPlacements()
+    rebuildChList()
+  })
+  panel.querySelector('#ed-ch-clear')!.addEventListener('click', () => {
+    ChallengeBuilder.clearPlacements()
+    rebuildChPlacements()
+  })
+  panel.querySelector('#ed-ch-del-selected')!.addEventListener('click', () => {
+    const sel = ChallengeBuilder.getSelectedPlacement()
+    if (sel >= 0) {
+      ChallengeBuilder.removeEnemy(sel)
+      rebuildChPlacements()
+    }
+  })
+  panel.querySelector('#ed-ch-play')!.addEventListener('click', () => {
+    ChallengeBuilder.saveChallenge()
+    ChallengeBuilder.exitPlaceMode()
+    ChallengeBuilder.clearPlacements()
+    rebuildChTypeButtons()
+    rebuildChPlacements()
+    rebuildChList()
+    const ch = ChallengeBuilder.getChallenges().find(c => c.name === ChallengeBuilder.getChallengeName())
+    if (ch) {
+      ChallengeBuilder.setActiveChallenge(ch)
+      startChallengeCallback?.(ch)
+    }
+  })
+
+  ChallengeBuilder.loadFromStorage()
+  rebuildChTypeButtons()
+  rebuildChPlacements()
+  rebuildChList()
+
+  // Expose click handler for canvas placement
+  challengeCanvasClick = (screenX: number, screenY: number) => {
+    if (!ChallengeBuilder.isPlaceMode()) return false
+    if (!chExpanded) return false
+    // Try to select existing first
+    if (ChallengeBuilder.selectPlacement(screenX, screenY)) {
+      rebuildChPlacements()
+      return true
+    }
+    // Place new
+    ChallengeBuilder.placeEnemy(screenX, screenY)
+    rebuildChPlacements()
+    return true
+  }
+  challengeCanvasMouseMove = (screenX: number, screenY: number) => {
+    if (ChallengeBuilder.getSelectedPlacement() >= 0) {
+      ChallengeBuilder.moveSelectedPlacement(screenX, screenY)
+    }
+  }
+  challengeCanvasMouseUp = () => {
+    // Deselect on mouse up (end drag)
+  }
+
   window.addEventListener('keydown', e => {
     if (e.key === 'Tab') {
       e.preventDefault()
@@ -381,6 +577,9 @@ export function initDesigner(): void {
     addEnemyForm(enemy)
   }
   if (saved.length > 0) rebuildPattern()
+
+  // Rebuild challenge type buttons now that enemies are loaded
+  rebuildChTypeButtons()
 }
 
 let enemyCounter = 0
@@ -1010,7 +1209,13 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     div.style.borderColor = 'rgba(100,255,120,0.5)'
     setTimeout(() => div.style.borderColor = 'rgba(255,255,255,0.1)', 400)
     saveToStorage()
-    exportEnemies()  // auto-save to project folder
+    // Auto-save to project folder (dev server only, no download)
+    const data = { version: SAVE_VERSION, enemies: designedEnemies, challenges: ChallengeBuilder.getChallenges() }
+    fetch('/api/save-enemies', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data, null, 2),
+    }).catch(() => {})
   })
 
   // Spawn
@@ -1027,6 +1232,10 @@ function rebuildPattern(): void {
   const pat = getPattern()
   const patterns: Record<string, number[]> = pat ? { ...pat.patterns } : {
     'Player': [0, 1, 2, 3, 4, 5, 6, 7],
+  }
+  // Always include HalfBeat for zigzag enemies
+  if (!patterns['HalfBeat']) {
+    patterns['HalfBeat'] = [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5]
   }
   for (const de of designedEnemies) {
     if (de.rings.length <= 1) {
