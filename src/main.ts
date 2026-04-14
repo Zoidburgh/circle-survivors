@@ -5,10 +5,12 @@ import { getSpawnPanelClick } from './render/Renderer.ts'
 import * as Audio from './audio/AudioEngine.ts'
 import { createEnemy } from './entities/Enemy.ts'
 import { ENEMY_TYPES } from './entities/EnemyTypes.ts'
-import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameState } from './core/GameState.ts'
+import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameState, getRunFinalTime } from './core/GameState.ts'
 import { update, render } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
 import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, onStartChallenge } from './game/EnemyDesigner.ts'
+import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry } from './render/Renderer.ts'
+import { submitScore } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
 import { setArenaShape } from './game/Arena.ts'
 import { setPattern, getPattern } from './audio/PatternClock.ts'
@@ -26,10 +28,29 @@ let debugNodeType = 0  // 0 = triangle shop, 1 = pentagon star
 const canvas = document.getElementById('game') as HTMLCanvasElement
 Input.init(canvas)
 Renderer.init(canvas)
+import { loadScores, setLeaderboardUrl } from './game/HighScores.ts'
 initHitDetection()
 initDesigner()
+loadScores()
+setLeaderboardUrl('https://beatback-leaderboard.pohling777.workers.dev')
 
 let lastChallenge: Challenge | null = null
+
+import { setActiveChallenge, getActiveChallenge } from './game/ChallengeBuilder.ts'
+
+function launchChallenge(ch: Challenge): void {
+  lastChallenge = ch
+  setActiveChallenge(ch)
+  ensureAudio()
+  Audio.switchBeat(0)
+  resetGameState()
+  setArenaShape(ch.arenaShape as any)
+  for (const ce of ch.enemies) {
+    const type = ENEMY_TYPES.find(t => t.name === ce.typeName)
+    if (type) getEnemies().push(createEnemy(ce.x, ce.y, type))
+  }
+  setPhase('playing')
+}
 
 function restartChallenge(): void {
   if (!lastChallenge) return
@@ -83,7 +104,7 @@ function startGame(): void {
   if (getPhase() !== 'title') return
   ensureAudio()
   Audio.switchBeat(0)
-  setPhase('playing')
+  setPhase('challenge_select')
 }
 
 window.addEventListener('keydown', e => {
@@ -95,10 +116,45 @@ window.addEventListener('keydown', e => {
     if (e.key === ' ' || e.key === 'Enter') startGame()
     return
   }
-  // Victory — return to title
+  // Name entry
+  if (getPhase() === 'entering_name') {
+    if (e.key === 'Enter') {
+      const name = getNameEntryText().trim() || 'Player'
+      const ch = getActiveChallenge()
+      if (ch) submitScore(ch.name, getRunFinalTime(), name)
+      resetNameEntry()
+      // Don't change phase — let victory screen show (isRunComplete is true)
+      setPhase('playing')  // briefly, so victory overlay shows
+    } else if (e.key === 'Backspace') {
+      setNameEntryText(getNameEntryText().slice(0, -1))
+    } else if (e.key.length === 1 && getNameEntryText().length < 16) {
+      setNameEntryText(getNameEntryText() + e.key)
+    }
+    e.preventDefault()
+    return
+  }
+  // Pause toggle
+  if (getPhase() === 'playing' && e.key === 'Escape') {
+    setPhase('paused')
+    return
+  }
+  if (getPhase() === 'paused') {
+    if (e.key === 'Escape' || e.key === ' ') {
+      setPhase('playing')
+    } else if (e.key === 'r' || e.key === 'R') {
+      restartChallenge()
+    }
+    return
+  }
+  // Challenge select — back to title
+  if (getPhase() === 'challenge_select' && e.key === 'Escape') {
+    setPhase('title')
+    return
+  }
+  // Victory — return to challenge select
   if (isRunComplete() && (e.key === ' ' || e.key === 'Enter')) {
     resetGameState()
-    setPhase('title')
+    setPhase('challenge_select')
     return
   }
   // Death screen
@@ -107,7 +163,7 @@ window.addEventListener('keydown', e => {
       restartChallenge()
     } else if (e.key === 'Escape' || e.key === ' ') {
       resetGameState()
-      setPhase('title')
+      setPhase('challenge_select')
     }
     return
   }
@@ -205,6 +261,30 @@ window.addEventListener('keydown', e => {
 })
 
 canvas.addEventListener('click', e => {
+  if (getPhase() === 'paused') {
+    const pcx = canvas.width / 2
+    const pcy = canvas.height * 0.35
+    const btnW = 180, btnH = 44, btnGap = 14
+    const resumeY = pcy + 40
+    const restartBtnY = resumeY + btnH + btnGap
+    const menuBtnY = restartBtnY + btnH + btnGap
+    if (e.clientX >= pcx - btnW / 2 && e.clientX <= pcx + btnW / 2) {
+      if (e.clientY >= resumeY && e.clientY <= resumeY + btnH) {
+        setPhase('playing')
+      } else if (e.clientY >= restartBtnY && e.clientY <= restartBtnY + btnH) {
+        restartChallenge()
+      } else if (e.clientY >= menuBtnY && e.clientY <= menuBtnY + btnH) {
+        resetGameState()
+        setPhase('challenge_select')
+      }
+    }
+    return
+  }
+  if (getPhase() === 'challenge_select') {
+    const ch = handleChallengeSelectClick(e.clientX, e.clientY)
+    if (ch) launchChallenge(ch)
+    return
+  }
   if (getPhase() === 'dead') {
     const dcx = canvas.width / 2
     const dcy = canvas.height * 0.38
@@ -216,7 +296,7 @@ canvas.addEventListener('click', e => {
         restartChallenge()
       } else if (e.clientY >= menuY && e.clientY <= menuY + btnH) {
         resetGameState()
-        setPhase('title')
+        setPhase('challenge_select')
       }
     }
     return
@@ -253,6 +333,10 @@ canvas.addEventListener('click', e => {
 })
 
 canvas.addEventListener('mousemove', e => {
+  if (getPhase() === 'challenge_select') {
+    handleChallengeSelectHover(e.clientX, e.clientY)
+    return
+  }
   handleUpgradeHover(e.clientX, e.clientY, canvas.width, canvas.height)
   handleShopHover(e.clientX, e.clientY, canvas.width, canvas.height)
   challengeCanvasMouseMove?.(e.clientX, e.clientY)

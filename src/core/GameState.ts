@@ -8,7 +8,7 @@ import { createCamera, ARENA_W, ARENA_H } from '../game/Arena.ts'
 import type { Camera } from '../game/Arena.ts'
 import { GRID_CELL_SIZE } from '../utils/constants.ts'
 
-export type GamePhase = 'title' | 'playing' | 'upgrading' | 'shopping' | 'dead'
+export type GamePhase = 'title' | 'challenge_select' | 'playing' | 'upgrading' | 'shopping' | 'paused' | 'dead' | 'entering_name'
 
 const player: Player = createPlayer(ARENA_W / 2, ARENA_H / 2)
 const enemies: Enemy[] = []

@@ -7,7 +7,7 @@ import type { Enemy } from '../entities/Enemy.ts'
 import { advanceGlobalTime } from './RhythmClock.ts'
 import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
 import { advancePatternClock } from '../audio/PatternClock.ts'
-import { getPlayer, getEnemies, getGrid, getCamera, getPhase, setPhase, getXpForNextLevel, startRunTimer, advanceRunTimer, isRunTimerActive, isRunComplete, completeRun } from './GameState.ts'
+import { getPlayer, getEnemies, getGrid, getCamera, getPhase, setPhase, getXpForNextLevel, startRunTimer, advanceRunTimer, isRunTimerActive, isRunComplete, completeRun, getRunTimer } from './GameState.ts'
 import { updateOrbs, cleanupOrbs, getOrbs, spawnOrb, collectOrb } from '../entities/XPOrb.ts'
 import type { XPOrb } from '../entities/XPOrb.ts'
 import { updateCamera, clampToArena, getArenaShape, setArenaShape } from '../game/Arena.ts'
@@ -17,6 +17,8 @@ import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat } from '../audio/PatternClock.ts'
 import { playPlayerHit, playShieldBreak, playShieldRestore } from '../audio/AudioEngine.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
+import { getScoresForChallenge } from '../game/HighScores.ts'
+import { getActiveChallenge } from '../game/ChallengeBuilder.ts'
 import { openShop, updateShopScreen, drawShopScreen } from '../game/ShopScreen.ts'
 import { HIT_FLASH_DURATION } from '../utils/constants.ts'
 import { perfStart, perfEnd, exportPerfLog, addSpawnEffect, addVolatileExplosion, setPendingExplosions } from '../render/Renderer.ts'
@@ -330,7 +332,7 @@ on('summon:phase', (enemy: Enemy) => {
 export function update(dt: number): void {
   const phase = getPhase()
 
-  if (phase === 'title' || phase === 'dead') {
+  if (phase === 'title' || phase === 'dead' || phase === 'challenge_select' || phase === 'paused' || phase === 'entering_name') {
     advancePatternClock(dt)
     return
   }
@@ -761,6 +763,15 @@ export function update(dt: number): void {
     const anyAlive = enemies.some(e => e.alive)
     if (!anyAlive) {
       completeRun()
+      // Check if score qualifies for top 30 — if so, go to name entry
+      const ch = getActiveChallenge()
+      if (ch) {
+        const scores = getScoresForChallenge(ch.name, 30)
+        const qualifies = scores.length < 30 || getRunTimer() < scores[scores.length - 1]!.time
+        if (qualifies) {
+          setPhase('entering_name')
+        }
+      }
     }
   }
 
@@ -785,6 +796,10 @@ export function render(alpha: number): void {
 
   if (getPhase() === 'title') {
     Renderer.drawTitleScreen(renderDt)
+    return
+  }
+  if (getPhase() === 'challenge_select') {
+    Renderer.drawChallengeSelect(renderDt)
     return
   }
 

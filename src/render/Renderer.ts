@@ -11,7 +11,9 @@ import type { Camera } from '../game/Arena.ts'
 import { ARENA_W, ARENA_H, ARENA_RADIUS, ARENA_CX, ARENA_CY, PILL_R, PILL_HALF_W, CROSS_HW, CROSS_HE, getArenaShape, getHexVertices, getCrossVertices } from '../game/Arena.ts'
 import { getBlockedArcs } from '../game/RingOcclusion.ts'
 import { getRitualGroups, getActiveIndex } from '../game/RitualNodes.ts'
-import { isPlaceMode, getPlacingEnemies, getSelectedPlacement } from '../game/ChallengeBuilder.ts'
+import { isPlaceMode, getPlacingEnemies, getSelectedPlacement, getChallenges, getActiveChallenge } from '../game/ChallengeBuilder.ts'
+import { getBestTime, getScoresForChallenge, formatTime } from '../game/HighScores.ts'
+import type { Challenge } from '../game/ChallengeBuilder.ts'
 import type { BlockedArc } from '../game/RingOcclusion.ts'
 import { getEnemies, getRunTimer, isRunTimerActive, isRunComplete, getRunFinalTime, getPhase } from '../core/GameState.ts'
 import { hasBonus } from '../game/UpgradeManager.ts'
@@ -58,6 +60,7 @@ let globalBeatPulse = 0  // 0→1 on ring fire, decays — used by all beat-sync
 let titleTime = 0         // time since title screen started
 let titleBeatPulse = 0    // beat pulse for title screen
 let titleLastBeat = -1    // last whole beat seen on title
+let nameEntryText = ''    // current name being typed
 let bgPulseSmooth = 0    // smoothed follower for background color
 let outerPulseIntensity = 0
 let dashSweepIntensity = 0
@@ -4532,6 +4535,167 @@ export function drawTitleScreen(dt: number): void {
   drawParticles()
 }
 
+// ── Challenge Select Screen ──
+let challengeSelectScroll = 0
+let challengeSelectHover = -1
+
+export function getChallengeSelectHover(): number { return challengeSelectHover }
+export function getNameEntryText(): string { return nameEntryText }
+export function setNameEntryText(t: string): void { nameEntryText = t }
+export function resetNameEntry(): void { nameEntryText = '' }
+
+export function drawChallengeSelect(dt: number): void {
+  const now = performance.now() / 1000
+  const challenges = getChallenges()
+
+  // Background
+  ctx.fillStyle = COLOR_BG
+  ctx.fillRect(0, 0, width, height)
+
+  // Subtle grid
+  ctx.strokeStyle = 'rgba(100, 130, 200, 0.03)'
+  ctx.lineWidth = 0.5
+  for (let x = 0; x < width; x += 40) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke()
+  }
+  for (let y = 0; y < height; y += 40) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke()
+  }
+
+  // Vignette
+  const vigGrad = ctx.createRadialGradient(width / 2, height / 2, height * 0.3, width / 2, height / 2, height * 0.8)
+  vigGrad.addColorStop(0, 'rgba(0, 0, 0, 0)')
+  vigGrad.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
+  ctx.fillStyle = vigGrad
+  ctx.fillRect(0, 0, width, height)
+
+  const cx = width / 2
+
+  // Title
+  ctx.font = 'bold 32px monospace'
+  ctx.textAlign = 'center'
+  ctx.fillStyle = 'rgba(0, 255, 255, 0.9)'
+  ctx.fillText('SELECT CHALLENGE', cx, 60)
+
+  // Back hint
+  ctx.font = '12px monospace'
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.3)'
+  ctx.fillText('Escape to go back', cx, 85)
+
+  if (challenges.length === 0) {
+    ctx.font = '16px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
+    ctx.fillText('No challenges created yet', cx, height / 2)
+    ctx.font = '13px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.25)'
+    ctx.fillText('Open Workshop (Tab) → Challenge Builder to create one', cx, height / 2 + 25)
+    ctx.textAlign = 'left'
+    return
+  }
+
+  // Challenge cards
+  const cardW = 320
+  const cardH = 80
+  const cardGap = 12
+  const startY = 110
+  const cols = Math.max(1, Math.floor((width - 80) / (cardW + cardGap)))
+  const gridW = cols * cardW + (cols - 1) * cardGap
+  const gridX = (width - gridW) / 2
+
+  for (let i = 0; i < challenges.length; i++) {
+    const ch = challenges[i]!
+    const col = i % cols
+    const row = Math.floor(i / cols)
+    const cardX = gridX + col * (cardW + cardGap)
+    const cardY = startY + row * (cardH + cardGap) - challengeSelectScroll
+    if (cardY + cardH < 0 || cardY > height) continue
+
+    const isHover = challengeSelectHover === i
+    const pulse = isHover ? 0.5 + 0.5 * Math.sin(now * 4) : 0
+
+    // Card bg
+    ctx.beginPath()
+    ctx.roundRect(cardX, cardY, cardW, cardH, 8)
+    ctx.fillStyle = isHover ? 'rgba(0, 255, 255, 0.08)' : 'rgba(255, 255, 255, 0.04)'
+    ctx.fill()
+    ctx.strokeStyle = isHover ? `rgba(0, 255, 255, ${0.4 + pulse * 0.3})` : 'rgba(255, 255, 255, 0.12)'
+    ctx.lineWidth = isHover ? 2 : 1
+    ctx.stroke()
+
+    // Challenge name
+    ctx.font = 'bold 16px monospace'
+    ctx.textAlign = 'left'
+    ctx.fillStyle = isHover ? 'rgba(0, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.8)'
+    ctx.fillText(ch.name, cardX + 16, cardY + 28)
+
+    // Info line
+    ctx.font = '11px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
+    const best = getBestTime(ch.name)
+    const bestStr = best !== null ? `  •  Best: ${formatTime(best)}` : ''
+    ctx.fillText(`${ch.enemies.length} enemies  •  ${ch.arenaShape}${bestStr}`, cardX + 16, cardY + 48)
+
+    // Best time highlight
+    if (best !== null) {
+      ctx.font = 'bold 12px monospace'
+      ctx.textAlign = 'right'
+      ctx.fillStyle = 'rgba(100, 255, 160, 0.7)'
+      ctx.fillText(formatTime(best), cardX + cardW - 16, cardY + 48)
+      ctx.textAlign = 'left'
+    }
+
+    // Play hint on hover
+    if (isHover) {
+      ctx.font = 'bold 13px monospace'
+      ctx.textAlign = 'right'
+      ctx.fillStyle = `rgba(0, 255, 255, ${0.6 + pulse * 0.3})`
+      ctx.fillText('PLAY ▶', cardX + cardW - 16, cardY + 28)
+      ctx.textAlign = 'left'
+    }
+  }
+
+  ctx.textAlign = 'left'
+}
+
+export function handleChallengeSelectClick(mx: number, my: number): Challenge | null {
+  const challenges = getChallenges()
+  const cardW = 320, cardH = 80, cardGap = 12, startY = 110
+  const cols = Math.max(1, Math.floor((width - 80) / (cardW + cardGap)))
+  const gridW = cols * cardW + (cols - 1) * cardGap
+  const gridX = (width - gridW) / 2
+
+  for (let i = 0; i < challenges.length; i++) {
+    const col = i % cols
+    const row = Math.floor(i / cols)
+    const cardX = gridX + col * (cardW + cardGap)
+    const cardY = startY + row * (cardH + cardGap) - challengeSelectScroll
+    if (mx >= cardX && mx <= cardX + cardW && my >= cardY && my <= cardY + cardH) {
+      return challenges[i]!
+    }
+  }
+  return null
+}
+
+export function handleChallengeSelectHover(mx: number, my: number): void {
+  const challenges = getChallenges()
+  const cardW = 320, cardH = 80, cardGap = 12, startY = 110
+  const cols = Math.max(1, Math.floor((width - 80) / (cardW + cardGap)))
+  const gridW = cols * cardW + (cols - 1) * cardGap
+  const gridX = (width - gridW) / 2
+
+  challengeSelectHover = -1
+  for (let i = 0; i < challenges.length; i++) {
+    const col = i % cols
+    const row = Math.floor(i / cols)
+    const cardX = gridX + col * (cardW + cardGap)
+    const cardY = startY + row * (cardH + cardGap) - challengeSelectScroll
+    if (mx >= cardX && mx <= cardX + cardW && my >= cardY && my <= cardY + cardH) {
+      challengeSelectHover = i
+      break
+    }
+  }
+}
+
 // Store panel button rects for click detection
 const spawnPanelRects: { x: number; y: number; w: number; h: number; typeIndex: number }[] = []
 
@@ -4678,10 +4842,177 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
     ctx.fillText(timeStr, vcx, vcy + 50)
 
+    // Best time comparison
+    const ch = getActiveChallenge()
+    if (ch) {
+      const best = getBestTime(ch.name)
+      if (best !== null) {
+        const isBest = time <= best
+        ctx.font = 'bold 16px monospace'
+        if (isBest) {
+          ctx.fillStyle = 'rgba(255, 215, 64, 0.9)'
+          ctx.fillText('NEW BEST!', vcx, vcy + 75)
+        } else {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.5)'
+          ctx.fillText(`Best: ${formatTime(best)}`, vcx, vcy + 75)
+        }
+      }
+    }
+
+    // Top scores list
+    if (ch) {
+      const topScores = getScoresForChallenge(ch.name, 30)
+      if (topScores.length > 0) {
+        const listY = vcy + 100
+        ctx.font = 'bold 13px monospace'
+        ctx.fillStyle = 'rgba(0, 255, 255, 0.6)'
+        ctx.fillText('TOP TIMES', vcx, listY)
+
+        const rowH = 18
+        const listStartY = listY + 14
+        const maxVisible = Math.min(topScores.length, Math.floor((height - listStartY - 40) / rowH))
+
+        for (let i = 0; i < maxVisible; i++) {
+          const s = topScores[i]!
+          const rowY = listStartY + i * rowH
+          const isCurrentRun = s.time === time && s.date === new Date().toISOString().slice(0, 10)
+          const rankStr = `${i + 1}.`.padStart(3)
+
+          ctx.font = '12px monospace'
+          // Rank
+          ctx.textAlign = 'right'
+          ctx.fillStyle = i === 0 ? 'rgba(255, 215, 64, 0.8)' : 'rgba(255, 255, 255, 0.4)'
+          ctx.fillText(rankStr, vcx - 60, rowY)
+          // Name
+          ctx.textAlign = 'left'
+          ctx.fillStyle = i === 0 ? 'rgba(255, 215, 64, 0.8)' : 'rgba(255, 255, 255, 0.6)'
+          ctx.fillText(s.playerName, vcx - 50, rowY)
+          // Time
+          ctx.textAlign = 'right'
+          ctx.fillStyle = i === 0 ? 'rgba(255, 215, 64, 0.9)' : 'rgba(255, 255, 255, 0.7)'
+          ctx.fillText(formatTime(s.time), vcx + 100, rowY)
+        }
+      }
+    }
+
     // Hint
     ctx.font = '14px monospace'
+    ctx.textAlign = 'center'
     ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
-    ctx.fillText('Press Space to return to menu', vcx, vcy + 90)
+    ctx.fillText('Press Space to continue', vcx, height - 30)
+
+    ctx.textAlign = 'left'
+  }
+
+  // Name entry screen
+  if (getPhase() === 'entering_name') {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'
+    ctx.fillRect(0, 0, width, height)
+
+    const ncx = width / 2
+    const ncy = height * 0.35
+
+    const time = getRunFinalTime()
+    const timeStr = formatTime(time)
+
+    ctx.font = 'bold 36px monospace'
+    ctx.textAlign = 'center'
+    ctx.fillStyle = 'rgba(100, 255, 160, 0.95)'
+    ctx.fillText('VICTORY', ncx, ncy)
+
+    ctx.font = 'bold 28px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
+    ctx.fillText(timeStr, ncx, ncy + 40)
+
+    ctx.font = '16px monospace'
+    ctx.fillStyle = 'rgba(255, 215, 64, 0.9)'
+    ctx.fillText('NEW HIGH SCORE!', ncx, ncy + 70)
+
+    ctx.font = '14px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)'
+    ctx.fillText('Enter your name:', ncx, ncy + 100)
+
+    // Name input box
+    const boxW = 240
+    const boxH = 36
+    const boxX = ncx - boxW / 2
+    const boxY = ncy + 110
+    ctx.beginPath()
+    ctx.roundRect(boxX, boxY, boxW, boxH, 4)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.08)'
+    ctx.fill()
+    ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)'
+    ctx.lineWidth = 2
+    ctx.stroke()
+
+    // Name text + cursor
+    ctx.font = 'bold 18px monospace'
+    ctx.fillStyle = 'rgba(0, 255, 255, 0.9)'
+    const cursor = Math.floor(performance.now() / 500) % 2 === 0 ? '|' : ''
+    ctx.fillText(nameEntryText + cursor, ncx, boxY + boxH / 2 + 6)
+
+    ctx.font = '12px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.3)'
+    ctx.fillText('Press Enter to confirm', ncx, boxY + boxH + 20)
+
+    ctx.textAlign = 'left'
+  }
+
+  // Pause screen
+  if (getPhase() === 'paused') {
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'
+    ctx.fillRect(0, 0, width, height)
+
+    const pcx = width / 2
+    const pcy = height * 0.35
+
+    ctx.font = 'bold 42px monospace'
+    ctx.textAlign = 'center'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
+    ctx.fillText('PAUSED', pcx, pcy)
+
+    const btnW = 180
+    const btnH = 44
+    const btnGap = 14
+    const resumeY = pcy + 40
+    const restartBtnY = resumeY + btnH + btnGap
+    const menuBtnY = restartBtnY + btnH + btnGap
+
+    // Resume
+    ctx.beginPath()
+    ctx.roundRect(pcx - btnW / 2, resumeY, btnW, btnH, 6)
+    ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)'
+    ctx.lineWidth = 2
+    ctx.stroke()
+    ctx.fillStyle = 'rgba(0, 255, 255, 0.08)'
+    ctx.fill()
+    ctx.font = 'bold 18px monospace'
+    ctx.fillStyle = 'rgba(0, 255, 255, 0.8)'
+    ctx.fillText('R E S U M E', pcx, resumeY + btnH / 2 + 6)
+
+    // Restart
+    ctx.beginPath()
+    ctx.roundRect(pcx - btnW / 2, restartBtnY, btnW, btnH, 6)
+    ctx.strokeStyle = 'rgba(255, 215, 64, 0.4)'
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+    ctx.fillStyle = 'rgba(255, 215, 64, 0.06)'
+    ctx.fill()
+    ctx.font = 'bold 16px monospace'
+    ctx.fillStyle = 'rgba(255, 215, 64, 0.7)'
+    ctx.fillText('R E S T A R T', pcx, restartBtnY + btnH / 2 + 6)
+
+    // Menu
+    ctx.beginPath()
+    ctx.roundRect(pcx - btnW / 2, menuBtnY, btnW, btnH, 6)
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)'
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'
+    ctx.fill()
+    ctx.font = 'bold 16px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
+    ctx.fillText('M E N U', pcx, menuBtnY + btnH / 2 + 6)
 
     ctx.textAlign = 'left'
   }

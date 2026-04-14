@@ -212,7 +212,7 @@
       "dropType": "hp",
       "dropXp": 0,
       "dropHp": 100,
-      "dropCount": 5,
+      "dropCount": 3,
       "summon": false,
       "summonNodes": 3,
       "summonPhases": []
@@ -789,6 +789,48 @@
       "summon": false,
       "summonNodes": 3,
       "summonPhases": []
+    },
+    {
+      "name": "EasySummon",
+      "color": "#00c853",
+      "hp": 2,
+      "moveSpeed": 50,
+      "radius": 120,
+      "ringRadius": 120,
+      "key": "15",
+      "role": "pop",
+      "sound": "pop",
+      "beats": [],
+      "rings": [],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "movePattern": "pursue",
+      "totemSpawn": "",
+      "dropType": "xp",
+      "dropXp": 100,
+      "dropHp": 0,
+      "dropCount": 1,
+      "summon": true,
+      "summonNodes": 3,
+      "summonPhases": [
+        {
+          "spawns": [
+            {
+              "enemyName": "Enemy14",
+              "count": 1
+            }
+          ]
+        }
+      ]
     }
   ],
   "challenges": [
@@ -838,6 +880,17 @@
           "typeName": "Enemy9",
           "x": 739,
           "y": 558.5
+        }
+      ]
+    },
+    {
+      "name": "Challenge 5",
+      "arenaShape": "pill",
+      "enemies": [
+        {
+          "typeName": "Bounce_Totem",
+          "x": 1303,
+          "y": 301.4516223259924
         }
       ]
     }
