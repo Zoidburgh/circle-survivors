@@ -5,11 +5,11 @@ import { getSpawnPanelClick } from './render/Renderer.ts'
 import * as Audio from './audio/AudioEngine.ts'
 import { createEnemy } from './entities/Enemy.ts'
 import { ENEMY_TYPES } from './entities/EnemyTypes.ts'
-import { getPlayer, getEnemies, getPhase } from './core/GameState.ts'
+import { getPlayer, getEnemies, getPhase, setPhase } from './core/GameState.ts'
 import { update, render } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
 import { initDesigner } from './game/EnemyDesigner.ts'
-import { setPattern } from './audio/PatternClock.ts'
+import { setPattern, getPattern } from './audio/PatternClock.ts'
 import { SONG_DEFAULT } from './audio/SongPatterns.ts'
 import { getSpawnPos } from './game/Arena.ts'
 import { spawnOrb } from './entities/XPOrb.ts'
@@ -24,9 +24,7 @@ let debugNodeType = 0  // 0 = triangle shop, 1 = pentagon star
 const canvas = document.getElementById('game') as HTMLCanvasElement
 Input.init(canvas)
 Renderer.init(canvas)
-Audio.init()
 initHitDetection()
-setPattern(SONG_DEFAULT)
 initDesigner()
 
 // ── Spawn enemies ──
@@ -36,7 +34,31 @@ function spawnEnemy(type: typeof ENEMY_TYPES[number]): void {
   getEnemies().push(createEnemy(pos.x, pos.y, type))
 }
 
+let audioStarted = false
+function ensureAudio(): void {
+  if (audioStarted) return
+  audioStarted = true
+  Audio.init()
+  // Only set default pattern if designer hasn't already set one
+  if (!getPattern()) setPattern(SONG_DEFAULT)
+}
+
+function startGame(): void {
+  if (getPhase() !== 'title') return
+  ensureAudio()
+  Audio.switchBeat(0)
+  setPhase('playing')
+}
+
 window.addEventListener('keydown', e => {
+  if (getPhase() === 'title') {
+    if (!audioStarted) {
+      ensureAudio()
+      Audio.switchBeat(0)
+    }
+    if (e.key === ' ' || e.key === 'Enter') startGame()
+    return
+  }
   // F1-F5: switch beat presets
   if (e.key.startsWith('F') && e.key.length <= 3) {
     const num = parseInt(e.key.slice(1))
@@ -131,6 +153,21 @@ window.addEventListener('keydown', e => {
 })
 
 canvas.addEventListener('click', e => {
+  if (getPhase() === 'title') {
+    // First click anywhere starts music
+    if (!audioStarted) {
+      ensureAudio()
+      Audio.switchBeat(0)
+    }
+    // Check if click is on the Start button
+    const btnW = 200, btnH = 50
+    const btnX = canvas.width / 2 - btnW / 2
+    const btnY = canvas.height * 0.55
+    if (e.clientX >= btnX && e.clientX <= btnX + btnW && e.clientY >= btnY && e.clientY <= btnY + btnH) {
+      startGame()
+    }
+    return
+  }
   if (getPhase() === 'shopping') {
     handleShopClick(e.clientX, e.clientY, canvas.width, canvas.height)
     return

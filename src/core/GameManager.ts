@@ -326,6 +326,11 @@ on('summon:phase', (enemy: Enemy) => {
 export function update(dt: number): void {
   const phase = getPhase()
 
+  if (phase === 'title') {
+    // Still advance pattern clock so it stays synced with audio
+    advancePatternClock(dt)
+    return
+  }
   if (phase === 'upgrading') {
     updateUpgradeScreen(dt)
     return
@@ -757,6 +762,12 @@ export function render(alpha: number): void {
 
   const renderDt = Math.min((now - lastRenderTime) / 1000, 0.1)  // real delta, capped
   lastRenderTime = now
+
+  if (getPhase() === 'title') {
+    Renderer.drawTitleScreen(renderDt)
+    return
+  }
+
   Renderer.render(player, enemies, alpha, fps, renderDt, cam)
 
   // Draw XP bar and upgrade screen on top (outside arena clip)

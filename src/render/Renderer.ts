@@ -28,6 +28,8 @@ import {
   HIT_FLASH_DURATION,
   SHIELD_ORBIT_RADIUS_OFFSET,
   SHIELD_BREAK_FLASH,
+  MASTER_BPM,
+  COLOR_BG,
 } from '../utils/constants.ts'
 
 let canvas: HTMLCanvasElement
@@ -52,6 +54,9 @@ const MAX_PARTICLES = PARTICLE_CAP
 let lastDt = 0.016
 let borderWaveIntensity = 0
 let globalBeatPulse = 0  // 0→1 on ring fire, decays — used by all beat-sync visuals
+let titleTime = 0         // time since title screen started
+let titleBeatPulse = 0    // beat pulse for title screen
+let titleLastBeat = -1    // last whole beat seen on title
 let bgPulseSmooth = 0    // smoothed follower for background color
 let outerPulseIntensity = 0
 let dashSweepIntensity = 0
@@ -1010,31 +1015,51 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     const bsx = beatDashX - camX
     const bsy = beatDashY - camY
 
-    // White area flash — exact hitbox size
+    // White area flash — exact hitbox size, brighter initial
+    const whiteAlpha = t > 0.7 ? t * 0.3 : t * t * 0.15
     ctx.beginPath()
     ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(255, 255, 255, ${t * t * 0.15})`
+    ctx.fillStyle = `rgba(255, 255, 255, ${whiteAlpha})`
     ctx.fill()
 
-    // Red shockwave expanding to fill attack range — on top
-    const shockExpand = Math.min((1 - t) * 3, 1)  // reaches full in first third
+    // Red shockwave expanding to fill attack range
+    const shockExpand = Math.min((1 - t) * 3, 1)
     const shockR = beatDashRadius * shockExpand
     if (shockR > 2) {
       ctx.beginPath()
       ctx.arc(bsx, bsy, shockR, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(255, 40, 40, ${t * 0.25})`
+      ctx.fillStyle = `rgba(255, 40, 40, ${t * 0.3})`
       ctx.fill()
-      ctx.strokeStyle = `rgba(255, 60, 60, ${t * 0.6})`
-      ctx.lineWidth = 4 * t
+      ctx.strokeStyle = `rgba(255, 60, 60, ${t * 0.7})`
+      ctx.lineWidth = 5 * t
       ctx.stroke()
     }
 
-    // Cyan border at exact hitbox edge
+    // Cyan border glow at exact hitbox edge
     ctx.beginPath()
     ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(0, 255, 255, ${t * 0.6})`
+    ctx.strokeStyle = `rgba(0, 255, 255, ${t * 0.15})`
+    ctx.lineWidth = 8 * t
+    ctx.stroke()
+    // Cyan border crisp
+    ctx.beginPath()
+    ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(0, 255, 255, ${t * 0.7})`
     ctx.lineWidth = 2 * t + 1
     ctx.stroke()
+
+    // Initial burst particles on first frame
+    if (beatDashFlash > 0.30) {
+      for (let p = 0; p < 8; p++) {
+        const pa = (p / 8) * Math.PI * 2 + Math.random() * 0.4
+        const dist = beatDashRadius * (0.3 + Math.random() * 0.7)
+        spawnParticle(
+          beatDashX + Math.cos(pa) * dist,
+          beatDashY + Math.sin(pa) * dist,
+          Math.cos(pa) * 60, Math.sin(pa) * 60,
+          0, 230, 255, 0.2 + Math.random() * 0.1, 4 + Math.random() * 3)
+      }
+    }
 
     // Disintegration particles breaking off the edge
     if (Math.random() < 0.6 + (1 - t) * 0.4) {
@@ -4257,6 +4282,252 @@ function drawRitualNodeOverlays(): void {
       }
     }
   }
+}
+
+// ── Title Screen ──
+export function drawTitleScreen(dt: number): void {
+  titleTime += dt
+
+  // Beat pulse — fires at ring peak (0.45 into each beat), not beat start
+  const now = performance.now() / 1000
+  const loopPos = getLoopPosition()
+  const beatPhase = loopPos % 1
+  const peakPoint = 0.45  // matches ATTACK_EXPAND_TIME
+  const currentBeat = Math.floor(loopPos)
+  const pastPeakThisBeat = beatPhase >= peakPoint
+  const beatId = currentBeat * 2 + (pastPeakThisBeat ? 1 : 0)
+  if (beatId !== titleLastBeat && titleLastBeat >= 0 && pastPeakThisBeat) {
+    titleBeatPulse = 1
+  }
+  titleLastBeat = beatId
+  titleBeatPulse = Math.max(0, titleBeatPulse - dt * 3)
+
+  // Background
+  ctx.fillStyle = COLOR_BG
+  ctx.fillRect(0, 0, width, height)
+
+  // Subtle grid
+  const gridAlpha = 0.03 + titleBeatPulse * 0.02
+  ctx.strokeStyle = `rgba(100, 130, 200, ${gridAlpha})`
+  ctx.lineWidth = 0.5
+  const gridSize = 40
+  for (let x = 0; x < width; x += gridSize) {
+    ctx.beginPath()
+    ctx.moveTo(x, 0)
+    ctx.lineTo(x, height)
+    ctx.stroke()
+  }
+  for (let y = 0; y < height; y += gridSize) {
+    ctx.beginPath()
+    ctx.moveTo(0, y)
+    ctx.lineTo(width, y)
+    ctx.stroke()
+  }
+
+  // Ring attack animation — matches gameplay ring expand + red flash + particles
+  const rcx = width / 2, rcy = height / 2 - 20
+  const beatCycle = beatPhase
+  const ringMaxR = 220
+  const expandTime = 0.45  // matches ATTACK_EXPAND_TIME
+  const totalTime = 1.0    // one beat
+  const buildup = Math.min(beatCycle / expandTime, 1)
+  const expansion = buildup < 1 ? 1 - (1 - buildup) * (1 - buildup) : 1  // ease-out
+  const ringR = ringMaxR * expansion
+  const pastPeak = beatCycle - expandTime
+
+  if (ringR > 5 && pastPeak < 0.35) {
+    // Buildup ring — cyan, thickens, fades after peak
+    const fadeAfter = pastPeak > 0 ? Math.max(0, 1 - pastPeak / 0.3) : 1
+    const alpha = (0.06 + 0.12 * buildup * buildup) * fadeAfter
+    ctx.beginPath()
+    ctx.arc(rcx, rcy, ringR, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(0, 255, 255, ${alpha})`
+    ctx.lineWidth = 1.5 + 2.5 * buildup
+    ctx.stroke()
+
+    // Red flash at peak
+    if (pastPeak >= 0 && pastPeak < 0.2) {
+      const redT = 1 - pastPeak / 0.2
+      // Wide glow
+      ctx.beginPath()
+      ctx.arc(rcx, rcy, ringR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 100, 100, ${redT * 0.08})`
+      ctx.lineWidth = 20
+      ctx.stroke()
+      // Soft red
+      ctx.beginPath()
+      ctx.arc(rcx, rcy, ringR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 80, 80, ${redT * 0.18})`
+      ctx.lineWidth = 8
+      ctx.stroke()
+      // Sharp red core
+      ctx.beginPath()
+      ctx.arc(rcx, rcy, ringR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 80, 80, ${redT * 0.5})`
+      ctx.lineWidth = 3
+      ctx.stroke()
+    }
+
+    // Explosion particles at peak — first frame only
+    if (pastPeak >= 0 && pastPeak < 0.02) {
+      const worldCx = rcx + camX  // convert screen → world for particle system
+      const worldCy = rcy + camY
+      const count = 25
+      for (let i = 0; i < count; i++) {
+        const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
+        const px = worldCx + Math.cos(angle) * ringR
+        const py = worldCy + Math.sin(angle) * ringR
+        const isWhite = i % 3 === 0
+        const sp = (isWhite ? 25 : 18) * (0.5 + Math.random())
+        const vx = Math.cos(angle) * sp + (Math.random() - 0.5) * sp * 0.7
+        const vy = Math.sin(angle) * sp + (Math.random() - 0.5) * sp * 0.7
+        spawnParticle(px, py, vx, vy,
+          isWhite ? 255 : 0, isWhite ? 255 : 255, 255,
+          (isWhite ? 0.5 : 0.6) * (0.8 + Math.random() * 0.2),
+          (isWhite ? 8 : 7) * 1.1)
+      }
+    }
+
+  }
+
+  // Second ring — magenta, same style as cyan ring, offset by half beat
+  const beat2Cycle = (loopPos + 0.5) % 1
+  const buildup2 = Math.min(beat2Cycle / expandTime, 1)
+  const expansion2 = buildup2 < 1 ? 1 - (1 - buildup2) * (1 - buildup2) : 1
+  const ring2MaxR = ringMaxR * 0.75
+  const ring2R = ring2MaxR * expansion2
+  const pastPeak2 = beat2Cycle - expandTime
+
+  if (ring2R > 5 && pastPeak2 < 0.35) {
+    // Buildup ring — fades after peak
+    const fadeAfter2 = pastPeak2 > 0 ? Math.max(0, 1 - pastPeak2 / 0.3) : 1
+    const alpha2 = (0.08 + 0.15 * buildup2 * buildup2) * fadeAfter2
+    ctx.beginPath()
+    ctx.arc(rcx, rcy, ring2R, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(255, 50, 200, ${alpha2})`
+    ctx.lineWidth = 1.5 + 2.5 * buildup2
+    ctx.stroke()
+
+    // Flash at peak
+    if (pastPeak2 >= 0 && pastPeak2 < 0.2) {
+      const redT2 = 1 - pastPeak2 / 0.2
+      ctx.beginPath()
+      ctx.arc(rcx, rcy, ring2R, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 100, 150, ${redT2 * 0.1})`
+      ctx.lineWidth = 18
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(rcx, rcy, ring2R, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 80, 150, ${redT2 * 0.2})`
+      ctx.lineWidth = 7
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(rcx, rcy, ring2R, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 80, 180, ${redT2 * 0.5})`
+      ctx.lineWidth = 3
+      ctx.stroke()
+    }
+
+    // Explosion particles at peak
+    if (pastPeak2 >= 0 && pastPeak2 < 0.02) {
+      const worldCx2 = rcx + camX
+      const worldCy2 = rcy + camY
+      for (let i = 0; i < 18; i++) {
+        const angle = (i / 18) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
+        const px = worldCx2 + Math.cos(angle) * ring2R
+        const py = worldCy2 + Math.sin(angle) * ring2R
+        const isWhite = i % 4 === 0
+        const sp = (isWhite ? 22 : 16) * (0.5 + Math.random())
+        const vx = Math.cos(angle) * sp + (Math.random() - 0.5) * sp * 0.7
+        const vy = Math.sin(angle) * sp + (Math.random() - 0.5) * sp * 0.7
+        spawnParticle(px, py, vx, vy,
+          isWhite ? 255 : 255, isWhite ? 255 : 50, isWhite ? 255 : 200,
+          (isWhite ? 0.5 : 0.6) * (0.8 + Math.random() * 0.2),
+          (isWhite ? 7 : 6) * 1.1)
+      }
+    }
+
+  }
+
+  // Vignette
+  const vigGrad = ctx.createRadialGradient(width / 2, height / 2, height * 0.3, width / 2, height / 2, height * 0.8)
+  vigGrad.addColorStop(0, 'rgba(0, 0, 0, 0)')
+  vigGrad.addColorStop(1, 'rgba(0, 0, 0, 0.6)')
+  ctx.fillStyle = vigGrad
+  ctx.fillRect(0, 0, width, height)
+
+  const cx = width / 2
+  const titleY = height * 0.44
+
+  // Title — "BEATBACK"
+  const letters = 'BEATBACK'
+  const letterSpacing = 76
+  const totalW = (letters.length - 1) * letterSpacing
+  const startX = cx - totalW / 2
+
+  for (let i = 0; i < letters.length; i++) {
+    const lx = startX + i * letterSpacing
+    const beatBounce = -titleBeatPulse * 8
+
+    // Letter glow
+    const glowPulse = 0.5 + 0.5 * Math.sin(now * 1.2 + i * 0.7)
+    const isCyan = i < 4  // BEAT = cyan, BACK = magenta
+    const gr = isCyan ? 0 : 255
+    const gg = isCyan ? 255 : 50
+    const gb = isCyan ? 255 : 200
+
+    // Glow behind letter
+    ctx.font = 'bold 96px monospace'
+    ctx.textAlign = 'center'
+    ctx.fillStyle = `rgba(${gr}, ${gg}, ${gb}, ${0.15 + glowPulse * 0.1 + titleBeatPulse * 0.15})`
+    ctx.fillText(letters[i]!, lx, titleY + beatBounce)
+
+    // Main letter
+    ctx.fillStyle = `rgba(${gr}, ${gg}, ${gb}, ${0.85 + titleBeatPulse * 0.15})`
+    ctx.fillText(letters[i]!, lx, titleY + beatBounce)
+
+    // White highlight on beat
+    if (titleBeatPulse > 0.3) {
+      ctx.fillStyle = `rgba(255, 255, 255, ${titleBeatPulse * 0.3})`
+      ctx.fillText(letters[i]!, lx, titleY + beatBounce)
+    }
+  }
+
+  // Start button
+  const btnY = height * 0.55
+  const btnW = 200
+  const btnH = 50
+  const btnPulse = 0.5 + 0.5 * Math.sin(now * 3)
+  const btnBeat = titleBeatPulse
+
+  // Button glow
+  ctx.beginPath()
+  ctx.roundRect(cx - btnW / 2 - 4, btnY - 4, btnW + 8, btnH + 8, 8)
+  ctx.fillStyle = `rgba(0, 255, 255, ${0.03 + btnBeat * 0.06})`
+  ctx.fill()
+
+  // Button border
+  ctx.beginPath()
+  ctx.roundRect(cx - btnW / 2, btnY, btnW, btnH, 6)
+  ctx.strokeStyle = `rgba(0, 255, 255, ${0.4 + btnPulse * 0.2 + btnBeat * 0.3})`
+  ctx.lineWidth = 2 + btnBeat
+  ctx.stroke()
+
+  // Button fill
+  ctx.fillStyle = `rgba(0, 255, 255, ${0.06 + btnBeat * 0.08})`
+  ctx.fill()
+
+  // Button text
+  ctx.font = 'bold 20px monospace'
+  ctx.textAlign = 'center'
+  ctx.fillStyle = `rgba(0, 255, 255, ${0.7 + btnPulse * 0.15 + btnBeat * 0.15})`
+  ctx.fillText('S T A R T', cx, btnY + btnH / 2 + 7)
+
+  ctx.textAlign = 'left'
+
+  // Update + draw particles on title screen
+  updateParticles(dt)
+  drawParticles()
 }
 
 // Store panel button rects for click detection
