@@ -4,6 +4,7 @@ import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
 import type { EnemyType } from '../entities/EnemyTypes.ts'
 import { getCamera } from '../core/GameState.ts'
 import type { Camera } from '../game/Arena.ts'
+import defaultData from '../../data/enemies.json'
 
 export interface ChallengeEnemy {
   typeName: string
@@ -137,7 +138,16 @@ function saveToStorage(): void {
 export function loadFromStorage(): void {
   try {
     const raw = localStorage.getItem(SAVE_KEY)
-    if (raw) challenges = JSON.parse(raw)
+    if (raw) {
+      challenges = JSON.parse(raw)
+    } else {
+      // First time — use bundled default challenges
+      const bundled = (defaultData as any).challenges
+      if (Array.isArray(bundled) && bundled.length > 0) {
+        challenges = bundled
+        saveToStorage()
+      }
+    }
   } catch { /* ignore */ }
 }
 

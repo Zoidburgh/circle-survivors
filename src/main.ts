@@ -45,9 +45,14 @@ function launchChallenge(ch: Challenge): void {
   Audio.switchBeat(0)
   resetGameState()
   setArenaShape(ch.arenaShape as any)
+  console.log('Launch challenge:', ch.name, 'enemies:', ch.enemies.map(e => e.typeName), 'ENEMY_TYPES:', ENEMY_TYPES.map(t => t.name))
   for (const ce of ch.enemies) {
     const type = ENEMY_TYPES.find(t => t.name === ce.typeName)
-    if (type) getEnemies().push(createEnemy(ce.x, ce.y, type))
+    if (type) {
+      getEnemies().push(createEnemy(ce.x, ce.y, type))
+    } else {
+      console.warn('Type not found:', ce.typeName)
+    }
   }
   setPhase('playing')
 }
@@ -175,6 +180,13 @@ window.addEventListener('keydown', e => {
       resetGameState()
       setPhase('challenge_select')
     }
+    return
+  }
+  // Fullscreen toggle — works in both dev and release
+  if (e.key === 'F11') {
+    e.preventDefault()
+    if (document.fullscreenElement) document.exitFullscreen()
+    else document.documentElement.requestFullscreen()
     return
   }
   if (!__DEV__) return  // no debug keys in release
@@ -347,6 +359,14 @@ canvas.addEventListener('click', e => {
     const btnY = canvas.height * 0.52
     if (e.clientX >= btnX && e.clientX <= btnX + btnW && e.clientY >= btnY && e.clientY <= btnY + btnH) {
       startGame()
+    }
+    // Fullscreen button
+    const fsW = 240, fsH = 50
+    const fsY = btnY + btnH + 160
+    const fsX = canvas.width / 2 - fsW / 2
+    if (e.clientX >= fsX && e.clientX <= fsX + fsW && e.clientY >= fsY && e.clientY <= fsY + fsH) {
+      if (document.fullscreenElement) document.exitFullscreen()
+      else document.documentElement.requestFullscreen()
     }
     return
   }

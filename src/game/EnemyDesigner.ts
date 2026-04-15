@@ -561,7 +561,7 @@ export function initDesigner(): void {
   }
 
   window.addEventListener('keydown', e => {
-    if (e.key === 'Tab') {
+    if (__DEV__ && e.key === 'Tab') {
       e.preventDefault()
       toggleDesigner()
     }

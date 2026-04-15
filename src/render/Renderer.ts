@@ -1111,20 +1111,22 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfEnd('R_TOTAL')
   perfFlush()
 
-  // Perf overlay — below HUD info
-  const perf = perfDisplay
-  const perfKeys = Object.keys(perf)
-  if (perfKeys.length > 0) {
-    const perfY = 140
-    ctx.fillStyle = 'rgba(0,0,0,0.6)'
-    ctx.fillRect(width - 180, perfY, 180, perfKeys.length * 14 + 8)
-    ctx.font = '11px monospace'
-    let py = perfY + 14
-    for (const k of perfKeys) {
-      const ms = perf[k]! / 60
-      ctx.fillStyle = ms > 2 ? '#FF5252' : ms > 1 ? '#FFD740' : '#888'
-      ctx.fillText(`${k}: ${ms.toFixed(2)}ms`, width - 174, py)
-      py += 14
+  // Perf overlay — dev only
+  if (__DEV__) {
+    const perf = perfDisplay
+    const perfKeys = Object.keys(perf)
+    if (perfKeys.length > 0) {
+      const perfY = 140
+      ctx.fillStyle = 'rgba(0,0,0,0.6)'
+      ctx.fillRect(width - 180, perfY, 180, perfKeys.length * 14 + 8)
+      ctx.font = '11px monospace'
+      let py = perfY + 14
+      for (const k of perfKeys) {
+        const ms = perf[k]! / 60
+        ctx.fillStyle = ms > 2 ? '#FF5252' : ms > 1 ? '#FFD740' : '#888'
+        ctx.fillText(`${k}: ${ms.toFixed(2)}ms`, width - 174, py)
+        py += 14
+      }
     }
   }
 }
@@ -4545,6 +4547,21 @@ export function drawTitleScreen(dt: number): void {
   ctx.textAlign = 'center'
   ctx.fillStyle = `rgba(0, 255, 255, ${0.7 + btnPulse * 0.15 + btnBeat * 0.15})`
   ctx.fillText('S T A R T', cx, btnY + btnH / 2 + 7)
+
+  // Fullscreen button
+  const fsY = btnY + btnH + 160
+  const fsW = 240
+  const fsH = 50
+  ctx.beginPath()
+  ctx.roundRect(cx - fsW / 2, fsY, fsW, fsH, 5)
+  ctx.strokeStyle = 'rgba(255, 50, 200, 0.35)'
+  ctx.lineWidth = 1.5
+  ctx.stroke()
+  ctx.fillStyle = 'rgba(255, 50, 200, 0.06)'
+  ctx.fill()
+  ctx.font = 'bold 22px monospace'
+  ctx.fillStyle = 'rgba(255, 50, 200, 0.7)'
+  ctx.fillText(document.fullscreenElement ? 'EXIT FULLSCREEN' : 'FULLSCREEN', cx, fsY + fsH / 2 + 7)
 
   ctx.textAlign = 'left'
 

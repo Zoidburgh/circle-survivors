@@ -21,7 +21,7 @@ const output = `<!doctype html>
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Bloop Bop</title>
+<title>BEATBACK</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html, body { width: 100%; height: 100%; overflow: hidden; background: #0D0A1A; }
@@ -38,6 +38,6 @@ if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true })
 writeFileSync(resolve(outDir, 'index.html'), output)
 
 // Zip it
-execSync(`powershell "Compress-Archive -Path '${resolve(outDir, '*')}' -DestinationPath '${resolve(root, 'bloop-bop-itch.zip')}' -Force"`)
+execSync(`powershell "Compress-Archive -Path '${resolve(outDir, '*')}' -DestinationPath '${resolve(root, 'BEATBACK.zip')}' -Force"`)
 
-console.log(`✓ bloop-bop-itch.zip ready (${(js.length / 1024).toFixed(0)}KB inlined)`)
+console.log(`✓ BEATBACK.zip ready (${(js.length / 1024).toFixed(0)}KB inlined)`)
