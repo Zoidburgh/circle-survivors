@@ -15,9 +15,9 @@ import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat } from '../audio/PatternClock.ts'
-import { playPlayerHit, playShieldBreak, playShieldRestore } from '../audio/AudioEngine.ts'
+import { playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion } from '../audio/AudioEngine.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
-import { getScoresForChallenge } from '../game/HighScores.ts'
+import { getScoresForChallenge, fetchOnlineScores } from '../game/HighScores.ts'
 import { getActiveChallenge } from '../game/ChallengeBuilder.ts'
 import { openShop, updateShopScreen, drawShopScreen } from '../game/ShopScreen.ts'
 import { HIT_FLASH_DURATION } from '../utils/constants.ts'
@@ -39,6 +39,7 @@ interface PendingExplosion {
   range: number
   r: number; g: number; b: number
   timer: number  // time since queued (for buildup visual)
+  soundPlayed: boolean
 }
 const pendingExplosions: PendingExplosion[] = []
 
@@ -188,12 +189,13 @@ on('enemy:killed', (enemy: Enemy) => {
     range: enemy.volatileRange,
     r: enemy.cr, g: enemy.cg, b: enemy.cb,
     timer: 0,
+    soundPlayed: false,
   })
 })
 
 // On-beat dash shockwave — area damage at dash start position
 on('player:beatDash', (player: Player) => {
-  const shockRadius = getEffectiveRadius(player) * 0.6 * player.modifiers.beatBlastMult
+  const shockRadius = getEffectiveRadius(player) * 0.7 * player.modifiers.beatBlastMult
   const damage = player.damage * player.modifiers.damageMult
   const enemies = getEnemies()
   for (const enemy of enemies) {
@@ -293,12 +295,17 @@ on('summon:phase', (enemy: Enemy) => {
       const eb = parseInt(enemy.color.slice(5, 7), 16)
       let totalSpawns = 0
       for (const s of phase.spawns) totalSpawns += s.count
+      // Start spawning from the far side of the summoner from the player
+      const player = getPlayer()
+      const pdx = enemy.x - player.x
+      const pdy = enemy.y - player.y
+      const baseAngle = Math.atan2(pdy, pdx)
       let spawnIdx = 0
       for (const spawn of phase.spawns) {
         const type = getEnemyType(spawn.enemyName)
         if (!type) continue
         for (let i = 0; i < spawn.count; i++) {
-          const angle = (spawnIdx / totalSpawns) * Math.PI * 2
+          const angle = baseAngle + (spawnIdx / totalSpawns) * Math.PI * 2
           spawnIdx++
           const dist = enemy.radius + (type.radius ?? 40) + 30
           const sx = enemy.x + Math.cos(angle) * dist
@@ -458,6 +465,11 @@ export function update(dt: number): void {
   for (let i = pendingExplosions.length - 1; i >= 0; i--) {
     const exp = pendingExplosions[i]!
     exp.timer += dt
+    // Start hiss sound at beginning of buildup (enemy death)
+    if (!exp.soundPlayed) {
+      exp.soundPlayed = true
+      playVolatileExplosion()
+    }
     // Detonate after exactly 1 second
     if (exp.timer >= BEAT_SEC) {
       // Damage all enemies in range (check current pos + blink destination)
@@ -763,11 +775,11 @@ export function update(dt: number): void {
     const anyAlive = enemies.some(e => e.alive)
     if (!anyAlive) {
       completeRun()
-      // Check if score qualifies for top 30 — if so, go to name entry
       const ch = getActiveChallenge()
       if (ch) {
-        const scores = getScoresForChallenge(ch.name, 30)
-        const qualifies = scores.length < 30 || getRunTimer() < scores[scores.length - 1]!.time
+        fetchOnlineScores(ch.name)  // preload global scores immediately
+        const scores = getScoresForChallenge(ch.name, 100)
+        const qualifies = scores.length < 100 || getRunTimer() < scores[scores.length - 1]!.time
         if (qualifies) {
           setPhase('entering_name')
         }

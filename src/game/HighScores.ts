@@ -42,7 +42,7 @@ async function computeHash(data: string): Promise<string> {
 export async function submitScore(challengeName: string, time: number, playerName = 'Player'): Promise<number> {
   const entry: ScoreEntry = {
     challengeName,
-    time,
+    time,  // already rounded by caller
     date: new Date().toISOString(),
     playerName: playerName.slice(0, 16),
   }
@@ -84,17 +84,19 @@ export function getScoresForChallenge(challengeName: string, limit = 30): ScoreE
   const local = localScores.filter(s => s.challengeName === challengeName)
   const online = onlineScores.get(challengeName) ?? []
 
-  // Merge and deduplicate
+  // Merge and deduplicate — keep only the best time per player
   const all = [...local, ...online]
-  const seen = new Set<string>()
-  const unique = all.filter(s => {
-    const key = `${s.playerName}:${s.time.toFixed(3)}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
+  const bestPerPlayer = new Map<string, ScoreEntry>()
+  for (const s of all) {
+    const existing = bestPerPlayer.get(s.playerName)
+    if (!existing || s.time < existing.time || (s.time === existing.time && s.date < existing.date)) {
+      bestPerPlayer.set(s.playerName, s)
+    }
+  }
+  const unique = Array.from(bestPerPlayer.values())
+  unique.sort((a, b) => a.time - b.time || a.date.localeCompare(b.date))
 
-  return unique.sort((a, b) => a.time - b.time).slice(0, limit)
+  return unique.slice(0, limit)
 }
 
 /** Get the best time for a challenge */
@@ -103,12 +105,23 @@ export function getBestTime(challengeName: string): number | null {
   return best ? best.time : null
 }
 
-/** Format time as M:SS.cc */
+/** Format time as M:SS (whole seconds aligned to beats) */
 export function formatTime(time: number): string {
-  const mins = Math.floor(time / 60)
-  const secs = Math.floor(time % 60)
-  const ms = Math.floor((time % 1) * 100)
-  return `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`
+  const total = Math.ceil(time)
+  const mins = Math.floor(total / 60)
+  const secs = total % 60
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+}
+
+export function hasOnlineScores(challengeName: string): boolean {
+  return (onlineScores.get(challengeName)?.length ?? 0) > 0
+}
+
+const BANNED = ['fuck','shit','ass','dick','cock','pussy','bitch','slut','whore','cunt','nigger','nigga','faggot','fag','retard','rape','nazi','hitler','penis','vagina','cum','semen','porn','hentai','sex','tits','boob','kys','kms','stfu','gtfo']
+
+export function isNameClean(name: string): boolean {
+  const lower = name.toLowerCase().replace(/[^a-z]/g, '')
+  return !BANNED.some(w => lower.includes(w))
 }
 
 export function clearScores(): void {

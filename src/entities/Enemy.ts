@@ -25,6 +25,9 @@ export interface RingState {
   edgeIndex: number        // target rotation offset
   edgeAngle: number        // smooth current angle (radians)
   edgeBeatCount: number
+  peakX: number            // enemy position at ring peak
+  peakY: number
+  peakCaptured: boolean
 }
 
 export interface Enemy {
@@ -135,6 +138,9 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     edgeIndex: 0,
     edgeAngle: 0,
     edgeBeatCount: 0,
+    peakX: 0,
+    peakY: 0,
+    peakCaptured: false,
   }))
 
   return {
@@ -506,6 +512,17 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     }
   }
 
+  // Preserve bounce speed — reflections can degrade magnitude over time
+  if (isBounce) {
+    const bSpeed = Math.sqrt(enemy.bounceVx * enemy.bounceVx + enemy.bounceVy * enemy.bounceVy)
+    if (bSpeed > 0.1) {
+      const targetSpeed = enemy.moveSpeed
+      const scale = targetSpeed / bSpeed
+      enemy.bounceVx *= scale
+      enemy.bounceVy *= scale
+    }
+  }
+
   // Apply chill slow
   const chillMult = 1 - enemy.chillStacks * CHILL_SLOW_PER_STACK
   enemy.vx = moveX * chillMult
@@ -578,6 +595,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
         const interval = getBeatInterval(rs.patternName)
         rs.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * 0.8)
         rs.attackTimer = 0
+        rs.peakCaptured = false
         playWindup(rs.expandTime, false)
         // Edge mode: advance point after N beats
         if (rs.edgeMode) {

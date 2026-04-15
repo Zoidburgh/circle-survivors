@@ -175,10 +175,12 @@ export interface Camera {
   y: number
   targetX: number
   targetY: number
+  smoothLeadX: number
+  smoothLeadY: number
 }
 
 export function createCamera(): Camera {
-  return { x: ARENA_CX, y: ARENA_CY, targetX: ARENA_CX, targetY: ARENA_CY }
+  return { x: ARENA_CX, y: ARENA_CY, targetX: ARENA_CX, targetY: ARENA_CY, smoothLeadX: 0, smoothLeadY: 0 }
 }
 
 export function updateCamera(
@@ -191,19 +193,23 @@ export function updateCamera(
   screenH: number,
   dt: number
 ): void {
-  // Lead ahead — offset toward movement direction
-  const leadX = playerX + moveX * CAMERA_LEAD_AMOUNT
-  const leadY = playerY + moveY * CAMERA_LEAD_AMOUNT
+  // Lead ahead — smooth ramp toward movement direction
+  const targetLeadX = moveX * CAMERA_LEAD_AMOUNT
+  const targetLeadY = moveY * CAMERA_LEAD_AMOUNT
+  const leadSpeed = 4  // how fast the lead ramps up/down
+  cam.smoothLeadX += (targetLeadX - cam.smoothLeadX) * leadSpeed * dt
+  cam.smoothLeadY += (targetLeadY - cam.smoothLeadY) * leadSpeed * dt
 
   // Smooth follow — boost when player is far from camera (fast dash)
-  cam.targetX = leadX
-  cam.targetY = leadY
+  cam.targetX = playerX + cam.smoothLeadX
+  cam.targetY = playerY + cam.smoothLeadY
   const dx = cam.targetX - cam.x
   const dy = cam.targetY - cam.y
   const dist = Math.sqrt(dx * dx + dy * dy)
   const smoothing = dist > 80 ? 6 + (dist - 80) * 0.08 : 6
-  cam.x += dx * smoothing * dt
-  cam.y += dy * smoothing * dt
+  const step = Math.min(smoothing * dt, 1)  // never overshoot
+  cam.x += dx * step
+  cam.y += dy * step
 
   // Clamp camera
   const halfW = screenW / 2

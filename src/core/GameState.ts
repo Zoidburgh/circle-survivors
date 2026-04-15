@@ -21,6 +21,7 @@ let runTimer = 0         // seconds elapsed
 let runTimerActive = false
 let runComplete = false
 let runFinalTime = 0
+let runBeatCount = 0     // counts player beats since timer started
 
 export function getPlayer(): Player { return player }
 export function getEnemies(): Enemy[] { return enemies }
@@ -34,7 +35,9 @@ export function getRunTimer(): number { return runTimer }
 export function isRunTimerActive(): boolean { return runTimerActive }
 export function isRunComplete(): boolean { return runComplete }
 export function getRunFinalTime(): number { return runFinalTime }
-export function startRunTimer(): void { runTimerActive = true; runTimer = 0 }
+export function startRunTimer(): void { runTimerActive = true; runTimer = 0; runBeatCount = 0 }
+export function incrementRunBeat(): void { if (runTimerActive) runBeatCount++ }
+export function getRunBeatCount(): number { return runBeatCount }
 export function advanceRunTimer(dt: number): void { if (runTimerActive) runTimer += dt }
 export function completeRun(): void { runTimerActive = false; runComplete = true; runFinalTime = runTimer }
 
@@ -65,6 +68,7 @@ export function resetGameState(): void {
   runTimerActive = false
   runComplete = false
   runFinalTime = 0
+  runBeatCount = 0
   resetRitualNodes()
   resetOrbs()
 }

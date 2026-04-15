@@ -2,8 +2,11 @@ import { defineConfig } from 'vite'
 import fs from 'fs'
 import path from 'path'
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   base: './',
+  define: {
+    __DEV__: mode !== 'production',
+  },
   build: {
     modulePreload: false,
     target: 'es2020',
@@ -47,4 +50,4 @@ export default defineConfig({
       },
     },
   ],
-})
+}))

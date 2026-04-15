@@ -264,6 +264,81 @@ export function playPlayerHit(): void {
   osc2.stop(t + 0.2)
 }
 
+export function playVolatileExplosion(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  // Hissing buildup — filtered noise rising in pitch, matches BEAT_SEC
+  const hissLen = 1.0
+  const hissBuf = c.createBuffer(1, Math.floor(c.sampleRate * hissLen), c.sampleRate)
+  const hissData = hissBuf.getChannelData(0)
+  for (let i = 0; i < hissData.length; i++) hissData[i] = (Math.random() * 2 - 1) * 0.4
+  const hiss = c.createBufferSource()
+  hiss.buffer = hissBuf
+  const hissFilter = c.createBiquadFilter()
+  hissFilter.type = 'highpass'
+  hissFilter.frequency.setValueAtTime(1000, t)
+  hissFilter.frequency.exponentialRampToValueAtTime(4000, t + hissLen)
+  const hissGain = c.createGain()
+  hissGain.gain.setValueAtTime(rVol(0.15), t)
+  hissGain.gain.linearRampToValueAtTime(rVol(0.4), t + hissLen * 0.7)
+  hissGain.gain.exponentialRampToValueAtTime(0.001, t + hissLen)
+  hiss.connect(hissFilter)
+  hissFilter.connect(hissGain)
+  hissGain.connect(master)
+  hiss.start(t)
+  hiss.stop(t + hissLen)
+
+  // Explosion boom
+  const popTime = t + hissLen * 0.95
+
+  // Deep bass thud
+  const thud = c.createOscillator()
+  const thudGain = c.createGain()
+  thud.type = 'sine'
+  thud.frequency.setValueAtTime(60, popTime)
+  thud.frequency.exponentialRampToValueAtTime(20, popTime + 0.3)
+  thudGain.gain.setValueAtTime(rVol(1.2), popTime)
+  thudGain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.3)
+  thud.connect(thudGain)
+  thudGain.connect(master)
+  thud.start(popTime)
+  thud.stop(popTime + 0.3)
+
+  // Second bass layer
+  const thud2 = c.createOscillator()
+  const thud2Gain = c.createGain()
+  thud2.type = 'triangle'
+  thud2.frequency.setValueAtTime(45, popTime)
+  thud2.frequency.exponentialRampToValueAtTime(15, popTime + 0.25)
+  thud2Gain.gain.setValueAtTime(rVol(1.0), popTime)
+  thud2Gain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.25)
+  thud2.connect(thud2Gain)
+  thud2Gain.connect(master)
+  thud2.start(popTime)
+  thud2.stop(popTime + 0.25)
+
+  // Low rumble noise burst
+  const boomBuf = c.createBuffer(1, Math.floor(c.sampleRate * 0.2), c.sampleRate)
+  const boomData = boomBuf.getChannelData(0)
+  for (let i = 0; i < boomData.length; i++) boomData[i] = (Math.random() * 2 - 1) * 0.6
+  const boomNoise = c.createBufferSource()
+  boomNoise.buffer = boomBuf
+  const boomFilter = c.createBiquadFilter()
+  boomFilter.type = 'lowpass'
+  boomFilter.frequency.setValueAtTime(800, popTime)
+  boomFilter.frequency.exponentialRampToValueAtTime(200, popTime + 0.15)
+  const boomGain = c.createGain()
+  boomGain.gain.setValueAtTime(rVol(1.1), popTime)
+  boomGain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.2)
+  boomNoise.connect(boomFilter)
+  boomFilter.connect(boomGain)
+  boomGain.connect(master)
+  boomNoise.start(popTime)
+  boomNoise.stop(popTime + 0.2)
+}
+
 export function playShieldBreak(): void {
   ensureContext()
   const c = ctx!

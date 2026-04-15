@@ -9,8 +9,8 @@ import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameStat
 import { update, render } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
 import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, onStartChallenge } from './game/EnemyDesigner.ts'
-import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry } from './render/Renderer.ts'
-import { submitScore } from './game/HighScores.ts'
+import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime } from './render/Renderer.ts'
+import { submitScore, isNameClean } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
 import { setArenaShape } from './game/Arena.ts'
 import { setPattern, getPattern } from './audio/PatternClock.ts'
@@ -119,12 +119,18 @@ window.addEventListener('keydown', e => {
   // Name entry
   if (getPhase() === 'entering_name') {
     if (e.key === 'Enter') {
-      const name = getNameEntryText().trim() || 'Player'
+      const name = (getNameEntryText().trim() || 'Player').slice(0, 16)
+      if (!isNameClean(name)) {
+        setNameEntryText('')  // clear and let them try again
+        return
+      }
       const ch = getActiveChallenge()
-      if (ch) submitScore(ch.name, getRunFinalTime(), name)
+      const scoreTime = Math.ceil(getRunFinalTime())
+      if (ch) submitScore(ch.name, scoreTime, name)
+      setLastSubmittedName(name)
+      setLastSubmittedTime(scoreTime)
       resetNameEntry()
-      // Don't change phase — let victory screen show (isRunComplete is true)
-      setPhase('playing')  // briefly, so victory overlay shows
+      setPhase('playing')
     } else if (e.key === 'Backspace') {
       setNameEntryText(getNameEntryText().slice(0, -1))
     } else if (e.key.length === 1 && getNameEntryText().length < 16) {
@@ -151,22 +157,27 @@ window.addEventListener('keydown', e => {
     setPhase('title')
     return
   }
-  // Victory — return to challenge select
-  if (isRunComplete() && (e.key === ' ' || e.key === 'Enter')) {
-    resetGameState()
-    setPhase('challenge_select')
-    return
-  }
-  // Death screen
-  if (getPhase() === 'dead') {
+  // Victory
+  if (isRunComplete()) {
     if (e.key === 'r' || e.key === 'R') {
       restartChallenge()
-    } else if (e.key === 'Escape' || e.key === ' ') {
+    } else if (e.key === ' ' || e.key === 'Enter' || e.key === 'Escape') {
       resetGameState()
       setPhase('challenge_select')
     }
     return
   }
+  // Death screen — no Space (too easy to accidentally press while dashing)
+  if (getPhase() === 'dead') {
+    if (e.key === 'r' || e.key === 'R') {
+      restartChallenge()
+    } else if (e.key === 'Escape') {
+      resetGameState()
+      setPhase('challenge_select')
+    }
+    return
+  }
+  if (!__DEV__) return  // no debug keys in release
   // F1-F5: switch beat presets
   if (e.key.startsWith('F') && e.key.length <= 3) {
     const num = parseInt(e.key.slice(1))
@@ -260,7 +271,30 @@ window.addEventListener('keydown', e => {
   }
 })
 
+canvas.addEventListener('mousedown', e => {
+  if (isRunComplete()) handleVictoryScrollDragStart(e.clientX, e.clientY)
+})
+canvas.addEventListener('mouseup', () => {
+  handleVictoryScrollDragEnd()
+})
+
 canvas.addEventListener('click', e => {
+  // Victory buttons
+  if (isRunComplete() && getPhase() === 'playing') {
+    const vBtnW = 180, vBtnH = 44, vBtnGap = 14
+    const vBtnY = canvas.height - 80
+    const retryX = canvas.width / 2 - vBtnW - vBtnGap / 2
+    const menuX = canvas.width / 2 + vBtnGap / 2
+    if (e.clientY >= vBtnY && e.clientY <= vBtnY + vBtnH) {
+      if (e.clientX >= retryX && e.clientX <= retryX + vBtnW) {
+        restartChallenge()
+      } else if (e.clientX >= menuX && e.clientX <= menuX + vBtnW) {
+        resetGameState()
+        setPhase('challenge_select')
+      }
+    }
+    return
+  }
   if (getPhase() === 'paused') {
     const pcx = canvas.width / 2
     const pcy = canvas.height * 0.35
@@ -324,15 +358,18 @@ canvas.addEventListener('click', e => {
     handleUpgradeClick(e.clientX, e.clientY, canvas.width, canvas.height)
     return
   }
-  // Challenge builder placement
-  if (challengeCanvasClick?.(e.clientX, e.clientY)) return
-  const idx = getSpawnPanelClick(e.clientX, e.clientY)
-  if (idx >= 0 && idx < ENEMY_TYPES.length) {
-    spawnEnemy(ENEMY_TYPES[idx]!)
+  if (__DEV__) {
+    // Challenge builder placement
+    if (challengeCanvasClick?.(e.clientX, e.clientY)) return
+    const idx = getSpawnPanelClick(e.clientX, e.clientY)
+    if (idx >= 0 && idx < ENEMY_TYPES.length) {
+      spawnEnemy(ENEMY_TYPES[idx]!)
+    }
   }
 })
 
 canvas.addEventListener('mousemove', e => {
+  handleVictoryScrollDrag(e.clientY)
   if (getPhase() === 'challenge_select') {
     handleChallengeSelectHover(e.clientX, e.clientY)
     return
@@ -341,6 +378,13 @@ canvas.addEventListener('mousemove', e => {
   handleShopHover(e.clientX, e.clientY, canvas.width, canvas.height)
   challengeCanvasMouseMove?.(e.clientX, e.clientY)
 })
+
+canvas.addEventListener('wheel', e => {
+  if (isRunComplete()) {
+    scrollVictoryLeaderboard(e.deltaY * 0.5)
+    e.preventDefault()
+  }
+}, { passive: false })
 
 // ── Start game loop ──
 start(update, render)

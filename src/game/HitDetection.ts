@@ -6,6 +6,7 @@ import type { Enemy } from '../entities/Enemy.ts'
 import { getRingExpansion, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { distance } from '../utils/math.ts'
 import { HIT_GRACE, CHILL_MAX_STACKS, BEAT_SEC } from '../utils/constants.ts'
+import { incrementRunBeat } from '../core/GameState.ts'
 import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playCollect } from '../audio/AudioEngine.ts'
 import { getBlockedArcs, isTargetBlocked } from './RingOcclusion.ts'
 import { spawnOrb, collectOrb, ORB_HP_HEAL } from '../entities/XPOrb.ts'
@@ -16,6 +17,7 @@ import { getRitualGroups, hitRitualNode, missRitualNode, getActiveIndex } from '
 
 export function initHitDetection(): void {
   on('player:beat', () => {
+    incrementRunBeat()
     const player = getPlayer()
     const grid = getGrid()
 
@@ -209,8 +211,8 @@ export function initHitDetection(): void {
         if (e.summonProgress >= N && e.summonActivationTimer <= 0) {
           e.summonActivationTimer = BEAT_SEC * 0.5  // half beat for activation
         }
-      } else if (e.summonProgress > 0) {
-        // Miss — reset
+      } else if (e.summonProgress > 0 && !isDashing) {
+        // Miss — reset (skip during dash, beat dash AOE may hit it instead)
         e.summonProgress = 0
         e.summonStartOffset = 0
         for (let i = 0; i < N; i++) e.summonNodeStates[i] = 'idle'

@@ -12,10 +12,10 @@ import { ARENA_W, ARENA_H, ARENA_RADIUS, ARENA_CX, ARENA_CY, PILL_R, PILL_HALF_W
 import { getBlockedArcs } from '../game/RingOcclusion.ts'
 import { getRitualGroups, getActiveIndex } from '../game/RitualNodes.ts'
 import { isPlaceMode, getPlacingEnemies, getSelectedPlacement, getChallenges, getActiveChallenge } from '../game/ChallengeBuilder.ts'
-import { getBestTime, getScoresForChallenge, formatTime } from '../game/HighScores.ts'
+import { getBestTime, getScoresForChallenge, formatTime, hasOnlineScores } from '../game/HighScores.ts'
 import type { Challenge } from '../game/ChallengeBuilder.ts'
 import type { BlockedArc } from '../game/RingOcclusion.ts'
-import { getEnemies, getRunTimer, isRunTimerActive, isRunComplete, getRunFinalTime, getPhase } from '../core/GameState.ts'
+import { getEnemies, getRunTimer, isRunTimerActive, isRunComplete, getRunFinalTime, getPhase, getRunBeatCount } from '../core/GameState.ts'
 import { hasBonus } from '../game/UpgradeManager.ts'
 import { getOrbs } from '../entities/XPOrb.ts'
 import { getBeatName } from '../audio/AudioEngine.ts'
@@ -903,7 +903,23 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     if (!enemy.dying) {
       const arcs = blockedArcsCache.get(enemy) ?? []
       for (const rs of enemy.rings) {
+        // Capture enemy position at ring peak
+        const pastPeak = rs.attackTimer - rs.expandTime
+        if (pastPeak >= 0 && !rs.peakCaptured) {
+          rs.peakX = enemy.x
+          rs.peakY = enemy.y
+          rs.peakCaptured = true
+        }
+        // Use peak position for post-peak, current position for pre-peak
+        const useX = rs.peakCaptured && pastPeak >= 0 ? rs.peakX : enemy.x
+        const useY = rs.peakCaptured && pastPeak >= 0 ? rs.peakY : enemy.y
+        const savedX = enemy.x
+        const savedY = enemy.y
+        enemy.x = useX
+        enemy.y = useY
         const origins = getRingOrigins(enemy, rs)
+        enemy.x = savedX
+        enemy.y = savedY
         for (const origin of origins) {
           drawRing(origin.x, origin.y, rs.ring, rs.attackTimer, undefined, rs.expandTime, arcs)
         }
@@ -1086,9 +1102,11 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   updateAndDrawSpawnEffects(lastDt)
   updateAndDrawAbsorbEffects(lastDt, player)
 
-  drawDesignerPreview(player)
-  drawSpawnPanel()
-  drawChallengePlacements()
+  if (__DEV__) {
+    drawDesignerPreview(player)
+    drawSpawnPanel()
+    drawChallengePlacements()
+  }
   drawHUD(player, enemies, fps)
   perfEnd('R_TOTAL')
   perfFlush()
@@ -4537,12 +4555,42 @@ export function drawTitleScreen(dt: number): void {
 
 // ── Challenge Select Screen ──
 let challengeSelectScroll = 0
+let victoryScroll = 0
+let victoryScrollbarRect: { x: number; y: number; w: number; h: number; thumbH: number; maxScroll: number } | null = null
+let victoryScrollDragging = false
+let victoryAutoScrolled = false
+let lastSubmittedName = ''
+let lastSubmittedTime = 0
+let lastProjectedRank = 0
+let lastDisplayedBeatCount = -1
+let timerFlash = 0
 let challengeSelectHover = -1
 
 export function getChallengeSelectHover(): number { return challengeSelectHover }
 export function getNameEntryText(): string { return nameEntryText }
 export function setNameEntryText(t: string): void { nameEntryText = t }
 export function resetNameEntry(): void { nameEntryText = '' }
+export function scrollVictoryLeaderboard(delta: number): void { victoryScroll += delta }
+export function resetVictoryScroll(): void { victoryScroll = 0; victoryAutoScrolled = false; lastSubmittedName = ''; lastSubmittedTime = 0; lastProjectedRank = 0 }
+export function setLastSubmittedTime(t: number): void { lastSubmittedTime = t }
+export function setLastSubmittedName(name: string): void { lastSubmittedName = name }
+export function handleVictoryScrollDragStart(mx: number, my: number): boolean {
+  if (!victoryScrollbarRect) return false
+  const r = victoryScrollbarRect
+  if (mx >= r.x && mx <= r.x + r.w && my >= r.y && my <= r.y + r.h) {
+    victoryScrollDragging = true
+    return true
+  }
+  return false
+}
+export function handleVictoryScrollDrag(my: number): void {
+  if (!victoryScrollDragging || !victoryScrollbarRect) return
+  const r = victoryScrollbarRect
+  const trackRange = r.h - r.thumbH
+  const relY = Math.max(0, Math.min(my - r.y - r.thumbH / 2, trackRange))
+  victoryScroll = (relY / trackRange) * r.maxScroll
+}
+export function handleVictoryScrollDragEnd(): void { victoryScrollDragging = false }
 
 export function drawChallengeSelect(dt: number): void {
   const now = performance.now() / 1000
@@ -4572,32 +4620,32 @@ export function drawChallengeSelect(dt: number): void {
   const cx = width / 2
 
   // Title
-  ctx.font = 'bold 32px monospace'
+  ctx.font = 'bold 48px monospace'
   ctx.textAlign = 'center'
   ctx.fillStyle = 'rgba(0, 255, 255, 0.9)'
-  ctx.fillText('SELECT CHALLENGE', cx, 60)
+  ctx.fillText('SELECT CHALLENGE', cx, 70)
 
   // Back hint
-  ctx.font = '12px monospace'
+  ctx.font = '14px monospace'
   ctx.fillStyle = 'rgba(255, 255, 255, 0.3)'
-  ctx.fillText('Escape to go back', cx, 85)
+  ctx.fillText('Escape to go back', cx, 95)
 
   if (challenges.length === 0) {
-    ctx.font = '16px monospace'
+    ctx.font = '24px monospace'
     ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
     ctx.fillText('No challenges created yet', cx, height / 2)
-    ctx.font = '13px monospace'
+    ctx.font = '16px monospace'
     ctx.fillStyle = 'rgba(255, 255, 255, 0.25)'
-    ctx.fillText('Open Workshop (Tab) → Challenge Builder to create one', cx, height / 2 + 25)
+    ctx.fillText('Open Workshop (Tab) to create one', cx, height / 2 + 35)
     ctx.textAlign = 'left'
     return
   }
 
   // Challenge cards
-  const cardW = 320
-  const cardH = 80
-  const cardGap = 12
-  const startY = 110
+  const cardW = 560
+  const cardH = 180
+  const cardGap = 22
+  const startY = 120
   const cols = Math.max(1, Math.floor((width - 80) / (cardW + cardGap)))
   const gridW = cols * cardW + (cols - 1) * cardGap
   const gridX = (width - gridW) / 2
@@ -4623,34 +4671,45 @@ export function drawChallengeSelect(dt: number): void {
     ctx.stroke()
 
     // Challenge name
-    ctx.font = 'bold 16px monospace'
+    ctx.font = 'bold 30px monospace'
     ctx.textAlign = 'left'
-    ctx.fillStyle = isHover ? 'rgba(0, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.8)'
-    ctx.fillText(ch.name, cardX + 16, cardY + 28)
-
-    // Info line
-    ctx.font = '11px monospace'
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
-    const best = getBestTime(ch.name)
-    const bestStr = best !== null ? `  •  Best: ${formatTime(best)}` : ''
-    ctx.fillText(`${ch.enemies.length} enemies  •  ${ch.arenaShape}${bestStr}`, cardX + 16, cardY + 48)
-
-    // Best time highlight
-    if (best !== null) {
-      ctx.font = 'bold 12px monospace'
-      ctx.textAlign = 'right'
-      ctx.fillStyle = 'rgba(100, 255, 160, 0.7)'
-      ctx.fillText(formatTime(best), cardX + cardW - 16, cardY + 48)
-      ctx.textAlign = 'left'
-    }
+    ctx.fillStyle = isHover ? 'rgba(0, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.85)'
+    ctx.fillText(ch.name, cardX + 24, cardY + 38)
 
     // Play hint on hover
     if (isHover) {
-      ctx.font = 'bold 13px monospace'
+      ctx.font = 'bold 22px monospace'
       ctx.textAlign = 'right'
       ctx.fillStyle = `rgba(0, 255, 255, ${0.6 + pulse * 0.3})`
-      ctx.fillText('PLAY ▶', cardX + cardW - 16, cardY + 28)
+      ctx.fillText('PLAY ▶', cardX + cardW - 24, cardY + 36)
       ctx.textAlign = 'left'
+    }
+
+    // Top scores header
+    ctx.font = 'bold 18px monospace'
+    ctx.fillStyle = 'rgba(0, 255, 255, 0.5)'
+    ctx.fillText('TOP SCORES', cardX + 24, cardY + 66)
+
+    // Top 3 scores
+    const top3 = getScoresForChallenge(ch.name, 3)
+    const medalColors = ['rgba(255, 215, 64, 0.75)', 'rgba(120, 220, 255, 0.65)', 'rgba(255, 160, 80, 0.6)']
+    for (let s = 0; s < 3; s++) {
+      const scoreY = cardY + 94 + s * 28
+      if (s < top3.length) {
+        const sc = top3[s]!
+        ctx.font = 'bold 18px monospace'
+        ctx.textAlign = 'left'
+        ctx.fillStyle = medalColors[s]!
+        ctx.fillText(`${s + 1}.`, cardX + 24, scoreY)
+        ctx.fillText(sc.playerName, cardX + 50, scoreY)
+        ctx.textAlign = 'right'
+        ctx.fillText(formatTime(sc.time), cardX + cardW - 24, scoreY)
+        ctx.textAlign = 'left'
+      } else {
+        ctx.font = '18px monospace'
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.12)'
+        ctx.fillText(`${s + 1}.  ---`, cardX + 24, scoreY)
+      }
     }
   }
 
@@ -4659,7 +4718,7 @@ export function drawChallengeSelect(dt: number): void {
 
 export function handleChallengeSelectClick(mx: number, my: number): Challenge | null {
   const challenges = getChallenges()
-  const cardW = 320, cardH = 80, cardGap = 12, startY = 110
+  const cardW = 560, cardH = 180, cardGap = 22, startY = 120
   const cols = Math.max(1, Math.floor((width - 80) / (cardW + cardGap)))
   const gridW = cols * cardW + (cols - 1) * cardGap
   const gridX = (width - gridW) / 2
@@ -4678,7 +4737,7 @@ export function handleChallengeSelectClick(mx: number, my: number): Challenge | 
 
 export function handleChallengeSelectHover(mx: number, my: number): void {
   const challenges = getChallenges()
-  const cardW = 320, cardH = 80, cardGap = 12, startY = 110
+  const cardW = 560, cardH = 180, cardGap = 22, startY = 120
   const cols = Math.max(1, Math.floor((width - 80) / (cardW + cardGap)))
   const gridW = cols * cardW + (cols - 1) * cardGap
   const gridX = (width - gridW) / 2
@@ -4794,151 +4853,360 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
   const pat = getPattern()
   const loopPos = getLoopPosition()
   const loopLen = getLoopLength()
-  ctx.fillText(`FPS: ${fps}`, x, 20)
-  ctx.fillText(`HP: ${player.hp}/${player.maxHp}`, x, 36)
-  ctx.fillText(`Enemies: ${enemies.filter(e => e.alive).length}`, x, 52)
-  ctx.fillText(`XP: ${player.xp}`, x, 68)
-  ctx.fillText(`Beat: ${getBeatName()} | Song: ${pat?.name ?? 'none'} [${loopPos.toFixed(1)}/${loopLen}]`, x - 80, 84)
-  ctx.fillText(`WASD=move  LMB=dash  Tab=designer  F1-F11=beats`, 10, height - 12)
-  ctx.fillText(`1-5=spawn  0=spawn 100`, 10, height - 28)
+  if (__DEV__) {
+    ctx.fillText(`FPS: ${fps}`, x, 20)
+    ctx.fillText(`HP: ${player.hp}/${player.maxHp}`, x, 36)
+    ctx.fillText(`Enemies: ${enemies.filter(e => e.alive).length}`, x, 52)
+    ctx.fillText(`XP: ${player.xp}`, x, 68)
+    ctx.fillText(`Beat: ${getBeatName()} | Song: ${pat?.name ?? 'none'} [${loopPos.toFixed(1)}/${loopLen}]`, x - 80, 84)
+    ctx.fillText(`WASD=move  LMB=dash  Tab=designer  F1-F11=beats`, 10, height - 12)
+    ctx.fillText(`1-5=spawn  0=spawn 100`, 10, height - 28)
+  }
 
   // Run timer — top center
   if (isRunTimerActive() || isRunComplete()) {
-    const time = isRunComplete() ? getRunFinalTime() : getRunTimer()
-    const mins = Math.floor(time / 60)
-    const secs = Math.floor(time % 60)
-    const ms = Math.floor((time % 1) * 100)
-    const timeStr = `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`
-    ctx.font = 'bold 24px monospace'
+    const total = isRunComplete() ? Math.ceil(getRunFinalTime()) : getRunBeatCount()
+    // Detect beat change for hard flash
+    if (total !== lastDisplayedBeatCount && lastDisplayedBeatCount >= 0) {
+      timerFlash = 1
+    }
+    lastDisplayedBeatCount = total
+    timerFlash = Math.max(0, timerFlash - frameDt * 5)
+
+    const mins = Math.floor(total / 60)
+    const secs = total % 60
+    const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`
+    const timerSize = 56 + timerFlash * 16
+    ctx.font = `bold ${Math.round(timerSize)}px monospace`
     ctx.textAlign = 'center'
-    ctx.fillStyle = isRunComplete() ? 'rgba(100, 255, 160, 0.9)' : 'rgba(255, 255, 255, 0.7)'
-    ctx.fillText(timeStr, width / 2, 30)
+    const pulseAlpha = isRunComplete() ? 0.95 : 0.6 + timerFlash * 0.4
+    ctx.fillStyle = isRunComplete() ? `rgba(100, 255, 160, ${pulseAlpha})` : `rgba(0, 255, 255, ${pulseAlpha})`
+    ctx.fillText(timeStr, width / 2, 70)
+    // Bright flash overlay on beat
+    if (timerFlash > 0.5) {
+      ctx.fillStyle = `rgba(255, 255, 255, ${(timerFlash - 0.5) * 0.5})`
+      ctx.fillText(timeStr, width / 2, 70)
+    }
     ctx.textAlign = 'left'
   }
 
   // Victory screen overlay
   if (isRunComplete()) {
     const time = getRunFinalTime()
-    const mins = Math.floor(time / 60)
-    const secs = Math.floor(time % 60)
-    const ms = Math.floor((time % 1) * 100)
-    const timeStr = `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`
+    const timeStr = formatTime(time)
 
-    // Semi-transparent overlay
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'
+    // Dark overlay
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.65)'
     ctx.fillRect(0, 0, width, height)
 
     const vcx = width / 2
-    const vcy = height * 0.4
+    const ch = getActiveChallenge()
+    const topScores = ch ? getScoresForChallenge(ch.name, 100) : []
+    // Find my entry by exact name + time match
+    let myRank = 0
+    if (lastSubmittedName && lastSubmittedTime > 0) {
+      for (let i = 0; i < topScores.length; i++) {
+        if (topScores[i]!.playerName === lastSubmittedName && topScores[i]!.time === lastSubmittedTime) {
+          myRank = i + 1
+          break
+        }
+      }
+    }
 
-    // Title
-    ctx.font = 'bold 48px monospace'
+    // === Top section: Your result ===
+    const topY = 40
+
+    // "VICTORY" title
+    ctx.font = 'bold 64px monospace'
     ctx.textAlign = 'center'
     ctx.fillStyle = 'rgba(100, 255, 160, 0.95)'
-    ctx.fillText('VICTORY', vcx, vcy)
+    ctx.fillText('VICTORY', vcx, topY + 60)
 
-    // Time
-    ctx.font = 'bold 36px monospace'
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
-    ctx.fillText(timeStr, vcx, vcy + 50)
+    // Your time — BIG
+    ctx.font = 'bold 56px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.95)'
+    ctx.fillText(timeStr, vcx, topY + 125)
 
-    // Best time comparison
-    const ch = getActiveChallenge()
-    if (ch) {
-      const best = getBestTime(ch.name)
-      if (best !== null) {
-        const isBest = time <= best
-        ctx.font = 'bold 16px monospace'
-        if (isBest) {
+    // Your rank
+    if (myRank > 0) {
+      const rankColors = ['rgba(255, 215, 64, 0.95)', 'rgba(120, 220, 255, 0.9)', 'rgba(255, 160, 80, 0.9)']
+      const rankColor = myRank <= 3 ? rankColors[myRank - 1]! : 'rgba(0, 255, 255, 0.8)'
+      ctx.font = 'bold 36px monospace'
+      ctx.fillStyle = rankColor
+      ctx.fillText(`#${myRank}`, vcx, topY + 170)
+
+      if (ch) {
+        const best = getBestTime(ch.name)
+        if (best !== null && time <= best) {
+          ctx.font = 'bold 22px monospace'
           ctx.fillStyle = 'rgba(255, 215, 64, 0.9)'
-          ctx.fillText('NEW BEST!', vcx, vcy + 75)
-        } else {
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.5)'
-          ctx.fillText(`Best: ${formatTime(best)}`, vcx, vcy + 75)
+          ctx.fillText('NEW BEST!', vcx, topY + 200)
         }
       }
     }
 
-    // Top scores list
-    if (ch) {
-      const topScores = getScoresForChallenge(ch.name, 30)
-      if (topScores.length > 0) {
-        const listY = vcy + 100
-        ctx.font = 'bold 13px monospace'
-        ctx.fillStyle = 'rgba(0, 255, 255, 0.6)'
-        ctx.fillText('TOP TIMES', vcx, listY)
+    // === Leaderboard section ===
+    if (topScores.length > 0) {
+      const listTop = topY + 225
+      const listW = 520
+      const listX = vcx - listW / 2
 
-        const rowH = 18
-        const listStartY = listY + 14
-        const maxVisible = Math.min(topScores.length, Math.floor((height - listStartY - 40) / rowH))
+      // Header — Global or Local
+      const isGlobal = ch ? hasOnlineScores(ch.name) : false
+      ctx.font = 'bold 22px monospace'
+      ctx.fillStyle = 'rgba(0, 255, 255, 0.7)'
+      ctx.fillText(isGlobal ? 'GLOBAL LEADERBOARD' : 'LOCAL LEADERBOARD', vcx, listTop)
 
-        for (let i = 0; i < maxVisible; i++) {
-          const s = topScores[i]!
-          const rowY = listStartY + i * rowH
-          const isCurrentRun = s.time === time && s.date === new Date().toISOString().slice(0, 10)
-          const rankStr = `${i + 1}.`.padStart(3)
+      // Separator line
+      ctx.beginPath()
+      ctx.moveTo(listX, listTop + 12)
+      ctx.lineTo(listX + listW, listTop + 12)
+      ctx.strokeStyle = 'rgba(0, 255, 255, 0.15)'
+      ctx.lineWidth = 1
+      ctx.stroke()
 
-          ctx.font = '12px monospace'
-          // Rank
+      const rowH = 38
+      const listStartY = listTop + 36
+      const visibleHeight = height - listStartY - 90
+      const totalHeight = topScores.length * rowH
+      const maxScroll = Math.max(0, totalHeight - visibleHeight)
+      victoryScroll = Math.max(0, Math.min(victoryScroll, maxScroll))
+
+      // Auto-scroll to user's score — once only
+      if (!victoryAutoScrolled && myRank > 0) {
+        victoryAutoScrolled = true
+        const myRowTop = (myRank - 1) * rowH
+        if (myRowTop > visibleHeight - rowH) {
+          victoryScroll = Math.min(myRowTop - visibleHeight / 2, maxScroll)
+        }
+      }
+
+      // Clip so rows don't scroll over the header
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(0, listStartY - 22, width, height - listStartY - 65)
+      ctx.clip()
+
+      for (let i = 0; i < topScores.length; i++) {
+        const s = topScores[i]!
+        const rowY = listStartY + i * rowH - victoryScroll
+        if (rowY < listStartY - rowH || rowY > height - 90) continue
+        const isMe = i === myRank - 1
+        const isTop3 = i < 3
+
+        // Highlight row for current player
+        if (isMe) {
+          ctx.beginPath()
+          ctx.roundRect(listX, rowY - 20, listW, rowH - 2, 4)
+          ctx.fillStyle = 'rgba(0, 255, 255, 0.08)'
+          ctx.fill()
+          ctx.strokeStyle = 'rgba(0, 255, 255, 0.25)'
+          ctx.lineWidth = 1
+          ctx.stroke()
+        }
+
+        // Medal / rank colors — gold, cyan-silver, warm bronze
+        const medalColors = ['rgba(255, 215, 64, 0.95)', 'rgba(120, 220, 255, 0.9)', 'rgba(255, 160, 80, 0.85)']
+        const rankColor = isTop3 ? medalColors[i]! : isMe ? 'rgba(0, 255, 255, 0.7)' : 'rgba(255, 255, 255, 0.35)'
+        const nameColor = isTop3 ? medalColors[i]! : isMe ? 'rgba(0, 255, 255, 0.9)' : 'rgba(255, 255, 255, 0.65)'
+        const timeColor = isTop3 ? medalColors[i]! : isMe ? 'rgba(0, 255, 255, 0.9)' : 'rgba(255, 255, 255, 0.75)'
+
+        // Rank
+        ctx.font = 'bold 22px monospace'
+        ctx.textAlign = 'right'
+        ctx.fillStyle = rankColor
+        ctx.fillText(`${i + 1}`, listX + 30, rowY)
+
+        // Name
+        ctx.font = `${isMe ? 'bold ' : ''}20px monospace`
+        ctx.textAlign = 'left'
+        ctx.fillStyle = nameColor
+        ctx.fillText(s.playerName, listX + 45, rowY)
+
+        // Time
+        ctx.font = `${isMe ? 'bold ' : ''}20px monospace`
+        ctx.textAlign = 'right'
+        ctx.fillStyle = timeColor
+        ctx.fillText(formatTime(s.time), listX + listW - 80, rowY)
+
+        // Time delta relative to your run
+        if (!isMe) {
+          const delta = s.time - time
+          const deltaStr = delta > 0 ? `+${Math.round(delta)}` : `${Math.round(delta)}`
+          ctx.font = '14px monospace'
           ctx.textAlign = 'right'
-          ctx.fillStyle = i === 0 ? 'rgba(255, 215, 64, 0.8)' : 'rgba(255, 255, 255, 0.4)'
-          ctx.fillText(rankStr, vcx - 60, rowY)
-          // Name
-          ctx.textAlign = 'left'
-          ctx.fillStyle = i === 0 ? 'rgba(255, 215, 64, 0.8)' : 'rgba(255, 255, 255, 0.6)'
-          ctx.fillText(s.playerName, vcx - 50, rowY)
-          // Time
-          ctx.textAlign = 'right'
-          ctx.fillStyle = i === 0 ? 'rgba(255, 215, 64, 0.9)' : 'rgba(255, 255, 255, 0.7)'
-          ctx.fillText(formatTime(s.time), vcx + 100, rowY)
+          ctx.fillStyle = delta < 0 ? 'rgba(255, 80, 80, 0.5)' : delta > 0 ? 'rgba(100, 255, 160, 0.5)' : 'rgba(255, 255, 255, 0.3)'
+          ctx.fillText(deltaStr, listX + listW - 10, rowY)
+        }
+      }
+
+      // Scrollbar
+      if (maxScroll > 0) {
+        const sbX = listX + listW + 8
+        const sbW = 6
+        const sbTrackH = visibleHeight
+        const sbThumbH = Math.max(30, (visibleHeight / totalHeight) * sbTrackH)
+        const sbThumbY = listStartY + (victoryScroll / maxScroll) * (sbTrackH - sbThumbH)
+
+        // Track
+        ctx.beginPath()
+        ctx.roundRect(sbX, listStartY, sbW, sbTrackH, 3)
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.06)'
+        ctx.fill()
+
+        // Thumb
+        ctx.beginPath()
+        ctx.roundRect(sbX, sbThumbY, sbW, sbThumbH, 3)
+        ctx.fillStyle = 'rgba(0, 255, 255, 0.3)'
+        ctx.fill()
+
+        // Store scrollbar rect for mouse drag
+        victoryScrollbarRect = { x: sbX - 4, y: listStartY, w: sbW + 8, h: sbTrackH, thumbH: sbThumbH, maxScroll }
+      } else {
+        victoryScrollbarRect = null
+      }
+      ctx.restore()  // end list clip
+    }
+
+    // Celebration fireworks for top 10
+    if (myRank > 0 && myRank <= 10) {
+      const intensity = myRank <= 3 ? 0.12 : 0.06  // top 3 = more frequent
+      // Both sides simultaneously
+      for (let side = 0; side < 2; side++) {
+        if (Math.random() < intensity) {
+          const sx = side === 0 ? width * 0.15 + Math.random() * width * 0.1 : width * 0.75 + Math.random() * width * 0.1
+          const sy = height * (0.25 + Math.random() * 0.4)
+          const count = myRank <= 3 ? 20 : 12
+          // Pick a random burst color
+          const colorSet = [
+            [255, 215, 64],   // gold
+            [0, 255, 255],    // cyan
+            [255, 50, 200],   // magenta
+            [100, 255, 160],  // green
+            [255, 160, 80],   // orange
+            [120, 220, 255],  // light blue
+          ]
+          const baseColor = colorSet[Math.floor(Math.random() * colorSet.length)]!
+          for (let p = 0; p < count; p++) {
+            const angle = Math.random() * Math.PI * 2
+            const speed = 100 + Math.random() * 180
+            const pr = Math.min(255, baseColor[0]! + Math.floor((Math.random() - 0.5) * 50))
+            const pg = Math.min(255, baseColor[1]! + Math.floor((Math.random() - 0.5) * 50))
+            const pb = Math.min(255, baseColor[2]! + Math.floor((Math.random() - 0.5) * 50))
+            spawnParticle(
+              sx + camX, sy + camY,
+              Math.cos(angle) * speed,
+              Math.sin(angle) * speed - 40,
+              pr, pg, pb,
+              0.6 + Math.random() * 0.5, 5 + Math.random() * 5)
+          }
+          // White core sparks
+          for (let p = 0; p < 6; p++) {
+            const angle = Math.random() * Math.PI * 2
+            const speed = 60 + Math.random() * 100
+            spawnParticle(
+              sx + camX, sy + camY,
+              Math.cos(angle) * speed,
+              Math.sin(angle) * speed - 30,
+              255, 255, 255,
+              0.3 + Math.random() * 0.2, 3 + Math.random() * 3)
+          }
         }
       }
     }
 
-    // Hint
-    ctx.font = '14px monospace'
+    // Buttons at bottom
+    const vBtnW = 180
+    const vBtnH = 44
+    const vBtnGap = 14
+    const vBtnY = height - 80
+    const retryX = vcx - vBtnW - vBtnGap / 2
+    const menuX = vcx + vBtnGap / 2
+
+    // Try Again
+    ctx.beginPath()
+    ctx.roundRect(retryX, vBtnY, vBtnW, vBtnH, 6)
+    ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)'
+    ctx.lineWidth = 2
+    ctx.stroke()
+    ctx.fillStyle = 'rgba(0, 255, 255, 0.08)'
+    ctx.fill()
+    ctx.font = 'bold 18px monospace'
     ctx.textAlign = 'center'
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
-    ctx.fillText('Press Space to continue', vcx, height - 30)
+    ctx.fillStyle = 'rgba(0, 255, 255, 0.8)'
+    ctx.fillText('TRY AGAIN', retryX + vBtnW / 2, vBtnY + vBtnH / 2 + 6)
+
+    // Menu
+    ctx.beginPath()
+    ctx.roundRect(menuX, vBtnY, vBtnW, vBtnH, 6)
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)'
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'
+    ctx.fill()
+    ctx.font = 'bold 16px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
+    ctx.fillText('MENU', menuX + vBtnW / 2, vBtnY + vBtnH / 2 + 6)
 
     ctx.textAlign = 'left'
   }
 
   // Name entry screen
   if (getPhase() === 'entering_name') {
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'
+    ctx.fillStyle = COLOR_BG
     ctx.fillRect(0, 0, width, height)
 
     const ncx = width / 2
-    const ncy = height * 0.35
+    const ncy = height * 0.2
 
     const time = getRunFinalTime()
     const timeStr = formatTime(time)
 
-    ctx.font = 'bold 36px monospace'
+    ctx.font = 'bold 64px monospace'
     ctx.textAlign = 'center'
     ctx.fillStyle = 'rgba(100, 255, 160, 0.95)'
     ctx.fillText('VICTORY', ncx, ncy)
 
-    ctx.font = 'bold 28px monospace'
+    ctx.font = 'bold 56px monospace'
     ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
-    ctx.fillText(timeStr, ncx, ncy + 40)
+    ctx.fillText(timeStr, ncx, ncy + 70)
 
-    ctx.font = '16px monospace'
+    // Compute projected rank
+    const ch = getActiveChallenge()
+    const projectedScores = ch ? getScoresForChallenge(ch.name, 100) : []
+    const roundedTime = Math.ceil(time)
+    // Project where this score lands — one entry per player, so count unique positions
+    let projectedRank = projectedScores.length + 1
+    for (let i = 0; i < projectedScores.length; i++) {
+      if (roundedTime < projectedScores[i]!.time) { projectedRank = i + 1; break }
+    }
+    // If tied, go after all ties
+    while (projectedRank <= projectedScores.length && projectedScores[projectedRank - 1]!.time === roundedTime) {
+      projectedRank++
+    }
+    lastProjectedRank = projectedRank
+    const pRankColors = ['rgba(255, 215, 64, 0.95)', 'rgba(120, 220, 255, 0.9)', 'rgba(255, 160, 80, 0.9)']
+    const pRankColor = projectedRank <= 3 ? pRankColors[projectedRank - 1]! : 'rgba(0, 255, 255, 0.8)'
+
+    ctx.font = 'bold 40px monospace'
+    ctx.fillStyle = pRankColor
+    ctx.fillText(`RANK #${projectedRank}`, ncx, ncy + 130)
+
+    ctx.font = 'bold 28px monospace'
     ctx.fillStyle = 'rgba(255, 215, 64, 0.9)'
-    ctx.fillText('NEW HIGH SCORE!', ncx, ncy + 70)
+    ctx.fillText('NEW HIGH SCORE!', ncx, ncy + 175)
 
-    ctx.font = '14px monospace'
+    ctx.font = '24px monospace'
     ctx.fillStyle = 'rgba(255, 255, 255, 0.5)'
-    ctx.fillText('Enter your name:', ncx, ncy + 100)
+    ctx.fillText('Enter your name:', ncx, ncy + 230)
 
     // Name input box
-    const boxW = 240
-    const boxH = 36
+    const boxW = 400
+    const boxH = 60
     const boxX = ncx - boxW / 2
-    const boxY = ncy + 110
+    const boxY = ncy + 245
     ctx.beginPath()
-    ctx.roundRect(boxX, boxY, boxW, boxH, 4)
+    ctx.roundRect(boxX, boxY, boxW, boxH, 6)
     ctx.fillStyle = 'rgba(255, 255, 255, 0.08)'
     ctx.fill()
     ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)'
@@ -4946,16 +5214,142 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.stroke()
 
     // Name text + cursor
-    ctx.font = 'bold 18px monospace'
+    ctx.font = 'bold 34px monospace'
     ctx.fillStyle = 'rgba(0, 255, 255, 0.9)'
     const cursor = Math.floor(performance.now() / 500) % 2 === 0 ? '|' : ''
-    ctx.fillText(nameEntryText + cursor, ncx, boxY + boxH / 2 + 6)
+    ctx.fillText(nameEntryText + cursor, ncx, boxY + boxH / 2 + 10)
 
-    ctx.font = '12px monospace'
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.3)'
-    ctx.fillText('Press Enter to confirm', ncx, boxY + boxH + 20)
+    // Rank flavor text
+    const rankMessages: Record<string, string[]> = {
+      '1': [
+        'You are the fastest. For now.',
+        'Nobody\'s touching this.',
+        'The top. Where you belong.',
+        'They\'ll all be chasing your ghost.',
+        'Screenshot this before someone takes it.',
+        'Crown fits nice, doesn\'t it?',
+      ],
+      '2': [
+        'So close. The throne is right there.',
+        'Second place. First loser.',
+        'One run away from glory.',
+        'You can taste first place from here.',
+        'The gap is smaller than you think.',
+        'Almost had it. Almost.',
+      ],
+      '3': [
+        'Podium. Not bad.',
+        'Bronze hits different when you earned it.',
+        'Third. Two people were faster. For now.',
+        'Close enough to smell the gold.',
+        'Top 3 is top 3.',
+        'The podium accepts you.',
+      ],
+      '4-10': [
+        'Top 10. Respect.',
+        'The leaderboard notices you.',
+        'Dangerous territory. Keep going.',
+        'You belong up here.',
+        'The top 3 should be worried.',
+        'One good run from the podium.',
+        'You\'re warming up, aren\'t you?',
+      ],
+      '11-25': [
+        'Solid. Keep pushing.',
+        'Getting warm.',
+        'Not bad. Not great. Not done.',
+        'You can see the top from here.',
+        'The board respects a grinder.',
+        'Halfway to something special.',
+        'Your fingers know the way. Trust them.',
+      ],
+      '26-50': [
+        'You know you\'re better than this.',
+        'Average. Prove me wrong.',
+        'Middle of the pack. For now.',
+        'Decent run. Forgettable, but decent.',
+        'The leaderboard has seen worse.',
+        'One of many. Be one of few.',
+        'Your rival just beat this time. Probably.',
+      ],
+      '51-75': [
+        'Hey, you finished.',
+        'It\'s a start. A slow start.',
+        'At least you\'re on the board.',
+        'Technically a score.',
+        'The game felt that one.',
+        'There\'s levels to this. You found the bottom ones.',
+        'You looked cool doing it though. Maybe.',
+      ],
+      '76-90': [
+        'Well... you tried.',
+        'Participation trophy unlocked.',
+        'Your keyboard works, at least.',
+        'Did you play with your eyes closed?',
+        'The enemies felt bad for you.',
+        'Bold of you to submit this.',
+        'Somewhere, a speedrunner just cringed.',
+      ],
+      '91-100': [
+        'Made the board. Barely.',
+        'Scraping the bottom here.',
+        'Nowhere to go but up.',
+        'Rock bottom has a nice view.',
+        'You\'re basically the tutorial.',
+        'At least 101st place isn\'t a thing.',
+        'This is your villain origin story.',
+      ],
+    }
+    let msgKey = '91-100'
+    if (projectedRank === 1) msgKey = '1'
+    else if (projectedRank === 2) msgKey = '2'
+    else if (projectedRank === 3) msgKey = '3'
+    else if (projectedRank <= 10) msgKey = '4-10'
+    else if (projectedRank <= 25) msgKey = '11-25'
+    else if (projectedRank <= 50) msgKey = '26-50'
+    else if (projectedRank <= 75) msgKey = '51-75'
+    else if (projectedRank <= 90) msgKey = '76-90'
+    const msgs = rankMessages[msgKey]!
+    // Seed from rank + time so it's stable per run
+    const msgIdx = Math.floor((time * 7 + projectedRank * 13) % msgs.length)
+    ctx.font = 'bold 26px monospace'
+    ctx.fillStyle = projectedRank <= 3 ? 'rgba(255, 215, 64, 0.9)' : projectedRank <= 10 ? 'rgba(0, 255, 255, 0.8)' : 'rgba(255, 255, 255, 0.6)'
+    ctx.fillText(msgs[msgIdx]!, ncx, boxY + boxH + 45)
+
+    ctx.font = '16px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.25)'
+    ctx.fillText('Press Enter to confirm', ncx, boxY + boxH + 75)
+
+    // Celebration fireworks during name entry — top 10 only
+    if (projectedRank <= 10) for (let side = 0; side < 2; side++) {
+      if (Math.random() < 0.1) {
+        const sx = side === 0 ? width * 0.15 + Math.random() * width * 0.1 : width * 0.75 + Math.random() * width * 0.1
+        const sy = height * (0.25 + Math.random() * 0.4)
+        const colorSet = [[255, 215, 64], [0, 255, 255], [255, 50, 200], [100, 255, 160], [255, 160, 80], [120, 220, 255]]
+        const baseColor = colorSet[Math.floor(Math.random() * colorSet.length)]!
+        for (let p = 0; p < 18; p++) {
+          const angle = Math.random() * Math.PI * 2
+          const speed = 100 + Math.random() * 180
+          spawnParticle(sx + camX, sy + camY,
+            Math.cos(angle) * speed, Math.sin(angle) * speed - 40,
+            Math.min(255, baseColor[0]! + Math.floor((Math.random() - 0.5) * 50)),
+            Math.min(255, baseColor[1]! + Math.floor((Math.random() - 0.5) * 50)),
+            Math.min(255, baseColor[2]! + Math.floor((Math.random() - 0.5) * 50)),
+            0.6 + Math.random() * 0.5, 5 + Math.random() * 5)
+        }
+        for (let p = 0; p < 5; p++) {
+          const angle = Math.random() * Math.PI * 2
+          const speed = 60 + Math.random() * 100
+          spawnParticle(sx + camX, sy + camY,
+            Math.cos(angle) * speed, Math.sin(angle) * speed - 30,
+            255, 255, 255, 0.3 + Math.random() * 0.2, 3 + Math.random() * 3)
+        }
+      }
+    }
 
     ctx.textAlign = 'left'
+    updateParticles(lastDt)
+    drawParticles()
   }
 
   // Pause screen
@@ -5020,10 +5414,10 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
   // Death screen
   if (getPhase() === 'dead') {
     const time = getRunTimer()
-    const mins = Math.floor(time / 60)
-    const secs = Math.floor(time % 60)
-    const ms = Math.floor((time % 1) * 100)
-    const timeStr = `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`
+    const total = Math.ceil(time)
+    const mins = Math.floor(total / 60)
+    const secs = total % 60
+    const timeStr = `${mins}:${secs.toString().padStart(2, '0')}`
 
     // Dark overlay
     ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'

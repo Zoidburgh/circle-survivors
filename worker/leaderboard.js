@@ -1,13 +1,26 @@
 // Cloudflare Worker — Beatback Leaderboard API
 // KV Namespace binding: SCORES
 
+// Banned words — lowercase, checked as substrings
+const BANNED_WORDS = [
+  'fuck','shit','ass','dick','cock','pussy','bitch','slut','whore','cunt',
+  'nigger','nigga','faggot','fag','retard','rape','nazi','hitler',
+  'penis','vagina','cum','semen','porn','hentai','sex','tits','boob',
+  'kys','kms','stfu','gtfo',
+];
+
+function isNameClean(name) {
+  const lower = name.toLowerCase().replace(/[^a-z]/g, '');
+  return !BANNED_WORDS.some(w => lower.includes(w));
+}
+
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-const MAX_SCORES = 30;
+const MAX_SCORES = 100;
 
 export default {
   async fetch(request, env) {
@@ -25,6 +38,13 @@ export default {
 
         if (!challengeName || typeof time !== 'number' || !playerName) {
           return new Response(JSON.stringify({ error: 'Missing fields' }), {
+            status: 400,
+            headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
+          });
+        }
+
+        if (!isNameClean(playerName)) {
+          return new Response(JSON.stringify({ error: 'Name not allowed' }), {
             status: 400,
             headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
           });
@@ -51,7 +71,7 @@ export default {
         });
 
         // Sort and keep top N
-        existing.sort((a, b) => a.time - b.time);
+        existing.sort((a, b) => a.time - b.time || a.date.localeCompare(b.date));
         const trimmed = existing.slice(0, MAX_SCORES);
 
         await env.SCORES.put(key, JSON.stringify(trimmed));
