@@ -155,6 +155,7 @@ window.addEventListener('keydown', e => {
   }
   // Pause toggle
   if (getPhase() === 'playing' && e.key === 'Escape') {
+    Input.clearKeys()
     setPhase('paused')
     return
   }
@@ -430,6 +431,7 @@ canvas.addEventListener('wheel', e => {
 // Auto-pause when exiting fullscreen during gameplay
 function onFullscreenExit(): void {
   if (!document.fullscreenElement && getPhase() === 'playing') {
+    Input.clearKeys()
     setPhase('paused')
   }
 }
@@ -440,6 +442,7 @@ let wasFullscreenSize = false
 window.addEventListener('resize', () => {
   const isFullSize = window.innerWidth === screen.width && window.innerHeight === screen.height
   if (wasFullscreenSize && !isFullSize && getPhase() === 'playing') {
+    Input.clearKeys()
     setPhase('paused')
   }
   wasFullscreenSize = isFullSize
