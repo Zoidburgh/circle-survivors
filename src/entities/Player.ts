@@ -165,9 +165,9 @@ export function resetPlayer(player: Player): void {
   player.extraRingTimers = [-1, -1, -1, -1]
   player.extraRingCount = 0
   player.damageCooldown = 0
-  player.shieldCharges = SHIELD_MAX_CHARGES
+  player.shieldCharges = 0
   player.shieldMaxCharges = SHIELD_MAX_CHARGES
-  player.shieldRechargeTimer = -1
+  player.shieldRechargeTimer = SHIELD_RECHARGE_TIME
   player.shieldBreakFlash = 0
   player.shieldRechargeTime = SHIELD_RECHARGE_TIME
   player.modifiers = createDefaultModifiers()
@@ -207,6 +207,7 @@ export function hurtPlayer(player: Player, amount: number): boolean {
   // Restart shield recharge when taking HP damage
   if (player.shieldRechargeTimer > 0) {
     player.shieldRechargeTimer = player.shieldRechargeTime
+    emit('player:shieldRechargeReset', player)
   }
 
   return true
@@ -397,11 +398,11 @@ export function updatePlayer(player: Player, dt: number): void {
     const readySlot = player.dashSlots.findIndex(t => t <= 0)
     if (readySlot >= 0) {
       // Check if dash is on-beat (ring is near peak)
-      const nearPeak = player.attackTimer >= 0 && Math.abs(player.attackTimer - ATTACK_EXPAND_TIME) < 0.14
+      const nearPeak = player.attackTimer >= 0 && Math.abs(player.attackTimer - ATTACK_EXPAND_TIME) < 0.15
       // Also check extra ring timers
       let extraNearPeak = false
       for (let i = 0; i < player.extraRingCount; i++) {
-        if (player.extraRingTimers[i]! >= 0 && Math.abs(player.extraRingTimers[i]! - ATTACK_EXPAND_TIME) < 0.14) {
+        if (player.extraRingTimers[i]! >= 0 && Math.abs(player.extraRingTimers[i]! - ATTACK_EXPAND_TIME) < 0.15) {
           extraNearPeak = true
         }
       }

@@ -700,7 +700,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
         </div>
         <div id="ed-volatile-range-wrap-${id}" style="margin-top:4px;display:${existing?.volatile ? 'block' : 'none'};">
           <span style="color:#FF6D00;font:10px monospace;">Blast: <span id="ed-volatile-range-val-${id}">${existing?.volatileRange ?? 150}</span></span>
-          <input id="ed-volatile-range-${id}" type="range" min="80" max="400" step="10" value="${existing?.volatileRange ?? 150}" style="width:100%;">
+          <input id="ed-volatile-range-${id}" type="range" min="80" max="800" step="10" value="${existing?.volatileRange ?? 150}" style="width:100%;">
         </div>
         <div id="ed-revenge-wrap-${id}" style="margin-top:4px;display:${existing?.revenge ? 'block' : 'none'};">
           <div style="display:flex;gap:6px;">

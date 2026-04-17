@@ -18,7 +18,7 @@ import type { BlockedArc } from '../game/RingOcclusion.ts'
 import { getEnemies, getRunTimer, isRunTimerActive, isRunComplete, getRunFinalTime, getPhase, getRunBeatCount } from '../core/GameState.ts'
 import { hasBonus } from '../game/UpgradeManager.ts'
 import { getOrbs } from '../entities/XPOrb.ts'
-import { getBeatName } from '../audio/AudioEngine.ts'
+import { getBeatName, getVolume } from '../audio/AudioEngine.ts'
 import { BEAT_SEC } from '../utils/constants.ts'
 import {
   GRID_ALPHA,
@@ -61,7 +61,12 @@ let titleTime = 0         // time since title screen started
 let titleBeatPulse = 0    // beat pulse for title screen
 let titleLastBeat = -1    // last whole beat seen on title
 let nameEntryText = ''    // current name being typed
+let pauseMouseX = 0
+let pauseMouseY = 0
+export function updatePauseMouse(x: number, y: number): void { pauseMouseX = x; pauseMouseY = y }
 let bgPulseSmooth = 0    // smoothed follower for background color
+let gameTimeMs = 0       // accumulated game time in ms (pauses when game pauses)
+export function getGameTimeMs(): number { return gameTimeMs }
 let outerPulseIntensity = 0
 let dashSweepIntensity = 0
 let beatDashFlash = 0       // countdown for beat dash shockwave visual
@@ -549,12 +554,12 @@ function updateAndDrawSpawnEffects(dt: number): void {
     // 3. Spawn pulse ring — expands from spawn point when head arrives
     if (t > 0.3) {
       const pulseT = (t - 0.3) / 0.7
-      const pulseR = 10 + pulseT * 40
-      const pulseAlpha = (1 - pulseT) * (1 - pulseT) * 0.4
+      const pulseR = 16 + pulseT * 70
+      const pulseAlpha = (1 - pulseT) * (1 - pulseT) * 0.5
       ctx.beginPath()
       ctx.arc(sx2, sy2, pulseR, 0, Math.PI * 2)
       ctx.strokeStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${pulseAlpha})`
-      ctx.lineWidth = 2 * (1 - pulseT)
+      ctx.lineWidth = 3 * (1 - pulseT)
       ctx.stroke()
     }
   }
@@ -618,7 +623,7 @@ function spawnParticle(
 }
 
 export function triggerBeatDashFlash(x: number, y: number, radius: number): void {
-  beatDashFlash = 0.32
+  beatDashFlash = 0.444
   beatDashX = x
   beatDashY = y
   beatDashRadius = radius
@@ -666,8 +671,8 @@ function updateParticles(dt: number): void {
     p.life += dt / p.lifetime
     p.x += p.vx * dt
     p.y += p.vy * dt
-    p.vx *= 0.96
-    p.vy *= 0.96
+    p.vx *= 0.98
+    p.vy *= 0.98
     if (p.life >= 1) {
       particles[i] = particles[particles.length - 1]!
       particles.pop()
@@ -678,7 +683,7 @@ function updateParticles(dt: number): void {
 function drawParticles(): void {
   for (const p of particles) {
     const t = 1 - p.life
-    const alpha = t * t  // ease-out: stays visible longer, fades smoothly at end
+    const alpha = Math.min(1, t * 1.6)  // bright early, smooth fade
     const sx = p.x - camX
     const sy = p.y - camY
     const spin = p.life * 2.7 + (p.x * 0.01)  // spin based on lifetime + unique offset
@@ -797,12 +802,14 @@ export function resetRenderer(): void {
   dashSweepIntensity = 0
   dashSweepPath = []
   shieldDisplayProgress = 0
+  gameTimeMs = 0
 }
 
 export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0, dt = 0.016, cam?: Camera): void {
   perfStart('R_TOTAL')
   lastDt = dt
   frameDt = dt
+  if (getPhase() === 'playing') gameTimeMs += dt * 1000
   if (cam) {
     camX = cam.x - width / 2
     camY = cam.y - height / 2
@@ -1031,7 +1038,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   // Beat dash shockwave — drawn on top of everything
   if (beatDashFlash > 0) {
     beatDashFlash -= lastDt
-    const t = beatDashFlash / 0.32  // 1→0
+    const t = beatDashFlash / 0.444  // 1→0
     const bsx = beatDashX - camX
     const bsy = beatDashY - camY
 
@@ -1069,7 +1076,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     ctx.stroke()
 
     // Initial burst particles on first frame
-    if (beatDashFlash > 0.30) {
+    if (beatDashFlash > 0.42) {
       for (let p = 0; p < 8; p++) {
         const pa = (p / 8) * Math.PI * 2 + Math.random() * 0.4
         const dist = beatDashRadius * (0.3 + Math.random() * 0.7)
@@ -1077,7 +1084,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
           beatDashX + Math.cos(pa) * dist,
           beatDashY + Math.sin(pa) * dist,
           Math.cos(pa) * 60, Math.sin(pa) * 60,
-          0, 230, 255, 0.2 + Math.random() * 0.1, 4 + Math.random() * 3)
+          0, 230, 255, 0.25 + Math.random() * 0.15, 7 + Math.random() * 5)
       }
     }
 
@@ -1094,7 +1101,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
         spawnParticle(px, py,
           Math.cos(outA) * speed, Math.sin(outA) * speed - 15,
           255, 60 + Math.floor(Math.random() * 60), 50 + Math.floor(Math.random() * 50),
-          0.15 + Math.random() * 0.12, 2 + Math.random() * 2)
+          0.2 + Math.random() * 0.15, 4 + Math.random() * 3)
       }
     }
   }
@@ -1889,14 +1896,16 @@ function drawPlayer(player: Player): void {
     ctx.rect(-camX, -camY, ARENA_W, ARENA_H)
   }
   ctx.clip()
+  const shielded = player.shieldCharges > 0
   for (let i = 0; i < player.trail.length; i++) {
     const t = player.trail[i]!
     const tx = t.x - camX
     const ty = t.y - camY
-    const alpha = (i / player.trail.length) * 0.12
+    const frac = i / player.trail.length
+    const alpha = frac * (shielded ? 0.18 : 0.12)
     ctx.beginPath()
-    ctx.arc(tx, ty, baseRadius * (0.5 + 0.5 * i / player.trail.length), 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(79, 195, 247, ${alpha})`
+    ctx.arc(tx, ty, baseRadius * (0.5 + 0.5 * frac), 0, Math.PI * 2)
+    ctx.fillStyle = shielded ? `rgba(255, 80, 220, ${alpha})` : `rgba(79, 195, 247, ${alpha})`
     ctx.fill()
   }
   ctx.restore()
@@ -1956,11 +1965,11 @@ function drawPlayer(player: Player): void {
   const hpStart = -Math.PI / 2
   const hpEnd = hpStart + hpFraction * Math.PI * 2
 
-  // Hit particles — burst from inside the damage wedge (same as enemy blood)
+  // Hit particles — burst from inside the damage wedge
   if (player.hitFlash > HIT_FLASH_DURATION - 0.02 && player.shieldBreakFlash <= 0) {
     const dmgFraction = 1 / player.maxHp
     const intensity = Math.min(Math.max(dmgFraction / 0.05, 1), 3)
-    const count = Math.floor(8 * intensity)
+    const count = Math.floor(16 * intensity)
     // Damage arc: from current HP to where displayHp was (the fresh bite)
     const dmgArcStart = hpStart + actualPlayerHp * Math.PI * 2
     const dmgArcEnd = dmgArcStart + dmgFraction * Math.PI * 2
@@ -1970,11 +1979,23 @@ function drawPlayer(player: Player): void {
       const dist = Math.random() * drawRadius
       const px = player.x + Math.cos(angle) * dist
       const py = player.y + Math.sin(angle) * dist
-      const speed = (80 + Math.random() * 100) * (0.8 + intensity * 0.2)
+      const speed = (228 + Math.random() * 325) * (0.8 + intensity * 0.2)
       const outAngle = Math.atan2(py - player.y, px - player.x)
-      const size = (2.5 + Math.random() * 2.5) * (0.8 + intensity * 0.2)
-      spawnParticle(px, py, Math.cos(outAngle) * speed, Math.sin(outAngle) * speed,
-        255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, size)
+      const spread = (Math.random() - 0.5) * speed * 0.25
+      const size = (3 + Math.random() * 3) * (0.8 + intensity * 0.2)
+      const isBlue = Math.random() < 0.2
+      spawnParticle(px, py,
+        Math.cos(outAngle) * speed + spread, Math.sin(outAngle) * speed + spread,
+        isBlue ? 79 : 255, isBlue ? 195 : 80 + Math.floor(Math.random() * 50), isBlue ? 247 : 70,
+        0.55 + Math.random() * 0.35, size)
+    }
+    // Extra center spray — white-hot core burst
+    for (let i = 0; i < 6; i++) {
+      const angle = dmgArcStart + Math.random() * arcSpan
+      const speed = 98 + Math.random() * 195
+      spawnParticle(player.x, player.y,
+        Math.cos(angle) * speed, Math.sin(angle) * speed,
+        255, 200 + Math.floor(Math.random() * 55), 180, 0.3 + Math.random() * 0.2, 3 + Math.random() * 2)
     }
   }
 
@@ -2109,13 +2130,6 @@ function drawPlayer(player: Player): void {
       ctx.stroke()
     }
 
-    // Wide soft outer glow
-    ctx.beginPath()
-    ctx.arc(sx, sy, drawRadius + 2, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(255, 50, 200, ${0.12 + pulse * 0.1})`
-    ctx.lineWidth = 5 + pulse * 2
-    ctx.stroke()
-
     // Core energy ring
     ctx.beginPath()
     ctx.arc(sx, sy, drawRadius, 0, Math.PI * 2)
@@ -2130,29 +2144,20 @@ function drawPlayer(player: Player): void {
     ctx.lineWidth = 1
     ctx.stroke()
 
-    // Beat pulse on shield — flares on beat
-    if (globalBeatPulse > 0.3) {
-      const beatAlpha = globalBeatPulse * 0.15
-      ctx.beginPath()
-      ctx.arc(sx, sy, drawRadius + 3 + globalBeatPulse * 4, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(255, 120, 220, ${beatAlpha})`
-      ctx.lineWidth = 2 + globalBeatPulse * 2
-      ctx.stroke()
-    }
 
-    // Ambient shield sparks — evenly around circumference
-    const sparkCount = globalBeatPulse > 0.5 ? 3 : 1
+    // Ambient shield sparks — constant stream around circumference
+    const sparkCount = globalBeatPulse > 0.5 ? 5 : 2
     for (let s = 0; s < sparkCount; s++) {
-      if (Math.random() < 0.5) {
+      if (Math.random() < 0.7) {
         const sparkAngle = Math.random() * Math.PI * 2
         const outAngle = sparkAngle + (Math.random() - 0.5) * 1.2
-        const speed = 35 + Math.random() * 60
+        const speed = 50 + Math.random() * 80
         spawnParticle(
           player.x + Math.cos(sparkAngle) * drawRadius,
           player.y + Math.sin(sparkAngle) * drawRadius,
           Math.cos(outAngle) * speed, Math.sin(outAngle) * speed,
           255, 100 + Math.floor(Math.random() * 100), 220,
-          0.14 + Math.random() * 0.1, 3.5)
+          0.14 + Math.random() * 0.1, 2.5 + Math.random() * 1.5)
       }
     }
   } else if (player.shieldRechargeTimer > 0) {
@@ -2189,25 +2194,43 @@ function drawPlayer(player: Player): void {
       const b = Math.round(200 + flash * 40)
 
       ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${0.6 + progress * 0.35 + flash * 0.05})`
-      ctx.lineWidth = 3 + flash
+      ctx.lineWidth = 3 + flash + progress * 1.5
       ctx.stroke()
+
+      // Outer glow that grows with progress
+      if (progress > 0.2) {
+        ctx.beginPath()
+        ctx.arc(sx, sy, drawRadius + 1, -Math.PI / 2, -Math.PI / 2 + visProgress * Math.PI * 2)
+        ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${progress * 0.2})`
+        ctx.lineWidth = 3 + progress * 3
+        ctx.stroke()
+      }
 
       // Leading tip glow + sparks
       const tipAngle = -Math.PI / 2 + visProgress * Math.PI * 2
       const tipX = sx + Math.cos(tipAngle) * drawRadius
       const tipY = sy + Math.sin(tipAngle) * drawRadius
 
-      // Sparks from the tip
-      for (let s = 0; s < 2; s++) {
-        if (Math.random() < 0.25 + visProgress * 0.25) {
+      // Tip glow — grows with progress
+      const tipGlowR = 4 + progress * 10
+      ctx.beginPath()
+      ctx.arc(tipX, tipY, tipGlowR, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 150, 230, ${0.2 + progress * 0.4})`
+      ctx.fill()
+
+      // Sparks from the tip — more and bigger as it progresses
+      const sparkCount = Math.floor(1 + progress * 3)
+      for (let s = 0; s < sparkCount; s++) {
+        if (Math.random() < 0.25 + visProgress * 0.5) {
           const sparkAngle = tipAngle + (Math.random() - 0.5) * 1.5
-          const speed = 50 + Math.random() * 90
+          const speed = (50 + Math.random() * 90) * (1 + progress * 0.5)
+          const sparkSize = (5 + Math.random() * 3) * (1 + progress * 0.8)
           spawnParticle(
             player.x + Math.cos(tipAngle) * drawRadius,
             player.y + Math.sin(tipAngle) * drawRadius,
             Math.cos(sparkAngle) * speed, Math.sin(sparkAngle) * speed,
             255, 100 + Math.floor(Math.random() * 100), 220,
-            0.2 + Math.random() * 0.12, 5 + Math.random() * 3)
+            0.2 + Math.random() * 0.12, sparkSize)
         }
       }
     }
@@ -2272,24 +2295,64 @@ function drawPlayer(player: Player): void {
 
   // Shield break particles — explosive burst from body edge
   if (player.shieldBreakFlash > SHIELD_BREAK_FLASH - 0.02 && player.shieldBreakFlash <= SHIELD_BREAK_FLASH) {
-    for (let i = 0; i < 35; i++) {
-      const angle = (i / 35) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
+    // Main pink shard burst — wide spread
+    for (let i = 0; i < 50; i++) {
+      const angle = (i / 50) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
       const px = player.x + Math.cos(angle) * drawRadius
       const py = player.y + Math.sin(angle) * drawRadius
-      const speed = 438 + Math.random() * 375
+      const speed = 500 + Math.random() * 400
       spawnParticle(px, py,
-        Math.cos(angle) * speed, Math.sin(angle) * speed,
-        255, 50, 200, 0.3 + Math.random() * 0.15, 5.5 + Math.random() * 5.5)
+        Math.cos(angle) * speed + (Math.random() - 0.5) * 120,
+        Math.sin(angle) * speed + (Math.random() - 0.5) * 120,
+        255, 50 + Math.floor(Math.random() * 60), 200,
+        0.4 + Math.random() * 0.25, 6 + Math.random() * 7)
     }
-    // Hot white core sparks
-    for (let i = 0; i < 12; i++) {
+    // Hot white core sparks — fast, far
+    for (let i = 0; i < 20; i++) {
       const angle = Math.random() * Math.PI * 2
-      const px = player.x + Math.cos(angle) * drawRadius
-      const py = player.y + Math.sin(angle) * drawRadius
-      const speed = 563 + Math.random() * 313
+      const px = player.x + Math.cos(angle) * drawRadius * 0.5
+      const py = player.y + Math.sin(angle) * drawRadius * 0.5
+      const speed = 600 + Math.random() * 400
       spawnParticle(px, py,
         Math.cos(angle) * speed, Math.sin(angle) * speed,
-        255, 220, 255, 0.3 + Math.random() * 0.15, 3.3 + Math.random() * 2.2)
+        255, 220, 255, 0.35 + Math.random() * 0.2, 4 + Math.random() * 3)
+    }
+    // Slow drifting embers — linger after the burst
+    for (let i = 0; i < 15; i++) {
+      const angle = Math.random() * Math.PI * 2
+      const dist = drawRadius * (0.5 + Math.random() * 0.5)
+      const speed = 30 + Math.random() * 60
+      spawnParticle(
+        player.x + Math.cos(angle) * dist,
+        player.y + Math.sin(angle) * dist,
+        Math.cos(angle) * speed + (Math.random() - 0.5) * 20,
+        Math.sin(angle) * speed - 20 - Math.random() * 30,
+        255, 100, 220, 0.5 + Math.random() * 0.3, 3 + Math.random() * 3)
+    }
+  }
+
+  // Shield break shockwave — expanding ring over the flash duration
+  if (player.shieldBreakFlash > 0) {
+    const bt = player.shieldBreakFlash / SHIELD_BREAK_FLASH  // 1→0
+    const shockR = drawRadius + (1 - bt) * 120
+    ctx.beginPath()
+    ctx.arc(sx, sy, shockR, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(255, 80, 220, ${bt * bt * 0.6})`
+    ctx.lineWidth = 5 * bt + 1
+    ctx.stroke()
+    // Second inner ring
+    const innerR = drawRadius + (1 - bt) * 50
+    ctx.beginPath()
+    ctx.arc(sx, sy, innerR, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(255, 200, 255, ${bt * 0.4})`
+    ctx.lineWidth = 3 * bt
+    ctx.stroke()
+    // Center flash
+    if (bt > 0.7) {
+      ctx.beginPath()
+      ctx.arc(sx, sy, drawRadius + 2, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 150, 240, ${(bt - 0.7) * 2})`
+      ctx.fill()
     }
   }
 
@@ -2320,7 +2383,7 @@ function drawPlayer(player: Player): void {
         const angle = baseAngle + spiralRot
         const dx = Math.cos(angle) * currentR
         const dy = Math.sin(angle) * currentR
-        const size = 3 + t * t * 8
+        const size = 4.5 + t * t * 12
         const white = 1 - t
         const cr = 255
         const cg = Math.round(200 * white + 50 * (1 - white))
@@ -2337,7 +2400,7 @@ function drawPlayer(player: Player): void {
           spawnParticle(
             player.x + dx, player.y + dy,
             Math.cos(trailAngle) * trailSpeed, Math.sin(trailAngle) * trailSpeed,
-            cr, cg, cb, 0.15 + Math.random() * 0.1, 2 + Math.random() * 2)
+            cr, cg, cb, 0.15 + Math.random() * 0.1, 3 + Math.random() * 3)
         }
       }
     } else {
@@ -2377,7 +2440,7 @@ function drawPlayer(player: Player): void {
             player.y + Math.sin(a) * drawRadius,
             Math.cos(a) * speed, Math.sin(a) * speed,
             255, 120 + Math.floor(Math.random() * 100), 230,
-            0.15 + Math.random() * 0.1, 4 + Math.random() * 3)
+            0.15 + Math.random() * 0.1, 6 + Math.random() * 4.5)
         }
       }
     }
@@ -2632,11 +2695,13 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   }
   ctx.fill()
 
-  // Hit particles — burst from the pie edge, intensity scales with damage fraction
+  // Hit particles — burst from the pie edge, intensity scales with damage fraction + enemy size
   if (enemy.hitFlash > HIT_FLASH_DURATION - 0.02) {
     const hitFraction = damageFraction  // fraction of maxHp dealt
-    const intensity = Math.min(Math.max(hitFraction / 0.20, 1), 4)  // 1x at <=20%, up to 4x at 80%+
-    const count = Math.floor(8 * intensity)
+    const dmgIntensity = Math.min(Math.max(hitFraction / 0.20, 1), 4)  // 1x at <=20%, up to 4x at 80%+
+    const sizeBonus = Math.min(r / 44, 3)  // bigger enemies = more blood (up to 3x)
+    const intensity = Math.max(dmgIntensity, sizeBonus)
+    const count = Math.floor(12 * intensity)
     // Only the fresh bite — from actual HP to where displayHp is (the red drain wedge)
     const damageArcStart = startAngle + (enemy.hp / enemy.maxHp) * Math.PI * 2
     const damageArcEnd = damageArcStart + damageFraction * Math.PI * 2
@@ -2646,24 +2711,24 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const dist = Math.random() * r
       const px = enemy.x + Math.cos(angle) * dist
       const py = enemy.y + Math.sin(angle) * dist
-      const speed = (100 + Math.random() * 180) * (0.8 + intensity * 0.2)
+      const speed = (228 + Math.random() * 358) * (0.8 + intensity * 0.2)
       const outAngle = Math.atan2(py - enemy.y, px - enemy.x)
-      const vx = Math.cos(outAngle) * speed + (Math.random() - 0.5) * speed * 0.15
-      const vy = Math.sin(outAngle) * speed + (Math.random() - 0.5) * speed * 0.15
+      const vx = Math.cos(outAngle) * speed + (Math.random() - 0.5) * speed * 0.2
+      const vy = Math.sin(outAngle) * speed + (Math.random() - 0.5) * speed * 0.2
       const sizeScale = Math.min(r / 44, 1)
-      const size = (3 + Math.random() * 3) * (0.8 + intensity * 0.2) * sizeScale
-      spawnParticle(px, py, vx, vy, 255, 80 + Math.floor(Math.random() * 50), 70, 0.4 + Math.random() * 0.3, size)
+      const size = (4 + Math.random() * 4) * (0.8 + intensity * 0.2) * sizeScale * sizeScale
+      spawnParticle(px, py, vx, vy, 255, 80 + Math.floor(Math.random() * 50), 70, 0.5 + Math.random() * 0.35, size)
     }
     // Blood spray from center — enemy colored
-    const sprayCount = Math.floor(4 * intensity)
+    const sprayCount = Math.floor(6 * intensity)
     for (let i = 0; i < sprayCount; i++) {
       const angle = Math.random() * Math.PI * 2
-      const speed = 40 + Math.random() * 100 * intensity
+      const speed = 98 + Math.random() * 211 * intensity
       const sizeScale2 = Math.min(r / 44, 1)
-      const size = (2.5 + Math.random() * 3) * (0.8 + intensity * 0.2) * sizeScale2
+      const size = (3.5 + Math.random() * 4) * (0.8 + intensity * 0.2) * sizeScale2 * sizeScale2
       spawnParticle(enemy.x, enemy.y,
         Math.cos(angle) * speed, Math.sin(angle) * speed,
-        230 + Math.floor(Math.random() * 25), 40 + Math.floor(Math.random() * 40), 40, 0.4 + Math.random() * 0.3, size)
+        230 + Math.floor(Math.random() * 25), 40 + Math.floor(Math.random() * 40), 40, 0.5 + Math.random() * 0.35, size)
     }
   }
 
@@ -3133,7 +3198,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       spawnParticle(px, py,
         (Math.random() - 0.5) * 20, -25 - Math.random() * 35,
         255, Math.floor(60 + tint * 80), Math.floor(tint * 30),
-        0.15 + Math.random() * 0.12, (3 + Math.random() * 2.5) * fireScale)
+        0.15 + Math.random() * 0.12, (4.95 + Math.random() * 4.14) * fireScale)
     }
   }
 
@@ -3213,7 +3278,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
 
   // Summon — orbiting ritual nodes inside enemy body
   if (enemy.summon && r > 5 && !enemy.dying) {
-    const now = performance.now()
+    const now = gameTimeMs  // pauses with game
     const N = enemy.summonNodes
     const orbitR = r * 0.55  // nodes orbit at 55% of enemy radius
     const nodeR = Math.max(8, r * 0.34)  // node size scales with enemy
@@ -4525,43 +4590,53 @@ export function drawTitleScreen(dt: number): void {
   const btnPulse = 0.5 + 0.5 * Math.sin(now * 3)
   const btnBeat = titleBeatPulse
 
+  // Start button hover
+  const startHov = pauseMouseX >= cx - btnW / 2 && pauseMouseX <= cx + btnW / 2 && pauseMouseY >= btnY && pauseMouseY <= btnY + btnH
+  const hovB = startHov ? 0.15 : 0
+
   // Button glow
   ctx.beginPath()
   ctx.roundRect(cx - btnW / 2 - 4, btnY - 4, btnW + 8, btnH + 8, 8)
-  ctx.fillStyle = `rgba(0, 255, 255, ${0.03 + btnBeat * 0.06})`
+  ctx.fillStyle = `rgba(0, 255, 255, ${0.03 + btnBeat * 0.06 + hovB})`
   ctx.fill()
 
   // Button border
   ctx.beginPath()
   ctx.roundRect(cx - btnW / 2, btnY, btnW, btnH, 6)
-  ctx.strokeStyle = `rgba(0, 255, 255, ${0.4 + btnPulse * 0.2 + btnBeat * 0.3})`
-  ctx.lineWidth = 2 + btnBeat
+  ctx.strokeStyle = `rgba(0, 255, 255, ${0.4 + btnPulse * 0.2 + btnBeat * 0.3 + hovB * 2})`
+  ctx.lineWidth = 2 + btnBeat + (startHov ? 1 : 0)
   ctx.stroke()
 
   // Button fill
-  ctx.fillStyle = `rgba(0, 255, 255, ${0.06 + btnBeat * 0.08})`
+  ctx.fillStyle = `rgba(0, 255, 255, ${0.06 + btnBeat * 0.08 + hovB})`
   ctx.fill()
 
   // Button text
   ctx.font = 'bold 26px monospace'
   ctx.textAlign = 'center'
-  ctx.fillStyle = `rgba(0, 255, 255, ${0.7 + btnPulse * 0.15 + btnBeat * 0.15})`
+  ctx.fillStyle = `rgba(0, 255, 255, ${0.7 + btnPulse * 0.15 + btnBeat * 0.15 + hovB})`
   ctx.fillText('S T A R T', cx, btnY + btnH / 2 + 7)
 
   // Fullscreen button
   const fsY = btnY + btnH + 160
   const fsW = 240
   const fsH = 50
+  const fsHov = pauseMouseX >= cx - fsW / 2 && pauseMouseX <= cx + fsW / 2 && pauseMouseY >= fsY && pauseMouseY <= fsY + fsH
   ctx.beginPath()
   ctx.roundRect(cx - fsW / 2, fsY, fsW, fsH, 5)
-  ctx.strokeStyle = 'rgba(255, 50, 200, 0.35)'
-  ctx.lineWidth = 1.5
+  ctx.strokeStyle = `rgba(255, 50, 200, ${fsHov ? 0.65 : 0.35})`
+  ctx.lineWidth = fsHov ? 2.5 : 1.5
   ctx.stroke()
-  ctx.fillStyle = 'rgba(255, 50, 200, 0.06)'
+  ctx.fillStyle = `rgba(255, 50, 200, ${fsHov ? 0.18 : 0.06})`
   ctx.fill()
   ctx.font = 'bold 22px monospace'
-  ctx.fillStyle = 'rgba(255, 50, 200, 0.7)'
-  ctx.fillText(document.fullscreenElement ? 'EXIT FULLSCREEN' : 'FULLSCREEN', cx, fsY + fsH / 2 + 7)
+  ctx.fillStyle = `rgba(255, 50, 200, ${fsHov ? 0.95 : 0.7})`
+  ctx.fillText(document.fullscreenElement ? 'WINDOWED' : 'FULLSCREEN', cx, fsY + fsH / 2 + 7)
+
+  // Volume slider
+  const volSliderW = 180
+  const volRect = drawVolumeSlider(cx - volSliderW / 2, fsY + fsH + 30, volSliderW)
+  volumeSliderRect = volRect
 
   ctx.textAlign = 'left'
 
@@ -4581,6 +4656,15 @@ let lastSubmittedTime = 0
 let lastProjectedRank = 0
 let lastDisplayedBeatCount = -1
 let timerFlash = 0
+
+// Controls hint — shows at challenge start, fades out
+let controlsHintTimer = 0
+const CONTROLS_HINT_DURATION = 3.5  // seconds visible
+const CONTROLS_HINT_FADE = 1.0      // seconds to fade out
+
+export function showControlsHint(): void {
+  controlsHintTimer = CONTROLS_HINT_DURATION + CONTROLS_HINT_FADE
+}
 let challengeSelectHover = -1
 
 export function getChallengeSelectHover(): number { return challengeSelectHover }
@@ -4660,7 +4744,7 @@ export function drawChallengeSelect(dt: number): void {
 
   // Challenge cards
   const cardW = 560
-  const cardH = 180
+  const cardH = 228
   const cardGap = 22
   const startY = 120
   const cols = Math.max(1, Math.floor((width - 80) / (cardW + cardGap)))
@@ -4707,23 +4791,23 @@ export function drawChallengeSelect(dt: number): void {
     ctx.fillStyle = 'rgba(0, 255, 255, 0.5)'
     ctx.fillText('TOP SCORES', cardX + 24, cardY + 66)
 
-    // Top 3 scores
-    const top3 = getScoresForChallenge(ch.name, 3)
+    // Top 5 scores
+    const top5 = getScoresForChallenge(ch.name, 5)
     const medalColors = ['rgba(255, 215, 64, 0.75)', 'rgba(120, 220, 255, 0.65)', 'rgba(255, 160, 80, 0.6)']
-    for (let s = 0; s < 3; s++) {
-      const scoreY = cardY + 94 + s * 28
-      if (s < top3.length) {
-        const sc = top3[s]!
-        ctx.font = 'bold 18px monospace'
+    for (let s = 0; s < 5; s++) {
+      const scoreY = cardY + 94 + s * 24
+      if (s < top5.length) {
+        const sc = top5[s]!
+        ctx.font = 'bold 16px monospace'
         ctx.textAlign = 'left'
-        ctx.fillStyle = medalColors[s]!
+        ctx.fillStyle = s < 3 ? medalColors[s]! : 'rgba(255, 255, 255, 0.45)'
         ctx.fillText(`${s + 1}.`, cardX + 24, scoreY)
         ctx.fillText(sc.playerName, cardX + 50, scoreY)
         ctx.textAlign = 'right'
         ctx.fillText(formatTime(sc.time), cardX + cardW - 24, scoreY)
         ctx.textAlign = 'left'
       } else {
-        ctx.font = '18px monospace'
+        ctx.font = '16px monospace'
         ctx.fillStyle = 'rgba(255, 255, 255, 0.12)'
         ctx.fillText(`${s + 1}.  ---`, cardX + 24, scoreY)
       }
@@ -4907,6 +4991,80 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.textAlign = 'left'
   }
 
+  // Controls hint
+  if (controlsHintTimer > 0) {
+    controlsHintTimer -= frameDt
+    const alpha = controlsHintTimer <= CONTROLS_HINT_FADE
+      ? Math.max(0, controlsHintTimer / CONTROLS_HINT_FADE)
+      : 1
+    ctx.save()
+    const cx = width / 2
+    const a = alpha
+
+    // Arrow key infographic — key boxes in a cross pattern
+    const keySize = 48
+    const gap = 5
+    const baseY = height / 2 + 200
+    const keyColor = `rgba(255, 255, 255, ${(0.12 * a).toFixed(3)})`
+    const borderColor = `rgba(0, 255, 255, ${(0.4 * a).toFixed(3)})`
+    const arrowColor = `rgba(0, 255, 255, ${(0.85 * a).toFixed(3)})`
+
+    // Key positions: up top-center, left/down/right bottom row
+    const keys = [
+      { x: cx, y: baseY - keySize - gap, arrow: '\u25B2' },             // up
+      { x: cx - keySize - gap, y: baseY, arrow: '\u25C0' },             // left
+      { x: cx, y: baseY, arrow: '\u25BC' },                             // down
+      { x: cx + keySize + gap, y: baseY, arrow: '\u25B6' },             // right
+    ]
+
+    ctx.font = 'bold 22px monospace'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    for (const k of keys) {
+      const kx = k.x - keySize / 2
+      const ky = k.y - keySize / 2
+      // Key background
+      ctx.fillStyle = keyColor
+      ctx.beginPath()
+      ctx.roundRect(kx, ky, keySize, keySize, 6)
+      ctx.fill()
+      // Key border
+      ctx.strokeStyle = borderColor
+      ctx.lineWidth = 1.5
+      ctx.beginPath()
+      ctx.roundRect(kx, ky, keySize, keySize, 6)
+      ctx.stroke()
+      // Arrow symbol
+      ctx.fillStyle = arrowColor
+      ctx.fillText(k.arrow, k.x, k.y)
+    }
+
+    // Spacebar key below arrows — "SPACE = DASH"
+    const spaceY = baseY + keySize / 2 + gap + 18
+    const spaceW = keySize * 3 + gap * 2 + 80
+    const spaceH = 46
+    const spaceX = cx - spaceW / 2
+    // Key background
+    ctx.fillStyle = `rgba(0, 255, 255, ${(0.1 * a).toFixed(3)})`
+    ctx.beginPath()
+    ctx.roundRect(spaceX, spaceY, spaceW, spaceH, 6)
+    ctx.fill()
+    // Key border
+    ctx.strokeStyle = `rgba(0, 255, 255, ${(0.45 * a).toFixed(3)})`
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    ctx.roundRect(spaceX, spaceY, spaceW, spaceH, 6)
+    ctx.stroke()
+    // Label
+    ctx.font = 'bold 24px monospace'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle = `rgba(0, 255, 255, ${(0.7 * a).toFixed(3)})`
+    ctx.fillText('SPACE = DASH', cx, spaceY + spaceH / 2)
+
+    ctx.restore()
+  }
+
   // Victory screen overlay
   if (isRunComplete()) {
     const time = getRunFinalTime()
@@ -4970,7 +5128,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
 
       // Header — Global or Local
       const isGlobal = ch ? hasOnlineScores(ch.name) : false
-      ctx.font = 'bold 22px monospace'
+      ctx.font = 'bold 28px monospace'
       ctx.fillStyle = 'rgba(0, 255, 255, 0.7)'
       ctx.fillText(isGlobal ? 'GLOBAL LEADERBOARD' : 'LOCAL LEADERBOARD', vcx, listTop)
 
@@ -5141,28 +5299,30 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     const menuX = vcx + vBtnGap / 2
 
     // Try Again
+    const vRetryHov = pauseMouseX >= retryX && pauseMouseX <= retryX + vBtnW && pauseMouseY >= vBtnY && pauseMouseY <= vBtnY + vBtnH
     ctx.beginPath()
     ctx.roundRect(retryX, vBtnY, vBtnW, vBtnH, 6)
-    ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)'
-    ctx.lineWidth = 2
+    ctx.strokeStyle = `rgba(0, 255, 255, ${vRetryHov ? 0.8 : 0.5})`
+    ctx.lineWidth = vRetryHov ? 2.5 : 2
     ctx.stroke()
-    ctx.fillStyle = 'rgba(0, 255, 255, 0.08)'
+    ctx.fillStyle = `rgba(0, 255, 255, ${vRetryHov ? 0.2 : 0.08})`
     ctx.fill()
     ctx.font = 'bold 18px monospace'
     ctx.textAlign = 'center'
-    ctx.fillStyle = 'rgba(0, 255, 255, 0.8)'
+    ctx.fillStyle = `rgba(0, 255, 255, ${vRetryHov ? 1 : 0.8})`
     ctx.fillText('TRY AGAIN', retryX + vBtnW / 2, vBtnY + vBtnH / 2 + 6)
 
     // Menu
+    const vMenuHov = pauseMouseX >= menuX && pauseMouseX <= menuX + vBtnW && pauseMouseY >= vBtnY && pauseMouseY <= vBtnY + vBtnH
     ctx.beginPath()
     ctx.roundRect(menuX, vBtnY, vBtnW, vBtnH, 6)
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)'
-    ctx.lineWidth = 1.5
+    ctx.strokeStyle = `rgba(255, 255, 255, ${vMenuHov ? 0.6 : 0.3})`
+    ctx.lineWidth = vMenuHov ? 2.5 : 1.5
     ctx.stroke()
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'
+    ctx.fillStyle = `rgba(255, 255, 255, ${vMenuHov ? 0.15 : 0.05})`
     ctx.fill()
     ctx.font = 'bold 16px monospace'
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
+    ctx.fillStyle = `rgba(255, 255, 255, ${vMenuHov ? 0.9 : 0.6})`
     ctx.fillText('MENU', menuX + vBtnW / 2, vBtnY + vBtnH / 2 + 6)
 
     ctx.textAlign = 'left'
@@ -5371,59 +5531,77 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
 
   // Pause screen
   if (getPhase() === 'paused') {
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'
+    // Dim overlay
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)'
     ctx.fillRect(0, 0, width, height)
 
     const pcx = width / 2
-    const pcy = height * 0.35
+    const btnW = 280
+    const btnH = 64
+    const btnGap = 18
 
+    // Panel dimensions
+    const panelW = btnW + 80
+    const titleH = 60
+    const volH = 60
+    const panelPad = 30
+    const panelContentH = titleH + (btnH + btnGap) * 4 + volH + panelPad
+    const panelX = pcx - panelW / 2
+    const panelY = (height - panelContentH) / 2
+
+    // Dark panel background
+    ctx.beginPath()
+    ctx.roundRect(panelX, panelY, panelW, panelContentH, 14)
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.75)'
+    ctx.fill()
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)'
+    ctx.lineWidth = 1
+    ctx.stroke()
+
+    // Title
+    const titleY = panelY + 45
     ctx.font = 'bold 42px monospace'
     ctx.textAlign = 'center'
     ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
-    ctx.fillText('PAUSED', pcx, pcy)
+    ctx.fillText('PAUSED', pcx, titleY)
 
-    const btnW = 180
-    const btnH = 44
-    const btnGap = 14
-    const resumeY = pcy + 40
+    // Button positions inside panel
+    const resumeY = titleY + 30
     const restartBtnY = resumeY + btnH + btnGap
     const menuBtnY = restartBtnY + btnH + btnGap
+    const fsBtnY = menuBtnY + btnH + btnGap
 
-    // Resume
-    ctx.beginPath()
-    ctx.roundRect(pcx - btnW / 2, resumeY, btnW, btnH, 6)
-    ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)'
-    ctx.lineWidth = 2
-    ctx.stroke()
-    ctx.fillStyle = 'rgba(0, 255, 255, 0.08)'
-    ctx.fill()
-    ctx.font = 'bold 18px monospace'
-    ctx.fillStyle = 'rgba(0, 255, 255, 0.8)'
-    ctx.fillText('R E S U M E', pcx, resumeY + btnH / 2 + 6)
+    // Hover detection helper
+    const isHovered = (by: number) =>
+      pauseMouseX >= pcx - btnW / 2 && pauseMouseX <= pcx + btnW / 2 &&
+      pauseMouseY >= by && pauseMouseY <= by + btnH
 
-    // Restart
-    ctx.beginPath()
-    ctx.roundRect(pcx - btnW / 2, restartBtnY, btnW, btnH, 6)
-    ctx.strokeStyle = 'rgba(255, 215, 64, 0.4)'
-    ctx.lineWidth = 1.5
-    ctx.stroke()
-    ctx.fillStyle = 'rgba(255, 215, 64, 0.06)'
-    ctx.fill()
-    ctx.font = 'bold 16px monospace'
-    ctx.fillStyle = 'rgba(255, 215, 64, 0.7)'
-    ctx.fillText('R E S T A R T', pcx, restartBtnY + btnH / 2 + 6)
+    // Draw button helper
+    const drawPauseBtn = (y: number, label: string, r: number, g: number, b: number) => {
+      const hov = isHovered(y)
+      const hovBoost = hov ? 0.15 : 0
+      ctx.beginPath()
+      ctx.roundRect(pcx - btnW / 2, y, btnW, btnH, 10)
+      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${0.4 + hovBoost * 2})`
+      ctx.lineWidth = hov ? 2.5 : 1.5
+      ctx.stroke()
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${0.06 + hovBoost})`
+      ctx.fill()
+      ctx.font = 'bold 24px monospace'
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${0.7 + hovBoost * 1.5})`
+      ctx.fillText(label, pcx, y + btnH / 2 + 8)
+    }
 
-    // Menu
-    ctx.beginPath()
-    ctx.roundRect(pcx - btnW / 2, menuBtnY, btnW, btnH, 6)
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)'
-    ctx.lineWidth = 1.5
-    ctx.stroke()
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'
-    ctx.fill()
-    ctx.font = 'bold 16px monospace'
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
-    ctx.fillText('M E N U', pcx, menuBtnY + btnH / 2 + 6)
+    drawPauseBtn(resumeY, 'R E S U M E', 0, 255, 255)
+    drawPauseBtn(restartBtnY, 'R E S T A R T', 255, 215, 64)
+    drawPauseBtn(menuBtnY, 'M E N U', 255, 255, 255)
+    const isFS = !!document.fullscreenElement
+    drawPauseBtn(fsBtnY, isFS ? 'W I N D O W E D' : 'F U L L S C R E E N', 180, 130, 255)
+
+    // Volume slider
+    const pauseVolW = 200
+    const pauseVolRect = drawVolumeSlider(pcx - pauseVolW / 2, fsBtnY + btnH + 24, pauseVolW)
+    volumeSliderRect = pauseVolRect
 
     ctx.textAlign = 'left'
   }
@@ -5448,53 +5626,166 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.fillRect(0, 0, width, height)
 
     const dcx = width / 2
-    const dcy = height * 0.38
 
-    // Title
-    ctx.font = 'bold 48px monospace'
+    // Title + time at top
+    ctx.font = 'bold 52px monospace'
     ctx.textAlign = 'center'
     ctx.fillStyle = 'rgba(255, 60, 60, 0.95)'
-    ctx.fillText('DEFEATED', dcx, dcy)
+    ctx.fillText('DEFEATED', dcx, 60)
 
-    // Time survived
-    ctx.font = '18px monospace'
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
-    ctx.fillText(`Time: ${timeStr}`, dcx, dcy + 40)
+    ctx.font = 'bold 42px monospace'
+    ctx.fillStyle = 'rgba(255, 100, 100, 0.95)'
+    ctx.fillText(timeStr, dcx, 110)
 
-    // Buttons
-    const btnW = 180
-    const btnH = 44
+    // Leaderboard
+    const ch = getActiveChallenge()
+    if (ch) {
+      const topScores = getScoresForChallenge(ch.name, 10)
+      if (topScores.length > 0) {
+        const listTop = 140
+        const listW = 520
+        const listX = dcx - listW / 2
+
+        const isGlobal = hasOnlineScores(ch.name)
+        ctx.font = 'bold 28px monospace'
+        ctx.fillStyle = 'rgba(255, 80, 80, 0.7)'
+        ctx.fillText(isGlobal ? 'GLOBAL LEADERBOARD' : 'LOCAL LEADERBOARD', dcx, listTop)
+
+        ctx.beginPath()
+        ctx.moveTo(listX, listTop + 12)
+        ctx.lineTo(listX + listW, listTop + 12)
+        ctx.strokeStyle = 'rgba(255, 80, 80, 0.15)'
+        ctx.lineWidth = 1
+        ctx.stroke()
+
+        const rowH = 38
+        const listStartY = listTop + 36
+        const maxVisible = Math.min(topScores.length, Math.floor((height - listStartY - 90) / rowH))
+
+        for (let i = 0; i < maxVisible; i++) {
+          const s = topScores[i]!
+          const rowY = listStartY + i * rowH
+          const isTop3 = i < 3
+          const medalColors = ['rgba(255, 215, 64, 0.95)', 'rgba(120, 220, 255, 0.9)', 'rgba(255, 160, 80, 0.85)']
+          const rankColor = isTop3 ? medalColors[i]! : 'rgba(255, 255, 255, 0.35)'
+          const nameColor = isTop3 ? medalColors[i]! : 'rgba(255, 255, 255, 0.65)'
+          const timeColor = isTop3 ? medalColors[i]! : 'rgba(255, 255, 255, 0.75)'
+
+          ctx.font = 'bold 22px monospace'
+          ctx.textAlign = 'right'
+          ctx.fillStyle = rankColor
+          ctx.fillText(`${i + 1}`, listX + 30, rowY)
+
+          ctx.font = '20px monospace'
+          ctx.textAlign = 'left'
+          ctx.fillStyle = nameColor
+          ctx.fillText(s.playerName, listX + 45, rowY)
+
+          ctx.textAlign = 'right'
+          ctx.fillStyle = timeColor
+          ctx.fillText(formatTime(s.time), listX + listW - 10, rowY)
+        }
+      }
+    }
+
+    // Buttons at bottom
+    const btnW = 220
+    const btnH = 52
     const btnGap = 16
-    const restartY = dcy + 80
-    const menuY = restartY + btnH + btnGap
+    const btnBaseY = height - 180
+    const retryX = dcx - btnW - btnGap / 2
+    const menuX = dcx + btnGap / 2
 
-    // Restart button
+    const dRetryHov = pauseMouseX >= retryX && pauseMouseX <= retryX + btnW && pauseMouseY >= btnBaseY && pauseMouseY <= btnBaseY + btnH
     ctx.beginPath()
-    ctx.roundRect(dcx - btnW / 2, restartY, btnW, btnH, 6)
-    ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)'
-    ctx.lineWidth = 2
+    ctx.roundRect(retryX, btnBaseY, btnW, btnH, 8)
+    ctx.strokeStyle = `rgba(0, 255, 255, ${dRetryHov ? 0.8 : 0.5})`
+    ctx.lineWidth = dRetryHov ? 2.5 : 2
     ctx.stroke()
-    ctx.fillStyle = 'rgba(0, 255, 255, 0.08)'
+    ctx.fillStyle = `rgba(0, 255, 255, ${dRetryHov ? 0.2 : 0.08})`
     ctx.fill()
-    ctx.font = 'bold 18px monospace'
-    ctx.fillStyle = 'rgba(0, 255, 255, 0.8)'
-    ctx.fillText('R E S T A R T', dcx, restartY + btnH / 2 + 6)
+    ctx.font = 'bold 22px monospace'
+    ctx.textAlign = 'center'
+    ctx.fillStyle = `rgba(0, 255, 255, ${dRetryHov ? 1 : 0.8})`
+    ctx.fillText('TRY AGAIN', retryX + btnW / 2, btnBaseY + btnH / 2 + 8)
 
-    // Menu button
+    const dMenuHov = pauseMouseX >= menuX && pauseMouseX <= menuX + btnW && pauseMouseY >= btnBaseY && pauseMouseY <= btnBaseY + btnH
     ctx.beginPath()
-    ctx.roundRect(dcx - btnW / 2, menuY, btnW, btnH, 6)
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)'
-    ctx.lineWidth = 1.5
+    ctx.roundRect(menuX, btnBaseY, btnW, btnH, 8)
+    ctx.strokeStyle = `rgba(255, 255, 255, ${dMenuHov ? 0.6 : 0.3})`
+    ctx.lineWidth = dMenuHov ? 2.5 : 1.5
     ctx.stroke()
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'
+    ctx.fillStyle = `rgba(255, 255, 255, ${dMenuHov ? 0.15 : 0.05})`
     ctx.fill()
-    ctx.font = 'bold 16px monospace'
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
-    ctx.fillText('M E N U', dcx, menuY + btnH / 2 + 6)
+    ctx.font = 'bold 22px monospace'
+    ctx.fillStyle = `rgba(255, 255, 255, ${dMenuHov ? 0.9 : 0.6})`
+    ctx.fillText('MENU', menuX + btnW / 2, btnBaseY + btnH / 2 + 8)
 
     ctx.textAlign = 'left'
   }
 }
+
+// Volume slider — returns the track rect for click handling
+export function drawVolumeSlider(x: number, y: number, sliderW = 200): { x: number; y: number; w: number; h: number } {
+  const vol = getVolume()
+  const trackH = 6
+  const thumbR = 10
+  const trackY = y + thumbR
+
+  // Label
+  ctx.font = 'bold 16px monospace'
+  ctx.textAlign = 'center'
+  ctx.fillStyle = 'rgba(0, 255, 255, 0.7)'
+  ctx.fillText('V O L U M E', x + sliderW / 2, y - 6)
+
+  // Track background
+  ctx.beginPath()
+  ctx.roundRect(x, trackY - trackH / 2, sliderW, trackH, 3)
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.1)'
+  ctx.fill()
+
+  // Filled portion
+  const fillW = sliderW * vol
+  if (fillW > 0) {
+    ctx.beginPath()
+    ctx.roundRect(x, trackY - trackH / 2, fillW, trackH, 3)
+    ctx.fillStyle = 'rgba(0, 255, 255, 0.3)'
+    ctx.fill()
+  }
+
+  // Thumb
+  const thumbX = x + fillW
+  ctx.beginPath()
+  ctx.arc(thumbX, trackY, thumbR, 0, Math.PI * 2)
+  ctx.fillStyle = 'rgba(0, 255, 255, 0.8)'
+  ctx.fill()
+
+
+  return { x, y: trackY - thumbR, w: sliderW, h: thumbR * 2 }
+}
+
+let volumeSliderRect: { x: number; y: number; w: number; h: number } | null = null
+let volumeDragging = false
+
+export function getVolumeSliderRect(): typeof volumeSliderRect { return volumeSliderRect }
+export function setVolumeSliderRect(r: typeof volumeSliderRect): void { volumeSliderRect = r }
+export function isVolumeDragging(): boolean { return volumeDragging }
+export function startVolumeDrag(mx: number, my: number): boolean {
+  if (!volumeSliderRect) return false
+  const r = volumeSliderRect
+  if (mx >= r.x - 5 && mx <= r.x + r.w + 5 && my >= r.y - 5 && my <= r.y + r.h + 5) {
+    volumeDragging = true
+    return true
+  }
+  return false
+}
+export function updateVolumeDrag(mx: number): number | null {
+  if (!volumeDragging || !volumeSliderRect) return null
+  const r = volumeSliderRect
+  const vol = Math.max(0, Math.min(1, (mx - r.x) / r.w))
+  return vol
+}
+export function stopVolumeDrag(): void { volumeDragging = false }
 
 export function getScreenWidth(): number { return width }
 export function getScreenHeight(): number { return height }

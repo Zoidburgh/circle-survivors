@@ -7,8 +7,9 @@ import { getRingExpansion, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { distance } from '../utils/math.ts'
 import { HIT_GRACE, CHILL_MAX_STACKS, BEAT_SEC } from '../utils/constants.ts'
 import { incrementRunBeat } from '../core/GameState.ts'
-import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playCollect } from '../audio/AudioEngine.ts'
+import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playCollect, playNodeLock, playNodeComplete } from '../audio/AudioEngine.ts'
 import { getBlockedArcs, isTargetBlocked } from './RingOcclusion.ts'
+import { getGameTimeMs } from '../render/Renderer.ts'
 import { spawnOrb, collectOrb, ORB_HP_HEAL } from '../entities/XPOrb.ts'
 import type { XPOrb } from '../entities/XPOrb.ts'
 import { addAbsorbEffect } from '../render/Renderer.ts'
@@ -171,7 +172,7 @@ export function initHitDetection(): void {
       const activeIdx = e.summonBeatCount % N
       const orbitR = e.radius * 0.55
       const nodeR = Math.max(8, e.radius * 0.34)
-      const baseRot = performance.now() / 2000
+      const baseRot = getGameTimeMs() / 2000
       const nodeAngle = baseRot + (activeIdx / N) * Math.PI * 2
       const nodeX = e.x + Math.cos(nodeAngle) * orbitR
       const nodeY = e.y + Math.sin(nodeAngle) * orbitR
@@ -194,12 +195,14 @@ export function initHitDetection(): void {
           e.summonLockFlash[activeIdx] = 0.3
           e.summonStartOffset = activeIdx
           e.summonProgress = 1
+          if (e.summonProgress >= N) { playNodeComplete() } else { playNodeLock(0, N) }
         } else {
           const expected = (e.summonStartOffset + e.summonProgress) % N
           if (activeIdx === expected) {
             e.summonNodeStates[activeIdx] = 'locked'
             e.summonLockFlash[activeIdx] = 0.3
             e.summonProgress++
+            if (e.summonProgress >= N) { playNodeComplete() } else { playNodeLock(e.summonProgress - 1, N) }
           } else {
             // Wrong node — reset
             e.summonProgress = 0

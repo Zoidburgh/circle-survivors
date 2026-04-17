@@ -75,7 +75,8 @@ function ensureContext(): AudioContext {
     compressor.connect(ctx.destination)
 
     master = ctx.createGain()
-    master.gain.value = 0.8
+    const saved = localStorage.getItem('beatback_volume')
+    master.gain.value = saved !== null ? parseFloat(saved) : 0.8
     master.connect(compressor)
 
     // Reverb
@@ -110,6 +111,16 @@ export function init(): void {
   }
   window.addEventListener('click', resume)
   window.addEventListener('keydown', resume)
+}
+
+export function getVolume(): number {
+  return master ? master.gain.value : parseFloat(localStorage.getItem('beatback_volume') ?? '0.8')
+}
+
+export function setVolume(v: number): void {
+  const clamped = Math.max(0, Math.min(1, v))
+  if (master) master.gain.value = clamped
+  localStorage.setItem('beatback_volume', clamped.toFixed(2))
 }
 
 export function getCurrentMusic(): WaveMusic | null {
@@ -339,42 +350,157 @@ export function playVolatileExplosion(): void {
   boomNoise.stop(popTime + 0.2)
 }
 
+let fuseBurnNodes: { gain: GainNode; sources: AudioBufferSourceNode[] } | null = null
+
+export function startShieldFuseBurn(duration: number): void {
+  ensureContext()
+  stopShieldFuseBurn()
+  const c = ctx!
+  const t = c.currentTime
+
+  // Crackling burn — looped noise through a narrow bandpass, slowly rising
+  const bufLen = 2  // 2 second buffer, looped
+  const buf = c.createBuffer(1, Math.floor(c.sampleRate * bufLen), c.sampleRate)
+  const data = buf.getChannelData(0)
+  for (let i = 0; i < data.length; i++) {
+    // Crackle texture — random pops mixed with hiss
+    data[i] = (Math.random() * 2 - 1) * (Math.random() < 0.05 ? 0.8 : 0.2)
+  }
+
+  const noise = c.createBufferSource()
+  noise.buffer = buf
+  noise.loop = true
+
+  const filter = c.createBiquadFilter()
+  filter.type = 'bandpass'
+  filter.Q.value = 3
+  filter.frequency.setValueAtTime(800, t)
+  filter.frequency.exponentialRampToValueAtTime(2500, t + duration * 0.8)
+  filter.frequency.exponentialRampToValueAtTime(4000, t + duration)
+
+  const gain = c.createGain()
+  gain.gain.setValueAtTime(0.001, t)
+  gain.gain.linearRampToValueAtTime(rVol(0.08), t + 0.5)
+  gain.gain.linearRampToValueAtTime(rVol(0.15), t + duration * 0.5)
+  gain.gain.linearRampToValueAtTime(rVol(0.25), t + duration)
+
+  noise.connect(filter)
+  filter.connect(gain)
+  gain.connect(reverbInput)
+  noise.start(t)
+  noise.stop(t + duration + 0.5)  // extra buffer, stopShieldFuseBurn cuts it
+
+  // Subtle low hum that rises — the fuse wire heating up
+  const hum = c.createOscillator()
+  const humGain = c.createGain()
+  hum.type = 'sine'
+  hum.frequency.setValueAtTime(rPitch(120), t)
+  hum.frequency.exponentialRampToValueAtTime(rPitch(300), t + duration)
+  humGain.gain.setValueAtTime(0.001, t)
+  humGain.gain.linearRampToValueAtTime(rVol(0.05), t + 0.5)
+  humGain.gain.linearRampToValueAtTime(rVol(0.12), t + duration * 0.5)
+  humGain.gain.linearRampToValueAtTime(rVol(0.2), t + duration)
+  hum.connect(humGain)
+  humGain.connect(master)
+  hum.start(t)
+  hum.stop(t + duration + 0.5)
+
+  fuseBurnNodes = { gain, sources: [noise, hum as unknown as AudioBufferSourceNode] }
+}
+
+export function stopShieldFuseBurn(): void {
+  if (fuseBurnNodes) {
+    try {
+      fuseBurnNodes.gain.gain.cancelScheduledValues(0)
+      fuseBurnNodes.gain.gain.setValueAtTime(0, 0)
+      for (const s of fuseBurnNodes.sources) try { s.stop() } catch {}
+    } catch {}
+    fuseBurnNodes = null
+  }
+}
+
 export function playShieldBreak(): void {
   ensureContext()
   const c = ctx!
   const t = c.currentTime
 
-  // High crystalline descending ping
+  // Descending dissonant crash — minor second interval, feels wrong
   const ping = c.createOscillator()
+  const ping2 = c.createOscillator()
   const pingGain = c.createGain()
-  ping.type = 'sine'
-  ping.frequency.setValueAtTime(1800, t)
-  ping.frequency.exponentialRampToValueAtTime(600, t + 0.15)
-  pingGain.gain.setValueAtTime(rVol(0.4), t)
-  pingGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
-  ping.connect(pingGain)
-  pingGain.connect(master)
+  ping.type = 'sawtooth'
+  ping2.type = 'sawtooth'
+  ping.frequency.setValueAtTime(rPitch(1400), t)
+  ping.frequency.exponentialRampToValueAtTime(rPitch(180), t + 0.35)
+  ping2.frequency.setValueAtTime(rPitch(1480), t) // minor second = dissonance
+  ping2.frequency.exponentialRampToValueAtTime(rPitch(170), t + 0.35)
+  pingGain.gain.setValueAtTime(rVol(0.3), t)
+  pingGain.gain.exponentialRampToValueAtTime(0.001, t + 0.4)
+  const pingFilter = c.createBiquadFilter()
+  pingFilter.type = 'lowpass'
+  pingFilter.frequency.setValueAtTime(4000, t)
+  pingFilter.frequency.exponentialRampToValueAtTime(500, t + 0.35)
+  ping.connect(pingFilter)
+  ping2.connect(pingFilter)
+  pingFilter.connect(pingGain)
+  pingGain.connect(reverbInput)
   ping.start(t)
-  ping.stop(t + 0.2)
+  ping2.start(t)
+  ping.stop(t + 0.4)
+  ping2.stop(t + 0.4)
 
-  // Noise burst — glass shatter texture
-  const bufSize = Math.floor(c.sampleRate * 0.1)
-  const buffer = c.createBuffer(1, bufSize, c.sampleRate)
-  const data = buffer.getChannelData(0)
-  for (let i = 0; i < bufSize; i++) data[i] = (Math.random() * 2 - 1) * 0.3
+  // Heavy sub drop — ominous gut punch
+  const sub = c.createOscillator()
+  const subGain = c.createGain()
+  sub.type = 'sine'
+  sub.frequency.setValueAtTime(rPitch(120), t)
+  sub.frequency.exponentialRampToValueAtTime(rPitch(20), t + 0.3)
+  subGain.gain.setValueAtTime(rVol(0.6), t)
+  subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.3)
+  sub.connect(subGain)
+  subGain.connect(master)
+  sub.start(t)
+  sub.stop(t + 0.3)
+
+  // Harsh shatter noise — loud, aggressive
+  const noiseDur = 0.25
+  const noiseBuf = c.createBuffer(1, Math.floor(c.sampleRate * noiseDur), c.sampleRate)
+  const noiseData = noiseBuf.getChannelData(0)
+  for (let i = 0; i < noiseData.length; i++) noiseData[i] = (Math.random() * 2 - 1) * 0.7
   const noise = c.createBufferSource()
-  noise.buffer = buffer
+  noise.buffer = noiseBuf
   const noiseGain = c.createGain()
-  noiseGain.gain.setValueAtTime(rVol(0.3), t)
-  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.1)
+  noiseGain.gain.setValueAtTime(rVol(0.45), t)
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + noiseDur)
   const hpf = c.createBiquadFilter()
   hpf.type = 'highpass'
-  hpf.frequency.value = 2000
+  hpf.frequency.value = 1200
   noise.connect(hpf)
   hpf.connect(noiseGain)
   noiseGain.connect(master)
   noise.start(t)
-  noise.stop(t + 0.1)
+  noise.stop(t + noiseDur)
+
+  // Dark descending moan — tritone dissonance, something went wrong
+  const moan = c.createOscillator()
+  const moan2 = c.createOscillator()
+  const moanGain = c.createGain()
+  moan.type = 'triangle'
+  moan2.type = 'triangle'
+  moan.frequency.setValueAtTime(rPitch(300), t + 0.05)
+  moan.frequency.exponentialRampToValueAtTime(rPitch(150), t + 0.5)
+  moan2.frequency.setValueAtTime(rPitch(424), t + 0.05) // tritone = devil's interval
+  moan2.frequency.exponentialRampToValueAtTime(rPitch(212), t + 0.5)
+  moanGain.gain.setValueAtTime(0.001, t + 0.05)
+  moanGain.gain.linearRampToValueAtTime(rVol(0.2), t + 0.12)
+  moanGain.gain.exponentialRampToValueAtTime(0.001, t + 0.5)
+  moan.connect(moanGain)
+  moan2.connect(moanGain)
+  moanGain.connect(reverbInput)
+  moan.start(t + 0.05)
+  moan2.start(t + 0.05)
+  moan.stop(t + 0.5)
+  moan2.stop(t + 0.5)
 }
 
 export function playShieldRestore(): void {
@@ -382,17 +508,75 @@ export function playShieldRestore(): void {
   const c = ctx!
   const t = c.currentTime
 
+  // Power-up sweep — rising filtered saw for that force field hum
+  const sweep = c.createOscillator()
+  const sweep2 = c.createOscillator()
+  const sweepGain = c.createGain()
+  sweep.type = 'sawtooth'
+  sweep2.type = 'sawtooth'
+  sweep.frequency.setValueAtTime(rPitch(80), t)
+  sweep.frequency.exponentialRampToValueAtTime(rPitch(300), t + 0.3)
+  sweep2.frequency.setValueAtTime(rPitch(82), t) // detuned for thickness
+  sweep2.frequency.exponentialRampToValueAtTime(rPitch(305), t + 0.3)
+  sweepGain.gain.setValueAtTime(rVol(0.3), t)
+  sweepGain.gain.linearRampToValueAtTime(rVol(0.4), t + 0.15)
+  sweepGain.gain.exponentialRampToValueAtTime(0.001, t + 0.4)
+  const sweepFilter = c.createBiquadFilter()
+  sweepFilter.type = 'lowpass'
+  sweepFilter.frequency.setValueAtTime(400, t)
+  sweepFilter.frequency.exponentialRampToValueAtTime(2000, t + 0.25)
+  sweepFilter.frequency.exponentialRampToValueAtTime(600, t + 0.4)
+  sweep.connect(sweepFilter)
+  sweep2.connect(sweepFilter)
+  sweepFilter.connect(sweepGain)
+  sweepGain.connect(master)
+  sweep.start(t)
+  sweep2.start(t)
+  sweep.stop(t + 0.4)
+  sweep2.stop(t + 0.4)
+
+  // Bright activation chime — delayed to hit at the peak
   const chime = c.createOscillator()
+  const chime2 = c.createOscillator()
   const chimeGain = c.createGain()
   chime.type = 'sine'
-  chime.frequency.setValueAtTime(800, t)
-  chime.frequency.exponentialRampToValueAtTime(1400, t + 0.12)
-  chimeGain.gain.setValueAtTime(rVol(0.25), t)
-  chimeGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
+  chime2.type = 'sine'
+  chime.frequency.setValueAtTime(rPitch(900), t + 0.15)
+  chime.frequency.exponentialRampToValueAtTime(rPitch(1200), t + 0.25)
+  chime2.frequency.setValueAtTime(rPitch(1350), t + 0.15) // fifth above
+  chime2.frequency.exponentialRampToValueAtTime(rPitch(1800), t + 0.25)
+  chimeGain.gain.setValueAtTime(0.001, t)
+  chimeGain.gain.linearRampToValueAtTime(rVol(0.35), t + 0.17)
+  chimeGain.gain.exponentialRampToValueAtTime(0.001, t + 0.45)
   chime.connect(chimeGain)
-  chimeGain.connect(master)
-  chime.start(t)
-  chime.stop(t + 0.2)
+  chime2.connect(chimeGain)
+  chimeGain.connect(reverbInput)
+  chime.start(t + 0.15)
+  chime2.start(t + 0.15)
+  chime.stop(t + 0.45)
+  chime2.stop(t + 0.45)
+
+  // Energy crackle — filtered noise burst
+  const noiseDur = 0.2
+  const noiseBuf = c.createBuffer(1, Math.floor(c.sampleRate * noiseDur), c.sampleRate)
+  const noiseData = noiseBuf.getChannelData(0)
+  for (let i = 0; i < noiseData.length; i++) noiseData[i] = (Math.random() * 2 - 1) * 0.4
+  const noise = c.createBufferSource()
+  noise.buffer = noiseBuf
+  const noiseFilter = c.createBiquadFilter()
+  noiseFilter.type = 'bandpass'
+  noiseFilter.frequency.setValueAtTime(1500, t + 0.1)
+  noiseFilter.frequency.exponentialRampToValueAtTime(4000, t + 0.2)
+  noiseFilter.Q.value = 2
+  const noiseGain = c.createGain()
+  noiseGain.gain.setValueAtTime(0.001, t)
+  noiseGain.gain.linearRampToValueAtTime(rVol(0.25), t + 0.12)
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.3)
+  noise.connect(noiseFilter)
+  noiseFilter.connect(noiseGain)
+  noiseGain.connect(master)
+  noise.start(t + 0.1)
+  noise.stop(t + 0.3)
 }
 
 export function playBeatTick(): void {
@@ -424,6 +608,335 @@ export function playDash(): void {
   osc2.start(t)
   osc1.stop(t + 0.3)
   osc2.stop(t + 0.3)
+}
+
+/** Node lock sound — pitch rises with progress (0-based index, total nodes) */
+export function playNodeLock(progress: number, total: number): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  // Ascending pitch based on progress through the sequence
+  const basePitch = 600 + (progress / Math.max(1, total - 1)) * 600
+
+  // Punchy pluck — triangle for more body
+  const osc = c.createOscillator()
+  const oscGain = c.createGain()
+  osc.type = 'triangle'
+  osc.frequency.setValueAtTime(rPitch(basePitch), t)
+  osc.frequency.exponentialRampToValueAtTime(rPitch(basePitch * 0.75), t + 0.18)
+  oscGain.gain.setValueAtTime(rVol(0.45), t)
+  oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.18)
+  osc.connect(oscGain)
+  oscGain.connect(master)
+  osc.start(t)
+  osc.stop(t + 0.18)
+
+  // Harmonic overtone
+  const harm = c.createOscillator()
+  const harmGain = c.createGain()
+  harm.type = 'sine'
+  harm.frequency.setValueAtTime(rPitch(basePitch * 2), t)
+  harm.frequency.exponentialRampToValueAtTime(rPitch(basePitch * 1.5), t + 0.12)
+  harmGain.gain.setValueAtTime(rVol(0.2), t)
+  harmGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12)
+  harm.connect(harmGain)
+  harmGain.connect(reverbInput)
+  harm.start(t)
+  harm.stop(t + 0.12)
+
+  // Click transient — makes it audible even at low pitch
+  const clickDur = 0.03
+  const clickBuf = c.createBuffer(1, Math.floor(c.sampleRate * clickDur), c.sampleRate)
+  const clickData = clickBuf.getChannelData(0)
+  for (let i = 0; i < clickData.length; i++) clickData[i] = (Math.random() * 2 - 1) * 0.3
+  const click = c.createBufferSource()
+  click.buffer = clickBuf
+  const clickFilter = c.createBiquadFilter()
+  clickFilter.type = 'highpass'
+  clickFilter.frequency.value = 3000
+  const clickGain = c.createGain()
+  clickGain.gain.setValueAtTime(rVol(0.3), t)
+  clickGain.gain.exponentialRampToValueAtTime(0.001, t + clickDur)
+  click.connect(clickFilter)
+  clickFilter.connect(clickGain)
+  clickGain.connect(master)
+  click.start(t)
+  click.stop(t + clickDur)
+}
+
+/** Final node — bright bell ding */
+export function playNodeComplete(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  // Bell fundamental
+  const bell = c.createOscillator()
+  const bellGain = c.createGain()
+  bell.type = 'sine'
+  bell.frequency.setValueAtTime(rPitch(1200), t)
+  bellGain.gain.setValueAtTime(rVol(0.5), t)
+  bellGain.gain.exponentialRampToValueAtTime(0.001, t + 0.5)
+  bell.connect(bellGain)
+  bellGain.connect(master)
+  bell.start(t)
+  bell.stop(t + 0.5)
+
+  // Bell overtone — octave + fifth
+  const over1 = c.createOscillator()
+  const over1Gain = c.createGain()
+  over1.type = 'sine'
+  over1.frequency.setValueAtTime(rPitch(1800), t)
+  over1Gain.gain.setValueAtTime(rVol(0.25), t)
+  over1Gain.gain.exponentialRampToValueAtTime(0.001, t + 0.35)
+  over1.connect(over1Gain)
+  over1Gain.connect(master)
+  over1.start(t)
+  over1.stop(t + 0.35)
+
+  // Second overtone — two octaves up
+  const over2 = c.createOscillator()
+  const over2Gain = c.createGain()
+  over2.type = 'sine'
+  over2.frequency.setValueAtTime(rPitch(2400), t)
+  over2Gain.gain.setValueAtTime(rVol(0.15), t)
+  over2Gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25)
+  over2.connect(over2Gain)
+  over2Gain.connect(reverbInput)
+  over2.start(t)
+  over2.stop(t + 0.25)
+
+  // Shimmer noise
+  const noiseDur = 0.1
+  const noiseBuf = c.createBuffer(1, Math.floor(c.sampleRate * noiseDur), c.sampleRate)
+  const noiseData = noiseBuf.getChannelData(0)
+  for (let i = 0; i < noiseData.length; i++) noiseData[i] = (Math.random() * 2 - 1) * 0.2
+  const noise = c.createBufferSource()
+  noise.buffer = noiseBuf
+  const noiseFilter = c.createBiquadFilter()
+  noiseFilter.type = 'highpass'
+  noiseFilter.frequency.value = 4000
+  const noiseGain = c.createGain()
+  noiseGain.gain.setValueAtTime(rVol(0.15), t)
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + noiseDur)
+  noise.connect(noiseFilter)
+  noiseFilter.connect(noiseGain)
+  noiseGain.connect(reverbInput)
+  noise.start(t)
+  noise.stop(t + noiseDur)
+}
+
+export function playSummonerSpawn(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  // Deep ominous rumble — dark energy releasing
+  const rumble = c.createOscillator()
+  const rumbleGain = c.createGain()
+  rumble.type = 'sawtooth'
+  rumble.frequency.setValueAtTime(rPitch(90), t)
+  rumble.frequency.exponentialRampToValueAtTime(rPitch(35), t + 0.7)
+  rumbleGain.gain.setValueAtTime(rVol(0.55), t)
+  rumbleGain.gain.exponentialRampToValueAtTime(0.001, t + 0.7)
+  const rumbleFilter = c.createBiquadFilter()
+  rumbleFilter.type = 'lowpass'
+  rumbleFilter.frequency.value = 250
+  rumble.connect(rumbleFilter)
+  rumbleFilter.connect(rumbleGain)
+  rumbleGain.connect(master)
+  rumble.start(t)
+  rumble.stop(t + 0.7)
+
+  // Second sub layer for weight
+  const sub = c.createOscillator()
+  const subGain = c.createGain()
+  sub.type = 'sine'
+  sub.frequency.setValueAtTime(rPitch(60), t)
+  sub.frequency.exponentialRampToValueAtTime(rPitch(25), t + 0.6)
+  subGain.gain.setValueAtTime(rVol(0.5), t)
+  subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.6)
+  sub.connect(subGain)
+  subGain.connect(master)
+  sub.start(t)
+  sub.stop(t + 0.6)
+
+  // Dark chord — minor third dissonance
+  const osc1 = c.createOscillator()
+  const osc2 = c.createOscillator()
+  const chordGain = c.createGain()
+  osc1.type = 'triangle'
+  osc2.type = 'triangle'
+  osc1.frequency.setValueAtTime(rPitch(130), t)
+  osc1.frequency.exponentialRampToValueAtTime(rPitch(100), t + 0.6)
+  osc2.frequency.setValueAtTime(rPitch(156), t) // minor third
+  osc2.frequency.exponentialRampToValueAtTime(rPitch(120), t + 0.6)
+  chordGain.gain.setValueAtTime(rVol(0.3), t)
+  chordGain.gain.exponentialRampToValueAtTime(0.001, t + 0.6)
+  osc1.connect(chordGain)
+  osc2.connect(chordGain)
+  chordGain.connect(reverbInput)
+  osc1.start(t)
+  osc2.start(t)
+  osc1.stop(t + 0.6)
+  osc2.stop(t + 0.6)
+
+  // Whoosh noise burst — dark energy dispersing
+  const noiseDur = 0.45
+  const noiseBuf = c.createBuffer(1, Math.floor(c.sampleRate * noiseDur), c.sampleRate)
+  const noiseData = noiseBuf.getChannelData(0)
+  for (let i = 0; i < noiseData.length; i++) noiseData[i] = (Math.random() * 2 - 1) * 0.5
+  const noise = c.createBufferSource()
+  noise.buffer = noiseBuf
+  const noiseFilter = c.createBiquadFilter()
+  noiseFilter.type = 'lowpass'
+  noiseFilter.frequency.setValueAtTime(1500, t)
+  noiseFilter.frequency.exponentialRampToValueAtTime(200, t + noiseDur)
+  const noiseGain = c.createGain()
+  noiseGain.gain.setValueAtTime(rVol(0.35), t + 0.02)
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + noiseDur)
+  noise.connect(noiseFilter)
+  noiseFilter.connect(noiseGain)
+  noiseGain.connect(master)
+  noise.start(t)
+  noise.stop(t + noiseDur)
+}
+
+export function playTotemSpawn(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  // Layer 1: Warped descending tom — like something being ripped out
+  const tom = c.createOscillator()
+  const tomGain = c.createGain()
+  tom.type = 'sine'
+  tom.frequency.setValueAtTime(rPitch(250), t)
+  tom.frequency.exponentialRampToValueAtTime(rPitch(50), t + 0.15)
+  tomGain.gain.setValueAtTime(rVol(0.8), t)
+  tomGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
+  tom.connect(tomGain)
+  tomGain.connect(master)
+  tom.start(t)
+  tom.stop(t + 0.2)
+
+  // Layer 2: Distorted membrane — triangle pitching down fast for body
+  const membrane = c.createOscillator()
+  const memGain = c.createGain()
+  const memDist = c.createWaveShaper()
+  membrane.type = 'triangle'
+  membrane.frequency.setValueAtTime(rPitch(180), t)
+  membrane.frequency.exponentialRampToValueAtTime(rPitch(40), t + 0.12)
+  memGain.gain.setValueAtTime(rVol(0.55), t)
+  memGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
+  // Soft clip curve for grit
+  const curve = new Float32Array(256)
+  for (let i = 0; i < 256; i++) {
+    const x = (i / 128) - 1
+    curve[i] = Math.tanh(x * 2.5)
+  }
+  memDist.curve = curve
+  membrane.connect(memDist)
+  memDist.connect(memGain)
+  memGain.connect(master)
+  membrane.start(t)
+  membrane.stop(t + 0.15)
+
+  // Layer 3: Ejection whoosh — noise with quick rising then falling bandpass
+  const wooshDur = 0.3
+  const wooshBuf = c.createBuffer(1, Math.floor(c.sampleRate * wooshDur), c.sampleRate)
+  const wooshData = wooshBuf.getChannelData(0)
+  for (let i = 0; i < wooshData.length; i++) wooshData[i] = (Math.random() * 2 - 1) * 0.6
+  const woosh = c.createBufferSource()
+  woosh.buffer = wooshBuf
+  const wooshFilter = c.createBiquadFilter()
+  wooshFilter.type = 'bandpass'
+  wooshFilter.Q.value = 1.5
+  wooshFilter.frequency.setValueAtTime(300, t)
+  wooshFilter.frequency.exponentialRampToValueAtTime(1800, t + 0.08)
+  wooshFilter.frequency.exponentialRampToValueAtTime(200, t + wooshDur)
+  const wooshGain = c.createGain()
+  wooshGain.gain.setValueAtTime(0.001, t)
+  wooshGain.gain.linearRampToValueAtTime(rVol(0.5), t + 0.05)
+  wooshGain.gain.exponentialRampToValueAtTime(0.001, t + wooshDur)
+  woosh.connect(wooshFilter)
+  wooshFilter.connect(wooshGain)
+  wooshGain.connect(reverbInput)
+  woosh.start(t)
+  woosh.stop(t + wooshDur)
+}
+
+export function playBeatDash(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  // Layer 1: Sub-bass thump — punchy low-end impact
+  const thump = c.createOscillator()
+  const thumpGain = c.createGain()
+  thump.type = 'sine'
+  thump.frequency.setValueAtTime(rPitch(75), t)
+  thump.frequency.exponentialRampToValueAtTime(rPitch(30), t + 0.2)
+  thumpGain.gain.setValueAtTime(rVol(0.6), t)
+  thumpGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
+  thump.connect(thumpGain)
+  thumpGain.connect(master)
+  thump.start(t)
+  thump.stop(t + 0.2)
+
+  // Second sub layer — triangle for body
+  const sub2 = c.createOscillator()
+  const sub2Gain = c.createGain()
+  sub2.type = 'triangle'
+  sub2.frequency.setValueAtTime(rPitch(55), t)
+  sub2.frequency.exponentialRampToValueAtTime(rPitch(22), t + 0.18)
+  sub2Gain.gain.setValueAtTime(rVol(0.45), t)
+  sub2Gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18)
+  sub2.connect(sub2Gain)
+  sub2Gain.connect(master)
+  sub2.start(t)
+  sub2.stop(t + 0.18)
+
+  // Layer 2: Metallic ping — high-frequency "perfect timing" bell
+  const ping = c.createOscillator()
+  const ping2 = c.createOscillator()
+  const pingGain = c.createGain()
+  ping.type = 'sine'
+  ping2.type = 'sine'
+  ping.frequency.setValueAtTime(rPitch(2200), t)
+  ping.frequency.exponentialRampToValueAtTime(rPitch(1800), t + 0.15)
+  ping2.frequency.setValueAtTime(rPitch(3300), t)
+  ping2.frequency.exponentialRampToValueAtTime(rPitch(2600), t + 0.12)
+  pingGain.gain.setValueAtTime(rVol(0.18), t)
+  pingGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
+  ping.connect(pingGain)
+  ping2.connect(pingGain)
+  pingGain.connect(reverbInput)
+  ping.start(t)
+  ping2.start(t)
+  ping.stop(t + 0.15)
+  ping2.stop(t + 0.15)
+
+  // Layer 3: Noise crack — sharp transient snap
+  const noiseDur = 0.08
+  const noiseBuf = c.createBuffer(1, Math.floor(c.sampleRate * noiseDur), c.sampleRate)
+  const noiseData = noiseBuf.getChannelData(0)
+  for (let i = 0; i < noiseData.length; i++) noiseData[i] = (Math.random() * 2 - 1) * 0.5
+  const noise = c.createBufferSource()
+  noise.buffer = noiseBuf
+  const noiseFilter = c.createBiquadFilter()
+  noiseFilter.type = 'bandpass'
+  noiseFilter.frequency.setValueAtTime(3000, t)
+  noiseFilter.Q.value = 1.5
+  const noiseGain = c.createGain()
+  noiseGain.gain.setValueAtTime(rVol(0.35), t)
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + noiseDur)
+  noise.connect(noiseFilter)
+  noiseFilter.connect(noiseGain)
+  noiseGain.connect(master)
+  noise.start(t)
+  noise.stop(t + noiseDur)
 }
 
 export function playCollect(): void {

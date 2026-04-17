@@ -12,6 +12,7 @@ export interface GameEventMap {
   'player:shieldRestore': [player: Player]
   'summon:phase': [enemy: Enemy]
   'player:beatDash': [player: Player]
+  'player:shieldRechargeReset': [player: Player]
 }
 
 type EventName = keyof GameEventMap

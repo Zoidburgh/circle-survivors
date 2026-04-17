@@ -9,8 +9,9 @@ import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameStat
 import { update, render } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
 import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, onStartChallenge } from './game/EnemyDesigner.ts'
-import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime } from './render/Renderer.ts'
-import { submitScore, isNameClean } from './game/HighScores.ts'
+import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse } from './render/Renderer.ts'
+import { setVolume } from './audio/AudioEngine.ts'
+import { submitScore, isNameClean, fetchOnlineScores } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
 import { setArenaShape } from './game/Arena.ts'
 import { setPattern, getPattern } from './audio/PatternClock.ts'
@@ -36,7 +37,7 @@ setLeaderboardUrl('https://beatback-leaderboard.pohling777.workers.dev')
 
 let lastChallenge: Challenge | null = null
 
-import { setActiveChallenge, getActiveChallenge } from './game/ChallengeBuilder.ts'
+import { setActiveChallenge, getActiveChallenge, getChallenges } from './game/ChallengeBuilder.ts'
 
 function launchChallenge(ch: Challenge): void {
   lastChallenge = ch
@@ -55,6 +56,8 @@ function launchChallenge(ch: Challenge): void {
     }
   }
   setPhase('playing')
+  showControlsHint()
+  Audio.startShieldFuseBurn(getPlayer().shieldRechargeTime)
 }
 
 function restartChallenge(): void {
@@ -66,6 +69,8 @@ function restartChallenge(): void {
     if (type) getEnemies().push(createEnemy(ce.x, ce.y, type))
   }
   setPhase('playing')
+  showControlsHint()
+  Audio.startShieldFuseBurn(getPlayer().shieldRechargeTime)
 }
 
 // Challenge start handler
@@ -87,6 +92,8 @@ onStartChallenge((ch: Challenge) => {
   }
   console.log('Spawned enemies:', getEnemies().length)
   setPhase('playing')
+  showControlsHint()
+  Audio.startShieldFuseBurn(getPlayer().shieldRechargeTime)
 })
 
 // ── Spawn enemies ──
@@ -110,6 +117,8 @@ function startGame(): void {
   ensureAudio()
   Audio.switchBeat(0)
   setPhase('challenge_select')
+  // Fetch global scores for all challenges
+  for (const ch of getChallenges()) fetchOnlineScores(ch.name)
 }
 
 window.addEventListener('keydown', e => {
@@ -285,9 +294,11 @@ window.addEventListener('keydown', e => {
 
 canvas.addEventListener('mousedown', e => {
   if (isRunComplete()) handleVictoryScrollDragStart(e.clientX, e.clientY)
+  if (getPhase() === 'title' || getPhase() === 'paused') startVolumeDrag(e.clientX, e.clientY)
 })
 canvas.addEventListener('mouseup', () => {
   handleVictoryScrollDragEnd()
+  stopVolumeDrag()
 })
 
 canvas.addEventListener('click', e => {
@@ -309,11 +320,15 @@ canvas.addEventListener('click', e => {
   }
   if (getPhase() === 'paused') {
     const pcx = canvas.width / 2
-    const pcy = canvas.height * 0.35
-    const btnW = 180, btnH = 44, btnGap = 14
-    const resumeY = pcy + 40
+    const btnW = 280, btnH = 64, btnGap = 18
+    const titleH = 60, volH = 60, panelPad = 30
+    const panelContentH = titleH + (btnH + btnGap) * 4 + volH + panelPad
+    const panelY = (canvas.height - panelContentH) / 2
+    const titleY = panelY + 45
+    const resumeY = titleY + 30
     const restartBtnY = resumeY + btnH + btnGap
     const menuBtnY = restartBtnY + btnH + btnGap
+    const fsBtnY = menuBtnY + btnH + btnGap
     if (e.clientX >= pcx - btnW / 2 && e.clientX <= pcx + btnW / 2) {
       if (e.clientY >= resumeY && e.clientY <= resumeY + btnH) {
         setPhase('playing')
@@ -322,6 +337,9 @@ canvas.addEventListener('click', e => {
       } else if (e.clientY >= menuBtnY && e.clientY <= menuBtnY + btnH) {
         resetGameState()
         setPhase('challenge_select')
+      } else if (e.clientY >= fsBtnY && e.clientY <= fsBtnY + btnH) {
+        if (document.fullscreenElement) document.exitFullscreen()
+        else document.documentElement.requestFullscreen()
       }
     }
     return
@@ -333,14 +351,14 @@ canvas.addEventListener('click', e => {
   }
   if (getPhase() === 'dead') {
     const dcx = canvas.width / 2
-    const dcy = canvas.height * 0.38
-    const btnW = 180, btnH = 44, btnGap = 16
-    const restartY = dcy + 80
-    const menuY = restartY + btnH + btnGap
-    if (e.clientX >= dcx - btnW / 2 && e.clientX <= dcx + btnW / 2) {
-      if (e.clientY >= restartY && e.clientY <= restartY + btnH) {
+    const btnW = 220, btnH = 52, btnGap = 16
+    const btnBaseY = canvas.height - 180
+    const retryX = dcx - btnW - btnGap / 2
+    const menuX = dcx + btnGap / 2
+    if (e.clientY >= btnBaseY && e.clientY <= btnBaseY + btnH) {
+      if (e.clientX >= retryX && e.clientX <= retryX + btnW) {
         restartChallenge()
-      } else if (e.clientY >= menuY && e.clientY <= menuY + btnH) {
+      } else if (e.clientX >= menuX && e.clientX <= menuX + btnW) {
         resetGameState()
         setPhase('challenge_select')
       }
@@ -389,7 +407,10 @@ canvas.addEventListener('click', e => {
 })
 
 canvas.addEventListener('mousemove', e => {
+  updatePauseMouse(e.clientX, e.clientY)
   handleVictoryScrollDrag(e.clientY)
+  const vol = updateVolumeDrag(e.clientX)
+  if (vol !== null) setVolume(vol)
   if (getPhase() === 'challenge_select') {
     handleChallengeSelectHover(e.clientX, e.clientY)
     return
@@ -405,6 +426,13 @@ canvas.addEventListener('wheel', e => {
     e.preventDefault()
   }
 }, { passive: false })
+
+// Auto-pause when exiting fullscreen during gameplay
+document.addEventListener('fullscreenchange', () => {
+  if (!document.fullscreenElement && getPhase() === 'playing') {
+    setPhase('paused')
+  }
+})
 
 // ── Start game loop ──
 start(update, render)

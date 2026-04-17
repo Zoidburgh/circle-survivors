@@ -17,6 +17,11 @@ export default defineConfig(({ mode }) => ({
       },
     },
   },
+  server: {
+    watch: {
+      ignored: ['**/data/enemies.json'],
+    },
+  },
   plugins: [
     {
       name: 'save-enemies',

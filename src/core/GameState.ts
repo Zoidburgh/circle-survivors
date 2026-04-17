@@ -1,6 +1,7 @@
 import { createPlayer, resetPlayer } from '../entities/Player.ts'
 import { resetRitualNodes } from '../game/RitualNodes.ts'
 import { resetOrbs } from '../entities/XPOrb.ts'
+import { stopShieldFuseBurn } from '../audio/AudioEngine.ts'
 import type { Player } from '../entities/Player.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { SpatialGrid } from './SpatialGrid.ts'
@@ -71,4 +72,5 @@ export function resetGameState(): void {
   runBeatCount = 0
   resetRitualNodes()
   resetOrbs()
+  stopShieldFuseBurn()
 }

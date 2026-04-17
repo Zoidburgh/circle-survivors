@@ -15,7 +15,7 @@ import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat } from '../audio/PatternClock.ts'
-import { playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion } from '../audio/AudioEngine.ts'
+import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn } from '../audio/AudioEngine.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
 import { getScoresForChallenge, fetchOnlineScores } from '../game/HighScores.ts'
 import { getActiveChallenge } from '../game/ChallengeBuilder.ts'
@@ -87,7 +87,7 @@ on('totem:spawn', (totemEnemy: Enemy) => {
   const len = Math.sqrt(dx * dx + dy * dy)
   const baseAngle = len > 1 ? Math.atan2(dy, dx) : Math.random() * Math.PI * 2
   const spawnRadius = type.radius ?? 40
-  const dist = totemEnemy.radius + spawnRadius + 60
+  const dist = (totemEnemy.radius + spawnRadius + 60) * 1.38
   const enemies = getEnemies()
 
   // Try 8 angles, starting from away-from-player, pick the one with least overlap
@@ -122,6 +122,8 @@ on('totem:spawn', (totemEnemy: Enemy) => {
 
   enemies.push(createEnemy(bestX, bestY, type))
   addSpawnEffect(totemEnemy.x, totemEnemy.y, totemEnemy.radius, bestX, bestY, type.color)
+  playTotemSpawn()
+  playHit()
 })
 
 // Pending revenge damage checks
@@ -204,7 +206,7 @@ on('player:beatDash', (player: Player) => {
       // Check if shockwave hits active summon node
       const N = enemy.summonNodes
       const activeIdx = enemy.summonBeatCount % N
-      const baseRot = performance.now() / 2000
+      const baseRot = Renderer.getGameTimeMs() / 2000
       const nodeAngle = baseRot + (activeIdx / N) * Math.PI * 2
       const orbitR = enemy.radius * 0.55
       const nodeR = Math.max(8, enemy.radius * 0.34)
@@ -219,12 +221,14 @@ on('player:beatDash', (player: Player) => {
           enemy.summonLockFlash[activeIdx] = 0.3
           enemy.summonStartOffset = activeIdx
           enemy.summonProgress = 1
+          if (enemy.summonProgress >= N) { playNodeComplete() } else { playNodeLock(0, N) }
         } else {
           const expected = (enemy.summonStartOffset + enemy.summonProgress) % N
           if (activeIdx === expected) {
             enemy.summonNodeStates[activeIdx] = 'locked'
             enemy.summonLockFlash[activeIdx] = 0.3
             enemy.summonProgress++
+            if (enemy.summonProgress >= N) { playNodeComplete() } else { playNodeLock(enemy.summonProgress - 1, N) }
           }
         }
         if (enemy.summonProgress >= N && enemy.summonActivationTimer <= 0) {
@@ -267,14 +271,25 @@ on('player:beatDash', (player: Player) => {
       }
     }
   }
-  // Visual — shockwave flash on top of everything + particles
+  // SFX + Visual — shockwave flash on top of everything + particles
+  playBeatDash()
   Renderer.triggerBeatDashFlash(player.x, player.y, shockRadius)
   Renderer.spawnVolatileParticles(player.x, player.y, shockRadius, 0, 230, 255)
 })
 
 // Shield audio events
-on('player:shieldBreak', () => playShieldBreak())
-on('player:shieldRestore', () => playShieldRestore())
+on('player:shieldBreak', () => {
+  playShieldBreak()
+  const player = getPlayer()
+  startShieldFuseBurn(player.shieldRechargeTime)
+})
+on('player:shieldRestore', () => {
+  stopShieldFuseBurn()
+  playShieldRestore()
+})
+on('player:shieldRechargeReset', (player: Player) => {
+  startShieldFuseBurn(player.shieldRechargeTime)
+})
 
 // Summon phase completion — spawn enemies, advance or kill summoner
 on('summon:phase', (enemy: Enemy) => {
@@ -307,7 +322,7 @@ on('summon:phase', (enemy: Enemy) => {
         for (let i = 0; i < spawn.count; i++) {
           const angle = baseAngle + (spawnIdx / totalSpawns) * Math.PI * 2
           spawnIdx++
-          const dist = enemy.radius + (type.radius ?? 40) + 30
+          const dist = (enemy.radius + (type.radius ?? 40) + 30) * 1.38
           const sx = enemy.x + Math.cos(angle) * dist
           const sy = enemy.y + Math.sin(angle) * dist
           const clamped = clampToArena(sx, sy, type.radius ?? 40)
@@ -319,6 +334,37 @@ on('summon:phase', (enemy: Enemy) => {
       }
     }
   }
+  playSummonerSpawn()
+  // Blood burst from the pie edge as the phase drains away
+  {
+    const totalPhases = enemy.summonPhases.length
+    const oldPhaseFrac = (totalPhases - enemy.summonCurrentPhase) / totalPhases
+    const newPhaseFrac = (totalPhases - enemy.summonCurrentPhase - 1) / totalPhases
+    const startAngle = -Math.PI / 2
+    const arcFrom = startAngle + newPhaseFrac * Math.PI * 2
+    const arcTo = startAngle + oldPhaseFrac * Math.PI * 2
+    const arcSpan = arcTo - arcFrom
+    const er = parseInt(enemy.color.slice(1, 3), 16)
+    const eg = parseInt(enemy.color.slice(3, 5), 16)
+    const eb = parseInt(enemy.color.slice(5, 7), 16)
+    const r = enemy.radius
+    const count = Math.floor(18 + r * 0.3)
+    for (let i = 0; i < count; i++) {
+      const angle = arcFrom + Math.random() * arcSpan
+      const dist = (0.4 + Math.random() * 0.6) * r
+      const px = enemy.x + Math.cos(angle) * dist
+      const py = enemy.y + Math.sin(angle) * dist
+      const outAngle = Math.atan2(py - enemy.y, px - enemy.x)
+      const speed = 100 + Math.random() * 200
+      const vx = Math.cos(outAngle) * speed + (Math.random() - 0.5) * speed * 0.3
+      const vy = Math.sin(outAngle) * speed + (Math.random() - 0.5) * speed * 0.3
+      const size = 3 + Math.random() * 4
+      Renderer.spawnParticleExport(px, py, vx, vy,
+        Math.min(255, er + 40), Math.max(0, eg - 20), Math.max(0, eb - 20),
+        0.4 + Math.random() * 0.4, size)
+    }
+  }
+
   // Advance to next phase or kill summoner
   enemy.summonCurrentPhase++
   if (enemy.summonCurrentPhase >= enemy.summonPhases.length) {
@@ -412,6 +458,8 @@ export function update(dt: number): void {
   // Death check
   if (player.hp <= 0 && getPhase() === 'playing') {
     setPhase('dead')
+    const ch = getActiveChallenge()
+    if (ch) fetchOnlineScores(ch.name)
   }
 
   const dir = Input.getMovementDir()
