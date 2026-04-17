@@ -428,10 +428,21 @@ canvas.addEventListener('wheel', e => {
 }, { passive: false })
 
 // Auto-pause when exiting fullscreen during gameplay
-document.addEventListener('fullscreenchange', () => {
+function onFullscreenExit(): void {
   if (!document.fullscreenElement && getPhase() === 'playing') {
     setPhase('paused')
   }
+}
+document.addEventListener('fullscreenchange', onFullscreenExit)
+document.addEventListener('webkitfullscreenchange', onFullscreenExit)
+// Fallback: detect resize that looks like a fullscreen exit (itch.io iframe)
+let wasFullscreenSize = false
+window.addEventListener('resize', () => {
+  const isFullSize = window.innerWidth === screen.width && window.innerHeight === screen.height
+  if (wasFullscreenSize && !isFullSize && getPhase() === 'playing') {
+    setPhase('paused')
+  }
+  wasFullscreenSize = isFullSize
 })
 
 // ── Start game loop ──
