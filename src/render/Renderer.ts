@@ -5371,7 +5371,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
 
     ctx.font = 'bold 28px monospace'
     ctx.fillStyle = 'rgba(255, 215, 64, 0.9)'
-    ctx.fillText('NEW HIGH SCORE!', ncx, ncy + 175)
+    ctx.fillText('NEW BEST TIME!', ncx, ncy + 175)
 
     ctx.font = '24px monospace'
     ctx.fillStyle = 'rgba(255, 255, 255, 0.5)'
