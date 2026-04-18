@@ -98,9 +98,16 @@ function ensureContext(): AudioContext {
     startBeatLoop()
   }
   if (ctx.state === 'suspended') {
-    ctx.resume()
+    ctx.resume().catch(() => {})
   }
   return ctx
+}
+
+/** Resume AudioContext if suspended — call on focus regain */
+export function ensureAudioContext(): void {
+  if (ctx && ctx.state === 'suspended') {
+    ctx.resume().catch(() => {})
+  }
 }
 
 export function init(): void {
@@ -872,65 +879,84 @@ export function playBeatDash(): void {
   const c = ctx!
   const t = c.currentTime
 
-  // Layer 1: Sub-bass thump — punchy low-end impact
+  // Layer 1: Sub thump — gut punch, fast attack
   const thump = c.createOscillator()
   const thumpGain = c.createGain()
   thump.type = 'sine'
-  thump.frequency.setValueAtTime(rPitch(75), t)
+  thump.frequency.setValueAtTime(rPitch(90), t)
   thump.frequency.exponentialRampToValueAtTime(rPitch(30), t + 0.2)
-  thumpGain.gain.setValueAtTime(rVol(0.6), t)
+  thumpGain.gain.setValueAtTime(rVol(0.7), t)
   thumpGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
   thump.connect(thumpGain)
   thumpGain.connect(master)
   thump.start(t)
   thump.stop(t + 0.2)
 
-  // Second sub layer — triangle for body
-  const sub2 = c.createOscillator()
-  const sub2Gain = c.createGain()
-  sub2.type = 'triangle'
-  sub2.frequency.setValueAtTime(rPitch(55), t)
-  sub2.frequency.exponentialRampToValueAtTime(rPitch(22), t + 0.18)
-  sub2Gain.gain.setValueAtTime(rVol(0.45), t)
-  sub2Gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18)
-  sub2.connect(sub2Gain)
-  sub2Gain.connect(master)
-  sub2.start(t)
-  sub2.stop(t + 0.18)
+  // Layer 2: Chunky "whomp" — the satisfying part
+  // Descending chord hit — two notes a fifth apart for richness
+  const whomp1 = c.createOscillator()
+  const whomp2 = c.createOscillator()
+  const whompGain = c.createGain()
+  whomp1.type = 'triangle'
+  whomp2.type = 'triangle'
+  whomp1.frequency.setValueAtTime(rPitch(220), t)
+  whomp1.frequency.exponentialRampToValueAtTime(rPitch(110), t + 0.18)
+  whomp2.frequency.setValueAtTime(rPitch(330), t)  // perfect fifth
+  whomp2.frequency.exponentialRampToValueAtTime(rPitch(165), t + 0.18)
+  whompGain.gain.setValueAtTime(rVol(0.4), t)
+  whompGain.gain.exponentialRampToValueAtTime(0.001, t + 0.22)
+  whomp1.connect(whompGain)
+  whomp2.connect(whompGain)
+  whompGain.connect(master)
+  whomp1.start(t)
+  whomp2.start(t)
+  whomp1.stop(t + 0.22)
+  whomp2.stop(t + 0.22)
 
-  // Layer 2: Metallic ping — high-frequency "perfect timing" bell
-  const ping = c.createOscillator()
-  const ping2 = c.createOscillator()
-  const pingGain = c.createGain()
-  ping.type = 'sine'
-  ping2.type = 'sine'
-  ping.frequency.setValueAtTime(rPitch(2200), t)
-  ping.frequency.exponentialRampToValueAtTime(rPitch(1800), t + 0.15)
-  ping2.frequency.setValueAtTime(rPitch(3300), t)
-  ping2.frequency.exponentialRampToValueAtTime(rPitch(2600), t + 0.12)
-  pingGain.gain.setValueAtTime(rVol(0.18), t)
-  pingGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
-  ping.connect(pingGain)
-  ping2.connect(pingGain)
-  pingGain.connect(reverbInput)
-  ping.start(t)
-  ping2.start(t)
-  ping.stop(t + 0.15)
-  ping2.stop(t + 0.15)
+  // Layer 3: Bright accent — short, warm, through reverb for shimmer
+  const accent = c.createOscillator()
+  const accentGain = c.createGain()
+  accent.type = 'sine'
+  accent.frequency.setValueAtTime(rPitch(800), t)
+  accent.frequency.exponentialRampToValueAtTime(rPitch(500), t + 0.1)
+  accentGain.gain.setValueAtTime(rVol(0.3), t)
+  accentGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12)
+  accent.connect(accentGain)
+  accentGain.connect(reverbInput)
+  accent.start(t)
+  accent.stop(t + 0.12)
 
-  // Layer 3: Noise crack — sharp transient snap
-  const noiseDur = 0.08
+  // Layer 4: Happy ding — major third interval, slight delay for "reward" feel
+  const ding = c.createOscillator()
+  const ding2 = c.createOscillator()
+  const dingGain = c.createGain()
+  ding.type = 'sine'
+  ding2.type = 'sine'
+  ding.frequency.setValueAtTime(rPitch(1050), t + 0.03)
+  ding2.frequency.setValueAtTime(rPitch(1320), t + 0.03)  // major third
+  dingGain.gain.setValueAtTime(0.001, t + 0.03)
+  dingGain.gain.linearRampToValueAtTime(rVol(0.15), t + 0.05)
+  dingGain.gain.exponentialRampToValueAtTime(0.001, t + 0.25)
+  ding.connect(dingGain)
+  ding2.connect(dingGain)
+  dingGain.connect(reverbInput)
+  ding.start(t + 0.03)
+  ding2.start(t + 0.03)
+  ding.stop(t + 0.25)
+  ding2.stop(t + 0.25)
+
+  // Layer 5: Noise snap — punchy transient
+  const noiseDur = 0.06
   const noiseBuf = c.createBuffer(1, Math.floor(c.sampleRate * noiseDur), c.sampleRate)
   const noiseData = noiseBuf.getChannelData(0)
   for (let i = 0; i < noiseData.length; i++) noiseData[i] = (Math.random() * 2 - 1) * 0.5
   const noise = c.createBufferSource()
   noise.buffer = noiseBuf
   const noiseFilter = c.createBiquadFilter()
-  noiseFilter.type = 'bandpass'
-  noiseFilter.frequency.setValueAtTime(3000, t)
-  noiseFilter.Q.value = 1.5
+  noiseFilter.type = 'highpass'
+  noiseFilter.frequency.value = 1500
   const noiseGain = c.createGain()
-  noiseGain.gain.setValueAtTime(rVol(0.35), t)
+  noiseGain.gain.setValueAtTime(rVol(0.4), t)
   noiseGain.gain.exponentialRampToValueAtTime(0.001, t + noiseDur)
   noise.connect(noiseFilter)
   noiseFilter.connect(noiseGain)

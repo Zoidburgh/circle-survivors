@@ -1119,15 +1119,15 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     ctx.fillStyle = `rgba(255, 255, 255, ${whiteAlpha})`
     ctx.fill()
 
-    // Red shockwave expanding to fill attack range
+    // Gold shockwave expanding to fill attack range
     const shockExpand = Math.min((1 - t) * 3, 1)
     const shockR = beatDashRadius * shockExpand
     if (shockR > 2) {
       ctx.beginPath()
       ctx.arc(bsx, bsy, shockR, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(255, 40, 40, ${t * 0.3})`
+      ctx.fillStyle = `rgba(255, 215, 64, ${t * t * 0.2})`
       ctx.fill()
-      ctx.strokeStyle = `rgba(255, 60, 60, ${t * 0.7})`
+      ctx.strokeStyle = `rgba(255, 200, 40, ${t * t * 0.6})`
       ctx.lineWidth = 5 * t
       ctx.stroke()
     }
@@ -1168,9 +1168,10 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
         const py = beatDashY + Math.sin(pa) * dist
         const speed = 20 + Math.random() * 40
         const outA = pa + (Math.random() - 0.5) * 1.5
+        const isBlueP = Math.random() < 0.2
         spawnParticle(px, py,
           Math.cos(outA) * speed, Math.sin(outA) * speed - 15,
-          255, 60 + Math.floor(Math.random() * 60), 50 + Math.floor(Math.random() * 50),
+          isBlueP ? 0 : 255, isBlueP ? 200 + Math.floor(Math.random() * 55) : 180 + Math.floor(Math.random() * 60), isBlueP ? 255 : 20 + Math.floor(Math.random() * 40),
           0.2 + Math.random() * 0.15, 4 + Math.random() * 3)
       }
     }
@@ -4743,6 +4744,22 @@ export function getNameEntryText(): string { return nameEntryText }
 export function setNameEntryText(t: string): void { nameEntryText = t }
 export function resetNameEntry(): void { nameEntryText = '' }
 export function scrollVictoryLeaderboard(delta: number): void { victoryScroll += delta }
+let touchScrollActive = false
+let touchScrollLastY = 0
+export function touchScrollStart(y: number): void {
+  if (isRunComplete()) {
+    touchScrollActive = true
+    touchScrollLastY = y
+  }
+}
+export function touchScrollMove(y: number): void {
+  if (touchScrollActive) {
+    const delta = touchScrollLastY - y
+    victoryScroll += delta * 2  // scale up since canvas coords are larger than screen
+    touchScrollLastY = y
+  }
+}
+export function touchScrollEnd(): void { touchScrollActive = false }
 export function resetVictoryScroll(): void { victoryScroll = 0; victoryAutoScrolled = false; lastSubmittedName = ''; lastSubmittedTime = 0; lastProjectedRank = 0 }
 export function setLastSubmittedTime(t: number): void { lastSubmittedTime = t }
 export function setLastSubmittedName(name: string): void { lastSubmittedName = name }
@@ -5086,35 +5103,89 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     const a = alpha
 
     if (isTouchMode()) {
-      // Touch controls hint — joystick graphic + tap instruction
-      const hintY = height / 2 + 160
+      // Touch controls hint — animated joystick graphic + tap instruction
+      const hintY = height / 2 + 120
 
-      // Joystick icon — small circle with inner dot
-      const joyR = 30
+      // Animated joystick — knob orbits in a circle to show movement
+      const joyR = 45
+      const animT = (performance.now() % 3000) / 3000  // 0→1 over 3 seconds
+      const knobAngle = animT * Math.PI * 2
+      const knobDist = joyR * 0.5
+      const knobX = cx + Math.cos(knobAngle) * knobDist
+      const knobY = hintY + Math.sin(knobAngle) * knobDist
+
+      // Outer ring with tick marks
       ctx.beginPath()
       ctx.arc(cx, hintY, joyR, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(0, 255, 255, ${(0.4 * a).toFixed(3)})`
+      ctx.fillStyle = `rgba(0, 0, 0, ${(0.25 * a).toFixed(3)})`
+      ctx.fill()
+      ctx.strokeStyle = `rgba(0, 255, 255, ${(0.35 * a).toFixed(3)})`
+      ctx.lineWidth = 2.5
+      ctx.stroke()
+
+      // Tick marks
+      for (let i = 0; i < 8; i++) {
+        const ta = (i / 8) * Math.PI * 2
+        const isMajor = i % 2 === 0
+        const inner = joyR - (isMajor ? 7 : 4)
+        const outer = joyR + (isMajor ? 2 : 1)
+        ctx.beginPath()
+        ctx.moveTo(cx + Math.cos(ta) * inner, hintY + Math.sin(ta) * inner)
+        ctx.lineTo(cx + Math.cos(ta) * outer, hintY + Math.sin(ta) * outer)
+        ctx.strokeStyle = `rgba(0, 255, 255, ${((isMajor ? 0.3 : 0.15) * a).toFixed(3)})`
+        ctx.lineWidth = isMajor ? 2 : 1
+        ctx.stroke()
+      }
+
+      // Direction beam
+      const beamGrad = ctx.createLinearGradient(cx, hintY, knobX, knobY)
+      beamGrad.addColorStop(0, `rgba(255, 50, 200, 0)`)
+      beamGrad.addColorStop(1, `rgba(255, 50, 200, ${(0.25 * a).toFixed(3)})`)
+      ctx.beginPath()
+      ctx.moveTo(cx, hintY)
+      ctx.lineTo(knobX, knobY)
+      ctx.strokeStyle = beamGrad
+      ctx.lineWidth = 6
+      ctx.lineCap = 'round'
+      ctx.stroke()
+      ctx.lineCap = 'butt'
+
+      // Animated knob
+      const knobR = 16
+      ctx.beginPath()
+      ctx.arc(knobX, knobY, knobR, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(0, 255, 255, ${(0.4 * a).toFixed(3)})`
+      ctx.fill()
+      ctx.strokeStyle = `rgba(0, 255, 255, ${(0.6 * a).toFixed(3)})`
       ctx.lineWidth = 2
       ctx.stroke()
-      ctx.fillStyle = `rgba(0, 0, 0, ${(0.2 * a).toFixed(3)})`
-      ctx.fill()
-      // Inner knob offset to show movement
+
+      // Direction arrow on outer edge
+      const arrowDist = joyR + 10
+      const arrowTipX = cx + Math.cos(knobAngle) * (arrowDist + 8)
+      const arrowTipY = hintY + Math.sin(knobAngle) * (arrowDist + 8)
+      const arrowSize = 6
+      const arrowL = knobAngle + Math.PI * 0.75
+      const arrowR2 = knobAngle - Math.PI * 0.75
       ctx.beginPath()
-      ctx.arc(cx + 8, hintY - 5, 10, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(0, 255, 255, ${(0.4 * a).toFixed(3)})`
+      ctx.moveTo(arrowTipX, arrowTipY)
+      ctx.lineTo(arrowTipX + Math.cos(arrowL) * arrowSize, arrowTipY + Math.sin(arrowL) * arrowSize)
+      ctx.lineTo(arrowTipX + Math.cos(arrowR2) * arrowSize, arrowTipY + Math.sin(arrowR2) * arrowSize)
+      ctx.closePath()
+      ctx.fillStyle = `rgba(0, 255, 255, ${(0.5 * a).toFixed(3)})`
       ctx.fill()
 
       // "DRAG TO MOVE" label
-      ctx.font = 'bold 20px monospace'
+      ctx.font = 'bold 34px monospace'
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
       ctx.fillStyle = `rgba(0, 255, 255, ${(0.7 * a).toFixed(3)})`
-      ctx.fillText('DRAG TO MOVE', cx, hintY + joyR + 28)
+      ctx.fillText('DRAG TO MOVE', cx, hintY + joyR + 38)
 
-      // "TAP 2ND FINGER TO DASH" label
-      ctx.font = 'bold 18px monospace'
-      ctx.fillStyle = `rgba(255, 50, 200, ${(0.6 * a).toFixed(3)})`
-      ctx.fillText('TAP 2ND FINGER = DASH', cx, hintY + joyR + 58)
+      // "TAP = DASH" label
+      ctx.font = 'bold 34px monospace'
+      ctx.fillStyle = `rgba(255, 50, 200, ${(0.7 * a).toFixed(3)})`
+      ctx.fillText('TAP = DASH', cx, hintY + joyR + 72)
     } else {
       // Keyboard controls hint — arrow keys + spacebar
       const keySize = 48
@@ -5620,191 +5691,176 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.fillRect(0, 0, width, height)
 
     const ncx = width / 2
-    const ncy = height * 0.2
+    const compact = height < 800  // mobile/small screen
 
     const time = getRunFinalTime()
     const timeStr = formatTime(time)
-
-    ctx.font = 'bold 64px monospace'
-    ctx.textAlign = 'center'
-    ctx.fillStyle = 'rgba(100, 255, 160, 0.95)'
-    ctx.fillText('VICTORY', ncx, ncy)
-
-    ctx.font = 'bold 56px monospace'
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
-    ctx.fillText(timeStr, ncx, ncy + 70)
 
     // Compute projected rank
     const ch = getActiveChallenge()
     const projectedScores = ch ? getScoresForChallenge(ch.name, 100) : []
     const roundedTime = Math.ceil(time)
-    // Project where this score lands — one entry per player, so count unique positions
     let projectedRank = projectedScores.length + 1
     for (let i = 0; i < projectedScores.length; i++) {
       if (roundedTime < projectedScores[i]!.time) { projectedRank = i + 1; break }
     }
-    // If tied, go after all ties
     while (projectedRank <= projectedScores.length && projectedScores[projectedRank - 1]!.time === roundedTime) {
       projectedRank++
     }
     lastProjectedRank = projectedRank
-    const pRankColors = ['rgba(255, 215, 64, 0.95)', 'rgba(120, 220, 255, 0.9)', 'rgba(255, 160, 80, 0.9)']
-    const pRankColor = projectedRank <= 3 ? pRankColors[projectedRank - 1]! : 'rgba(0, 255, 255, 0.8)'
 
-    ctx.font = 'bold 40px monospace'
-    ctx.fillStyle = pRankColor
-    ctx.fillText(`RANK #${projectedRank}`, ncx, ncy + 130)
+    if (compact) {
+      // ── Compact layout for mobile — fits above keyboard ──
+      let cy = 40
 
-    ctx.font = 'bold 28px monospace'
-    ctx.fillStyle = 'rgba(255, 215, 64, 0.9)'
-    ctx.fillText('NEW BEST TIME!', ncx, ncy + 175)
+      ctx.textAlign = 'center'
+      ctx.font = 'bold 36px monospace'
+      ctx.fillStyle = 'rgba(100, 255, 160, 0.95)'
+      ctx.fillText('VICTORY', ncx, cy)
+      cy += 40
 
-    ctx.font = '24px monospace'
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.5)'
-    ctx.fillText('Enter your name:', ncx, ncy + 230)
+      ctx.font = 'bold 28px monospace'
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
+      ctx.fillText(timeStr, ncx, cy)
+      cy += 40
 
-    // Name input box
-    const boxW = 400
-    const boxH = 60
-    const boxX = ncx - boxW / 2
-    const boxY = ncy + 245
-    ctx.beginPath()
-    ctx.roundRect(boxX, boxY, boxW, boxH, 6)
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.08)'
-    ctx.fill()
-    ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)'
-    ctx.lineWidth = 2
-    ctx.stroke()
+      ctx.font = '18px monospace'
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.5)'
+      ctx.fillText('Enter your name:', ncx, cy)
+      cy += 20
 
-    // Name text + cursor
-    ctx.font = 'bold 34px monospace'
-    ctx.fillStyle = 'rgba(0, 255, 255, 0.9)'
-    const cursor = Math.floor(performance.now() / 500) % 2 === 0 ? '|' : ''
-    ctx.fillText(nameEntryText + cursor, ncx, boxY + boxH / 2 + 10)
+      // Name input box
+      const boxW = 360
+      const boxH = 48
+      const boxX = ncx - boxW / 2
+      const boxY = cy
+      ctx.beginPath()
+      ctx.roundRect(boxX, boxY, boxW, boxH, 6)
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.08)'
+      ctx.fill()
+      ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)'
+      ctx.lineWidth = 2
+      ctx.stroke()
 
-    // Submit button — always visible, essential for mobile
-    const subW = 200
-    const subH = 50
-    const subX = ncx - subW / 2
-    const subY = boxY + boxH + 16
-    const subHov = pauseMouseX >= subX && pauseMouseX <= subX + subW && pauseMouseY >= subY && pauseMouseY <= subY + subH
-    ctx.beginPath()
-    ctx.roundRect(subX, subY, subW, subH, 8)
-    ctx.strokeStyle = `rgba(100, 255, 160, ${subHov ? 0.8 : 0.5})`
-    ctx.lineWidth = subHov ? 2.5 : 1.5
-    ctx.stroke()
-    ctx.fillStyle = `rgba(100, 255, 160, ${subHov ? 0.2 : 0.08})`
-    ctx.fill()
-    ctx.font = 'bold 24px monospace'
-    ctx.fillStyle = `rgba(100, 255, 160, ${subHov ? 1 : 0.8})`
-    ctx.fillText('S U B M I T', ncx, subY + subH / 2 + 8)
+      ctx.font = 'bold 26px monospace'
+      ctx.fillStyle = 'rgba(0, 255, 255, 0.9)'
+      const cursor = Math.floor(performance.now() / 500) % 2 === 0 ? '|' : ''
+      ctx.fillText(nameEntryText + cursor, ncx, boxY + boxH / 2 + 8)
+      cy += boxH + 12
 
-    // Rank flavor text
-    const rankMessages: Record<string, string[]> = {
-      '1': [
-        'You are the fastest. For now.',
-        'Nobody\'s touching this.',
-        'The top. Where you belong.',
-        'They\'ll all be chasing your ghost.',
-        'Screenshot this before someone takes it.',
-        'Crown fits nice, doesn\'t it?',
-      ],
-      '2': [
-        'So close. The throne is right there.',
-        'Second place. First loser.',
-        'One run away from glory.',
-        'You can taste first place from here.',
-        'The gap is smaller than you think.',
-        'Almost had it. Almost.',
-      ],
-      '3': [
-        'Podium. Not bad.',
-        'Bronze hits different when you earned it.',
-        'Third. Two people were faster. For now.',
-        'Close enough to smell the gold.',
-        'Top 3 is top 3.',
-        'The podium accepts you.',
-      ],
-      '4-10': [
-        'Top 10. Respect.',
-        'The leaderboard notices you.',
-        'Dangerous territory. Keep going.',
-        'You belong up here.',
-        'The top 3 should be worried.',
-        'One good run from the podium.',
-        'You\'re warming up, aren\'t you?',
-      ],
-      '11-25': [
-        'Solid. Keep pushing.',
-        'Getting warm.',
-        'Not bad. Not great. Not done.',
-        'You can see the top from here.',
-        'The board respects a grinder.',
-        'Halfway to something special.',
-        'Your fingers know the way. Trust them.',
-      ],
-      '26-50': [
-        'You know you\'re better than this.',
-        'Average. Prove me wrong.',
-        'Middle of the pack. For now.',
-        'Decent run. Forgettable, but decent.',
-        'The leaderboard has seen worse.',
-        'One of many. Be one of few.',
-        'Your rival just beat this time. Probably.',
-      ],
-      '51-75': [
-        'Hey, you finished.',
-        'It\'s a start. A slow start.',
-        'At least you\'re on the board.',
-        'Technically a score.',
-        'The game felt that one.',
-        'There\'s levels to this. You found the bottom ones.',
-        'You looked cool doing it though. Maybe.',
-      ],
-      '76-90': [
-        'Well... you tried.',
-        'Participation trophy unlocked.',
-        'Your keyboard works, at least.',
-        'Did you play with your eyes closed?',
-        'The enemies felt bad for you.',
-        'Bold of you to submit this.',
-        'Somewhere, a speedrunner just cringed.',
-      ],
-      '91-100': [
-        'Made the board. Barely.',
-        'Scraping the bottom here.',
-        'Nowhere to go but up.',
-        'Rock bottom has a nice view.',
-        'You\'re basically the tutorial.',
-        'At least 101st place isn\'t a thing.',
-        'This is your villain origin story.',
-      ],
+      // Submit button
+      const subW = 160
+      const subH = 42
+      const subX = ncx - subW / 2
+      const subY = cy
+      const subHov = pauseMouseX >= subX && pauseMouseX <= subX + subW && pauseMouseY >= subY && pauseMouseY <= subY + subH
+      ctx.beginPath()
+      ctx.roundRect(subX, subY, subW, subH, 8)
+      ctx.strokeStyle = `rgba(100, 255, 160, ${subHov ? 0.8 : 0.5})`
+      ctx.lineWidth = subHov ? 2.5 : 1.5
+      ctx.stroke()
+      ctx.fillStyle = `rgba(100, 255, 160, ${subHov ? 0.2 : 0.08})`
+      ctx.fill()
+      ctx.font = 'bold 20px monospace'
+      ctx.fillStyle = `rgba(100, 255, 160, ${subHov ? 1 : 0.8})`
+      ctx.fillText('S U B M I T', ncx, subY + subH / 2 + 6)
+    } else {
+      // ── Full desktop layout ──
+      const ncy = height * 0.2
+
+      ctx.textAlign = 'center'
+      ctx.font = 'bold 64px monospace'
+      ctx.fillStyle = 'rgba(100, 255, 160, 0.95)'
+      ctx.fillText('VICTORY', ncx, ncy)
+
+      ctx.font = 'bold 56px monospace'
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.9)'
+      ctx.fillText(timeStr, ncx, ncy + 70)
+
+      const pRankColors = ['rgba(255, 215, 64, 0.95)', 'rgba(120, 220, 255, 0.9)', 'rgba(255, 160, 80, 0.9)']
+      const pRankColor = projectedRank <= 3 ? pRankColors[projectedRank - 1]! : 'rgba(0, 255, 255, 0.8)'
+      ctx.font = 'bold 40px monospace'
+      ctx.fillStyle = pRankColor
+      ctx.fillText(`RANK #${projectedRank}`, ncx, ncy + 130)
+
+      ctx.font = 'bold 28px monospace'
+      ctx.fillStyle = 'rgba(255, 215, 64, 0.9)'
+      ctx.fillText('NEW BEST TIME!', ncx, ncy + 175)
+
+      ctx.font = '24px monospace'
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.5)'
+      ctx.fillText('Enter your name:', ncx, ncy + 230)
+
+      const boxW = 400
+      const boxH = 60
+      const boxX = ncx - boxW / 2
+      const boxY = ncy + 245
+      ctx.beginPath()
+      ctx.roundRect(boxX, boxY, boxW, boxH, 6)
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.08)'
+      ctx.fill()
+      ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)'
+      ctx.lineWidth = 2
+      ctx.stroke()
+
+      ctx.font = 'bold 34px monospace'
+      ctx.fillStyle = 'rgba(0, 255, 255, 0.9)'
+      const cursor = Math.floor(performance.now() / 500) % 2 === 0 ? '|' : ''
+      ctx.fillText(nameEntryText + cursor, ncx, boxY + boxH / 2 + 10)
+
+      const subW = 200
+      const subH = 50
+      const subX = ncx - subW / 2
+      const subY = boxY + boxH + 16
+      const subHov = pauseMouseX >= subX && pauseMouseX <= subX + subW && pauseMouseY >= subY && pauseMouseY <= subY + subH
+      ctx.beginPath()
+      ctx.roundRect(subX, subY, subW, subH, 8)
+      ctx.strokeStyle = `rgba(100, 255, 160, ${subHov ? 0.8 : 0.5})`
+      ctx.lineWidth = subHov ? 2.5 : 1.5
+      ctx.stroke()
+      ctx.fillStyle = `rgba(100, 255, 160, ${subHov ? 0.2 : 0.08})`
+      ctx.fill()
+      ctx.font = 'bold 24px monospace'
+      ctx.fillStyle = `rgba(100, 255, 160, ${subHov ? 1 : 0.8})`
+      ctx.fillText('S U B M I T', ncx, subY + subH / 2 + 8)
+
+      // Rank flavor text
+      const rankMessages: Record<string, string[]> = {
+        '1': ['You are the fastest. For now.', 'Nobody\'s touching this.', 'The top. Where you belong.', 'They\'ll all be chasing your ghost.', 'Screenshot this before someone takes it.', 'Crown fits nice, doesn\'t it?'],
+        '2': ['So close. The throne is right there.', 'Second place. First loser.', 'One run away from glory.', 'You can taste first place from here.', 'The gap is smaller than you think.', 'Almost had it. Almost.'],
+        '3': ['Podium. Not bad.', 'Bronze hits different when you earned it.', 'Third. Two people were faster. For now.', 'Close enough to smell the gold.', 'Top 3 is top 3.', 'The podium accepts you.'],
+        '4-10': ['Top 10. Respect.', 'The leaderboard notices you.', 'Dangerous territory. Keep going.', 'You belong up here.', 'The top 3 should be worried.', 'One good run from the podium.', 'You\'re warming up, aren\'t you?'],
+        '11-25': ['Solid. Keep pushing.', 'Getting warm.', 'Not bad. Not great. Not done.', 'You can see the top from here.', 'The board respects a grinder.', 'Halfway to something special.', 'Your fingers know the way. Trust them.'],
+        '26-50': ['You know you\'re better than this.', 'Average. Prove me wrong.', 'Middle of the pack. For now.', 'Decent run. Forgettable, but decent.', 'The leaderboard has seen worse.', 'One of many. Be one of few.', 'Your rival just beat this time. Probably.'],
+        '51-75': ['Hey, you finished.', 'It\'s a start. A slow start.', 'At least you\'re on the board.', 'Technically a score.', 'The game felt that one.', 'There\'s levels to this. You found the bottom ones.', 'You looked cool doing it though. Maybe.'],
+        '76-90': ['Well... you tried.', 'Participation trophy unlocked.', 'Your keyboard works, at least.', 'Did you play with your eyes closed?', 'The enemies felt bad for you.', 'Bold of you to submit this.', 'Somewhere, a speedrunner just cringed.'],
+        '91-100': ['Made the board. Barely.', 'Scraping the bottom here.', 'Nowhere to go but up.', 'Rock bottom has a nice view.', 'You\'re basically the tutorial.', 'At least 101st place isn\'t a thing.', 'This is your villain origin story.'],
+      }
+      let msgKey = '91-100'
+      if (projectedRank === 1) msgKey = '1'
+      else if (projectedRank === 2) msgKey = '2'
+      else if (projectedRank === 3) msgKey = '3'
+      else if (projectedRank <= 10) msgKey = '4-10'
+      else if (projectedRank <= 25) msgKey = '11-25'
+      else if (projectedRank <= 50) msgKey = '26-50'
+      else if (projectedRank <= 75) msgKey = '51-75'
+      else if (projectedRank <= 90) msgKey = '76-90'
+      const msgs = rankMessages[msgKey]!
+      const msgIdx = Math.floor((time * 7 + projectedRank * 13) % msgs.length)
+      ctx.font = 'bold 26px monospace'
+      ctx.fillStyle = projectedRank <= 3 ? 'rgba(255, 215, 64, 0.9)' : projectedRank <= 10 ? 'rgba(0, 255, 255, 0.8)' : 'rgba(255, 255, 255, 0.6)'
+      ctx.fillText(msgs[msgIdx]!, ncx, boxY + boxH + 45)
+
+      ctx.font = '16px monospace'
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.25)'
+      ctx.fillText('Press Enter to confirm', ncx, boxY + boxH + 75)
     }
-    let msgKey = '91-100'
-    if (projectedRank === 1) msgKey = '1'
-    else if (projectedRank === 2) msgKey = '2'
-    else if (projectedRank === 3) msgKey = '3'
-    else if (projectedRank <= 10) msgKey = '4-10'
-    else if (projectedRank <= 25) msgKey = '11-25'
-    else if (projectedRank <= 50) msgKey = '26-50'
-    else if (projectedRank <= 75) msgKey = '51-75'
-    else if (projectedRank <= 90) msgKey = '76-90'
-    const msgs = rankMessages[msgKey]!
-    // Seed from rank + time so it's stable per run
-    const msgIdx = Math.floor((time * 7 + projectedRank * 13) % msgs.length)
-    ctx.font = 'bold 26px monospace'
-    ctx.fillStyle = projectedRank <= 3 ? 'rgba(255, 215, 64, 0.9)' : projectedRank <= 10 ? 'rgba(0, 255, 255, 0.8)' : 'rgba(255, 255, 255, 0.6)'
-    ctx.fillText(msgs[msgIdx]!, ncx, boxY + boxH + 45)
 
-    ctx.font = '16px monospace'
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.25)'
-    ctx.fillText('Press Enter to confirm', ncx, boxY + boxH + 75)
-
-    // Celebration fireworks during name entry — top 10 only
+    // Celebration fireworks — all screens
     if (projectedRank <= 10) for (let side = 0; side < 2; side++) {
       if (Math.random() < 0.1) {
         const sx = side === 0 ? width * 0.15 + Math.random() * width * 0.1 : width * 0.75 + Math.random() * width * 0.1
-        const sy = height * (0.25 + Math.random() * 0.4)
+        const sy = height * (0.15 + Math.random() * 0.5)
         const colorSet = [[255, 215, 64], [0, 255, 255], [255, 50, 200], [100, 255, 160], [255, 160, 80], [120, 220, 255]]
         const baseColor = colorSet[Math.floor(Math.random() * colorSet.length)]!
         for (let p = 0; p < 18; p++) {
@@ -6059,21 +6115,19 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
 
     // Title
     ctx.font = 'bold 28px monospace'
-    ctx.fillStyle = `rgba(0, 255, 255, ${0.9 * a})`
-    ctx.fillText('FULLSCREEN ON iPHONE', cx, ly)
-    ly += 44
+    ctx.fillStyle = `rgba(255, 80, 80, ${0.9 * a})`
+    ctx.fillText('FULLSCREEN UNAVAILABLE', cx, ly)
+    ly += 40
 
-    // Steps
     ctx.font = '20px monospace'
-    ctx.fillStyle = `rgba(255, 255, 255, ${0.75 * a})`
-    ctx.fillText('1. Tap the Share button (\u2191) in Safari', cx, ly)
-    ly += 32
-    ctx.fillText('2. Tap "Add to Home Screen"', cx, ly)
-    ly += 32
-    ctx.fillText('3. Open it from Home Screen like an app', cx, ly)
-    ly += 32
+    ctx.fillStyle = `rgba(255, 255, 255, ${0.7 * a})`
+    ctx.fillText('Sorry, iPhones do not support', cx, ly)
+    ly += 30
+    ctx.fillText('fullscreen for web games.', cx, ly)
+    ly += 30
+    ctx.fillText('Play on desktop for the best experience!', cx, ly)
+    ly += 36
 
-    // Dismiss hint
     ctx.font = '12px monospace'
     ctx.fillStyle = `rgba(255, 255, 255, ${0.35 * a})`
     ctx.fillText('tap anywhere to dismiss', cx, ly)

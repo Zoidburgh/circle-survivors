@@ -9,7 +9,7 @@ import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameStat
 import { update, render } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
 import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, onStartChallenge } from './game/EnemyDesigner.ts'
-import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage } from './render/Renderer.ts'
+import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd } from './render/Renderer.ts'
 import { setVolume } from './audio/AudioEngine.ts'
 import { submitScore, isNameClean, fetchOnlineScores } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
@@ -343,7 +343,10 @@ canvas.addEventListener('pointerdown', e => {
   const p = screenToCanvas(e.clientX, e.clientY)
   if (e.pointerType === 'touch') Input.notifyTouchInput()
   dismissAddToHomeMessage()
-  if (isRunComplete()) handleVictoryScrollDragStart(p.x, p.y)
+  if (isRunComplete()) {
+    handleVictoryScrollDragStart(p.x, p.y)
+    if (e.pointerType === 'touch') touchScrollStart(p.y)
+  }
   if (getPhase() === 'title' || getPhase() === 'paused') startVolumeDrag(p.x, p.y)
 
   // Touch tap handling — fires for all phases on touch devices
@@ -380,23 +383,34 @@ canvas.addEventListener('pointerup', e => {
     Input.touchJoystickEnd()
     canvas.releasePointerCapture(e.pointerId)
   }
+  touchScrollEnd()
 })
 canvas.addEventListener('pointercancel', e => {
   if (e.pointerId === Input.getJoystickPointerId()) {
     Input.touchJoystickEnd()
   }
+  touchScrollEnd()
 })
 
 canvas.addEventListener('click', e => {
   const c = screenToCanvas(e.clientX, e.clientY)
-  // Name entry submit button
+  // Name entry submit button — handles both compact and full layout
   if (getPhase() === 'entering_name') {
     const ncx = canvas.width / 2
-    const ncy = canvas.height * 0.2
-    const boxY = ncy + 245
-    const subW = 200, subH = 50
-    const subX = ncx - subW / 2
-    const subY = boxY + 60 + 16
+    const compact = canvas.height < 800
+    let subW: number, subH: number, subX: number, subY: number
+    if (compact) {
+      // Compact: VICTORY(40) + time(40) + label(20) + box(48+12) = cy starts at 40+40+40+20=140, box ends 140+48=188, sub at 200
+      subW = 160; subH = 42
+      subX = ncx - subW / 2
+      subY = 200
+    } else {
+      const ncy = canvas.height * 0.2
+      const boxY = ncy + 245
+      subW = 200; subH = 50
+      subX = ncx - subW / 2
+      subY = boxY + 60 + 16
+    }
     if (c.x >= subX && c.x <= subX + subW && c.y >= subY && c.y <= subY + subH) {
       submitNameEntry()
     }
@@ -513,6 +527,7 @@ canvas.addEventListener('pointermove', e => {
   }
   updatePauseMouse(p.x, p.y)
   handleVictoryScrollDrag(p.y)
+  touchScrollMove(p.y)
   const vol = updateVolumeDrag(p.x)
   if (vol !== null) setVolume(vol)
   if (getPhase() === 'challenge_select') {
@@ -530,6 +545,18 @@ canvas.addEventListener('wheel', e => {
     e.preventDefault()
   }
 }, { passive: false })
+
+// Auto-pause on focus loss — prevents AudioContext desync
+window.addEventListener('blur', () => {
+  if (getPhase() === 'playing') {
+    Input.clearKeys()
+    setPhase('paused')
+  }
+})
+window.addEventListener('focus', () => {
+  // Resume AudioContext if it was suspended
+  Audio.ensureAudioContext()
+})
 
 // Auto-pause when exiting fullscreen during gameplay
 function onFullscreenExit(): void {
