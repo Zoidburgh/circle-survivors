@@ -10,11 +10,28 @@ let rightClickConsumed = false
 let spacePressed = false
 let spaceConsumed = false
 
+// Input mode — auto-detected from first interaction type
+let inputMode: 'keyboard' | 'touch' = 'keyboard'
+
+// Touch joystick state
+let joystickActive = false
+let joystickOriginX = 0
+let joystickOriginY = 0
+let joystickCurrentX = 0
+let joystickCurrentY = 0
+let joystickPointerId = -1
+const JOYSTICK_DEAD_ZONE = 12
+const JOYSTICK_MAX_RADIUS = 60
+export function getInputMode(): 'keyboard' | 'touch' { return inputMode }
+export function isTouchMode(): boolean { return inputMode === 'touch' }
+export function notifyTouchInput(): void { inputMode = 'touch' }
+
 export function init(canvas: HTMLCanvasElement): void {
   window.addEventListener('keydown', e => {
     // Don't block browser shortcuts (F12, Ctrl+Shift+I, etc)
     if (e.key === 'F12' || e.ctrlKey || e.metaKey) return
     e.preventDefault()
+    inputMode = 'keyboard'
     keysDown.add(e.key.toLowerCase())
     if (e.key === ' ') { spacePressed = true; spaceConsumed = false }
   })
@@ -74,6 +91,31 @@ export function consumeRightClick(): boolean {
   return false
 }
 
+export function touchJoystickStart(id: number, x: number, y: number): void {
+  joystickActive = true
+  joystickPointerId = id
+  joystickOriginX = x
+  joystickOriginY = y
+  joystickCurrentX = x
+  joystickCurrentY = y
+}
+
+export function touchJoystickMove(x: number, y: number): void {
+  joystickCurrentX = x
+  joystickCurrentY = y
+}
+
+export function touchJoystickEnd(): void {
+  joystickActive = false
+  joystickPointerId = -1
+}
+
+export function getJoystickPointerId(): number { return joystickPointerId }
+
+export function getJoystickState(): { active: boolean; originX: number; originY: number; currentX: number; currentY: number; maxRadius: number } {
+  return { active: joystickActive, originX: joystickOriginX, originY: joystickOriginY, currentX: joystickCurrentX, currentY: joystickCurrentY, maxRadius: JOYSTICK_MAX_RADIUS }
+}
+
 export function getMovementDir(): Vec2 {
   let x = 0
   let y = 0
@@ -87,15 +129,41 @@ export function getMovementDir(): Vec2 {
     x *= inv
     y *= inv
   }
+  // Touch joystick — only if keyboard isn't active
+  if (x === 0 && y === 0 && joystickActive) {
+    const dx = joystickCurrentX - joystickOriginX
+    const dy = joystickCurrentY - joystickOriginY
+    const dist = Math.sqrt(dx * dx + dy * dy)
+    if (dist > JOYSTICK_DEAD_ZONE) {
+      const magnitude = Math.min(dist, JOYSTICK_MAX_RADIUS) / JOYSTICK_MAX_RADIUS
+      x = (dx / dist) * magnitude
+      y = (dy / dist) * magnitude
+    }
+  }
   return vec2(x, y)
 }
 
+let touchDashFrames = 0
+
+export function triggerTouchDash(): void {
+  spacePressed = true
+  spaceConsumed = false
+  touchDashFrames = 3  // keep active for a few ticks to ensure consumption
+}
+
 export function flush(): void {
-  // Called at start of each fixed tick — nothing to reset currently
+  if (touchDashFrames > 0) {
+    touchDashFrames--
+    if (touchDashFrames <= 0) {
+      spacePressed = false
+    }
+  }
 }
 
 /** Clear all pressed keys — call when UI panels open/close */
 export function clearKeys(): void {
   keysDown.clear()
   spacePressed = false
+  joystickActive = false
+  joystickPointerId = -1
 }

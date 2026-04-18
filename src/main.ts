@@ -9,7 +9,7 @@ import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameStat
 import { update, render } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
 import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, onStartChallenge } from './game/EnemyDesigner.ts'
-import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse } from './render/Renderer.ts'
+import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas } from './render/Renderer.ts'
 import { setVolume } from './audio/AudioEngine.ts'
 import { submitScore, isNameClean, fetchOnlineScores } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
@@ -25,10 +25,36 @@ import { ARENA_W, ARENA_H } from './game/Arena.ts'
 
 let debugNodeType = 0  // 0 = triangle shop, 1 = pentagon star
 
+// ── Fullscreen helper — works on desktop, shows guidance on iOS ──
+function toggleFullscreen(): void {
+  if (document.fullscreenElement) {
+    document.exitFullscreen()
+  } else if (document.documentElement.requestFullscreen) {
+    document.documentElement.requestFullscreen().catch(() => {
+      Renderer.showAddToHomeMessage()
+    })
+  } else {
+    Renderer.showAddToHomeMessage()
+  }
+}
+
 // ── Init ──
 const canvas = document.getElementById('game') as HTMLCanvasElement
+const nameInput = document.getElementById('name-input') as HTMLInputElement
 Input.init(canvas)
 Renderer.init(canvas)
+
+// Hidden input for mobile keyboard — sync with game name entry
+let wasEnteringName = false
+nameInput.addEventListener('input', () => {
+  setNameEntryText(nameInput.value.slice(0, 16))
+})
+nameInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    // Submit handled by main keydown handler
+  }
+})
 import { loadScores, setLeaderboardUrl } from './game/HighScores.ts'
 initHitDetection()
 initDesigner()
@@ -195,8 +221,7 @@ window.addEventListener('keydown', e => {
   // Fullscreen toggle — works in both dev and release
   if (e.key === 'F11') {
     e.preventDefault()
-    if (document.fullscreenElement) document.exitFullscreen()
-    else document.documentElement.requestFullscreen()
+    toggleFullscreen()
     return
   }
   if (!__DEV__) return  // no debug keys in release
@@ -293,26 +318,59 @@ window.addEventListener('keydown', e => {
   }
 })
 
-canvas.addEventListener('mousedown', e => {
-  if (isRunComplete()) handleVictoryScrollDragStart(e.clientX, e.clientY)
-  if (getPhase() === 'title' || getPhase() === 'paused') startVolumeDrag(e.clientX, e.clientY)
+canvas.addEventListener('pointerdown', e => {
+  const p = screenToCanvas(e.clientX, e.clientY)
+  if (e.pointerType === 'touch') Input.notifyTouchInput()
+  if (isRunComplete()) handleVictoryScrollDragStart(p.x, p.y)
+  if (getPhase() === 'title' || getPhase() === 'paused') startVolumeDrag(p.x, p.y)
+
+  // Touch tap handling — fires for all phases on touch devices
+  if (e.pointerType === 'touch') {
+    if (getPhase() === 'playing' && !isRunComplete()) {
+      // Touch pause button — top-left 56x56
+      if (p.x <= 70 && p.y <= 70) {
+        Input.clearKeys()
+        setPhase('paused')
+        return
+      }
+      if (Input.getJoystickState().active) {
+        Input.triggerTouchDash()
+      } else {
+        canvas.setPointerCapture(e.pointerId)
+        Input.touchJoystickStart(e.pointerId, p.x, p.y)
+      }
+    } else {
+      // Non-playing phases — simulate click for menu buttons
+      canvas.dispatchEvent(new MouseEvent('click', { clientX: e.clientX, clientY: e.clientY }))
+    }
+  }
 })
-canvas.addEventListener('mouseup', () => {
+canvas.addEventListener('pointerup', e => {
   handleVictoryScrollDragEnd()
   stopVolumeDrag()
+  if (e.pointerId === Input.getJoystickPointerId()) {
+    Input.touchJoystickEnd()
+    canvas.releasePointerCapture(e.pointerId)
+  }
+})
+canvas.addEventListener('pointercancel', e => {
+  if (e.pointerId === Input.getJoystickPointerId()) {
+    Input.touchJoystickEnd()
+  }
 })
 
 canvas.addEventListener('click', e => {
+  const c = screenToCanvas(e.clientX, e.clientY)
   // Victory buttons
   if (isRunComplete() && getPhase() === 'playing') {
     const vBtnW = 180, vBtnH = 44, vBtnGap = 14
     const vBtnY = canvas.height - 80
     const retryX = canvas.width / 2 - vBtnW - vBtnGap / 2
     const menuX = canvas.width / 2 + vBtnGap / 2
-    if (e.clientY >= vBtnY && e.clientY <= vBtnY + vBtnH) {
-      if (e.clientX >= retryX && e.clientX <= retryX + vBtnW) {
+    if (c.y >= vBtnY && c.y <= vBtnY + vBtnH) {
+      if (c.x >= retryX && c.x <= retryX + vBtnW) {
         restartChallenge()
-      } else if (e.clientX >= menuX && e.clientX <= menuX + vBtnW) {
+      } else if (c.x >= menuX && c.x <= menuX + vBtnW) {
         resetGameState()
         setPhase('challenge_select')
       }
@@ -330,23 +388,22 @@ canvas.addEventListener('click', e => {
     const restartBtnY = resumeY + btnH + btnGap
     const menuBtnY = restartBtnY + btnH + btnGap
     const fsBtnY = menuBtnY + btnH + btnGap
-    if (e.clientX >= pcx - btnW / 2 && e.clientX <= pcx + btnW / 2) {
-      if (e.clientY >= resumeY && e.clientY <= resumeY + btnH) {
+    if (c.x >= pcx - btnW / 2 && c.x <= pcx + btnW / 2) {
+      if (c.y >= resumeY && c.y <= resumeY + btnH) {
         setPhase('playing')
-      } else if (e.clientY >= restartBtnY && e.clientY <= restartBtnY + btnH) {
+      } else if (c.y >= restartBtnY && c.y <= restartBtnY + btnH) {
         restartChallenge()
-      } else if (e.clientY >= menuBtnY && e.clientY <= menuBtnY + btnH) {
+      } else if (c.y >= menuBtnY && c.y <= menuBtnY + btnH) {
         resetGameState()
         setPhase('challenge_select')
-      } else if (e.clientY >= fsBtnY && e.clientY <= fsBtnY + btnH) {
-        if (document.fullscreenElement) document.exitFullscreen()
-        else document.documentElement.requestFullscreen()
+      } else if (c.y >= fsBtnY && c.y <= fsBtnY + btnH) {
+        toggleFullscreen()
       }
     }
     return
   }
   if (getPhase() === 'challenge_select') {
-    const ch = handleChallengeSelectClick(e.clientX, e.clientY)
+    const ch = handleChallengeSelectClick(c.x, c.y)
     if (ch) launchChallenge(ch)
     return
   }
@@ -356,10 +413,10 @@ canvas.addEventListener('click', e => {
     const btnBaseY = canvas.height - 180
     const retryX = dcx - btnW - btnGap / 2
     const menuX = dcx + btnGap / 2
-    if (e.clientY >= btnBaseY && e.clientY <= btnBaseY + btnH) {
-      if (e.clientX >= retryX && e.clientX <= retryX + btnW) {
+    if (c.y >= btnBaseY && c.y <= btnBaseY + btnH) {
+      if (c.x >= retryX && c.x <= retryX + btnW) {
         restartChallenge()
-      } else if (e.clientX >= menuX && e.clientX <= menuX + btnW) {
+      } else if (c.x >= menuX && c.x <= menuX + btnW) {
         resetGameState()
         setPhase('challenge_select')
       }
@@ -372,53 +429,53 @@ canvas.addEventListener('click', e => {
       ensureAudio()
       Audio.switchBeat(0)
     }
-    // Check if click is on the Start button
     const btnW = 200, btnH = 50
     const btnX = canvas.width / 2 - btnW / 2
     const btnY = canvas.height * 0.52
-    if (e.clientX >= btnX && e.clientX <= btnX + btnW && e.clientY >= btnY && e.clientY <= btnY + btnH) {
+    if (c.x >= btnX && c.x <= btnX + btnW && c.y >= btnY && c.y <= btnY + btnH) {
       startGame()
     }
-    // Fullscreen button
     const fsW = 240, fsH = 50
     const fsY = btnY + btnH + 160
     const fsX = canvas.width / 2 - fsW / 2
-    if (e.clientX >= fsX && e.clientX <= fsX + fsW && e.clientY >= fsY && e.clientY <= fsY + fsH) {
-      if (document.fullscreenElement) document.exitFullscreen()
-      else document.documentElement.requestFullscreen()
+    if (c.x >= fsX && c.x <= fsX + fsW && c.y >= fsY && c.y <= fsY + fsH) {
+      toggleFullscreen()
     }
     return
   }
   if (getPhase() === 'shopping') {
-    handleShopClick(e.clientX, e.clientY, canvas.width, canvas.height)
+    handleShopClick(c.x, c.y, canvas.width, canvas.height)
     return
   }
   if (getPhase() === 'upgrading') {
-    handleUpgradeClick(e.clientX, e.clientY, canvas.width, canvas.height)
+    handleUpgradeClick(c.x, c.y, canvas.width, canvas.height)
     return
   }
   if (__DEV__) {
-    // Challenge builder placement
-    if (challengeCanvasClick?.(e.clientX, e.clientY)) return
-    const idx = getSpawnPanelClick(e.clientX, e.clientY)
+    if (challengeCanvasClick?.(c.x, c.y)) return
+    const idx = getSpawnPanelClick(c.x, c.y)
     if (idx >= 0 && idx < ENEMY_TYPES.length) {
       spawnEnemy(ENEMY_TYPES[idx]!)
     }
   }
 })
 
-canvas.addEventListener('mousemove', e => {
-  updatePauseMouse(e.clientX, e.clientY)
-  handleVictoryScrollDrag(e.clientY)
-  const vol = updateVolumeDrag(e.clientX)
+canvas.addEventListener('pointermove', e => {
+  const p = screenToCanvas(e.clientX, e.clientY)
+  if (e.pointerId === Input.getJoystickPointerId()) {
+    Input.touchJoystickMove(p.x, p.y)
+  }
+  updatePauseMouse(p.x, p.y)
+  handleVictoryScrollDrag(p.y)
+  const vol = updateVolumeDrag(p.x)
   if (vol !== null) setVolume(vol)
   if (getPhase() === 'challenge_select') {
-    handleChallengeSelectHover(e.clientX, e.clientY)
+    handleChallengeSelectHover(p.x, p.y)
     return
   }
-  handleUpgradeHover(e.clientX, e.clientY, canvas.width, canvas.height)
-  handleShopHover(e.clientX, e.clientY, canvas.width, canvas.height)
-  challengeCanvasMouseMove?.(e.clientX, e.clientY)
+  handleUpgradeHover(p.x, p.y, canvas.width, canvas.height)
+  handleShopHover(p.x, p.y, canvas.width, canvas.height)
+  challengeCanvasMouseMove?.(p.x, p.y)
 })
 
 canvas.addEventListener('wheel', e => {
@@ -447,6 +504,28 @@ window.addEventListener('resize', () => {
   }
   wasFullscreenSize = isFullSize
 })
+
+// ── Name entry input focus management ──
+function checkNameInput(): void {
+  const entering = getPhase() === 'entering_name'
+  if (entering && !wasEnteringName) {
+    nameInput.value = getNameEntryText()
+    nameInput.style.pointerEvents = 'auto'
+    nameInput.focus()
+  } else if (!entering && wasEnteringName) {
+    nameInput.blur()
+    nameInput.style.pointerEvents = 'none'
+    nameInput.value = ''
+  } else if (entering) {
+    // Keep synced — keyboard handler may have changed it
+    if (nameInput.value !== getNameEntryText()) {
+      nameInput.value = getNameEntryText()
+    }
+  }
+  wasEnteringName = entering
+  requestAnimationFrame(checkNameInput)
+}
+requestAnimationFrame(checkNameInput)
 
 // ── Start game loop ──
 start(update, render)

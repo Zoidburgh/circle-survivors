@@ -19,6 +19,7 @@ import { getEnemies, getRunTimer, isRunTimerActive, isRunComplete, getRunFinalTi
 import { hasBonus } from '../game/UpgradeManager.ts'
 import { getOrbs } from '../entities/XPOrb.ts'
 import { getBeatName, getVolume } from '../audio/AudioEngine.ts'
+import { isTouchMode, getJoystickState } from '../game/InputManager.ts'
 import { BEAT_SEC } from '../utils/constants.ts'
 import {
   GRID_ALPHA,
@@ -67,6 +68,21 @@ export function updatePauseMouse(x: number, y: number): void { pauseMouseX = x; 
 let bgPulseSmooth = 0    // smoothed follower for background color
 let gameTimeMs = 0       // accumulated game time in ms (pauses when game pauses)
 export function getGameTimeMs(): number { return gameTimeMs }
+
+export function getLogicalSize(): { w: number; h: number } { return { w: width, h: height } }
+
+// "Add to Home Screen" message for iOS
+let addToHomeTimer = 0
+export function showAddToHomeMessage(): void { addToHomeTimer = 4 }
+
+/** Convert screen (CSS) coords to canvas (logical) coords */
+export function screenToCanvas(screenX: number, screenY: number): { x: number; y: number } {
+  const rect = canvas.getBoundingClientRect()
+  return {
+    x: ((screenX - rect.left) / rect.width) * width,
+    y: ((screenY - rect.top) / rect.height) * height,
+  }
+}
 let outerPulseIntensity = 0
 let dashSweepIntensity = 0
 let beatDashFlash = 0       // countdown for beat dash shockwave visual
@@ -704,11 +720,19 @@ export function init(c: HTMLCanvasElement): void {
   ctx = context
   resize()
   window.addEventListener('resize', resize)
+  window.addEventListener('orientationchange', () => setTimeout(resize, 100))
 }
 
+// Target minimum visible area — ensures small screens see enough of the world
+const MIN_VIEW_H = 620
+
 function resize(): void {
-  width = canvas.clientWidth || window.innerWidth
-  height = canvas.clientHeight || window.innerHeight
+  const screenW = canvas.clientWidth || window.innerWidth
+  const screenH = canvas.clientHeight || window.innerHeight
+  // On small screens, scale up the canvas so it represents a larger view
+  const scale = screenH < MIN_VIEW_H ? MIN_VIEW_H / screenH : 1
+  width = Math.round(screenW * scale)
+  height = Math.round(screenH * scale)
   canvas.width = width
   canvas.height = height
 }
@@ -806,10 +830,54 @@ export function resetRenderer(): void {
 }
 
 export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0, dt = 0.016, cam?: Camera): void {
+  // Portrait orientation check — touch devices only
+  if (isTouchMode() && window.innerWidth < window.innerHeight) {
+    ctx.fillStyle = '#0D0A1A'
+    ctx.fillRect(0, 0, width, height)
+    ctx.save()
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    // Rotate icon — phone outline with arrow
+    const rcx = width / 2
+    const rcy = height / 2 - 30
+    ctx.strokeStyle = 'rgba(0, 255, 255, 0.5)'
+    ctx.lineWidth = 3
+    ctx.beginPath()
+    ctx.roundRect(rcx - 20, rcy - 35, 40, 70, 6)
+    ctx.stroke()
+    // Rotation arrow
+    ctx.beginPath()
+    ctx.arc(rcx, rcy, 50, -Math.PI * 0.3, Math.PI * 0.8)
+    ctx.strokeStyle = 'rgba(0, 255, 255, 0.4)'
+    ctx.lineWidth = 2
+    ctx.stroke()
+    // Arrowhead
+    const arrowEnd = Math.PI * 0.8
+    const ax = rcx + Math.cos(arrowEnd) * 50
+    const ay = rcy + Math.sin(arrowEnd) * 50
+    ctx.beginPath()
+    ctx.moveTo(ax + 8, ay - 6)
+    ctx.lineTo(ax, ay)
+    ctx.lineTo(ax + 8, ay + 6)
+    ctx.strokeStyle = 'rgba(0, 255, 255, 0.4)'
+    ctx.lineWidth = 2
+    ctx.stroke()
+    // Text
+    ctx.font = 'bold 24px monospace'
+    ctx.fillStyle = 'rgba(0, 255, 255, 0.8)'
+    ctx.fillText('ROTATE DEVICE', rcx, rcy + 80)
+    ctx.font = '16px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
+    ctx.fillText('Landscape mode required', rcx, rcy + 110)
+    ctx.restore()
+    return
+  }
+
   perfStart('R_TOTAL')
   lastDt = dt
   frameDt = dt
   if (getPhase() === 'playing') gameTimeMs += dt * 1000
+
   if (cam) {
     camX = cam.x - width / 2
     camY = cam.y - height / 2
@@ -1114,6 +1182,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     drawSpawnPanel()
     drawChallengePlacements()
   }
+
   drawHUD(player, enemies, fps)
   perfEnd('R_TOTAL')
   perfFlush()
@@ -5001,68 +5070,270 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     const cx = width / 2
     const a = alpha
 
-    // Arrow key infographic — key boxes in a cross pattern
-    const keySize = 48
-    const gap = 5
-    const baseY = height / 2 + 200
-    const keyColor = `rgba(255, 255, 255, ${(0.12 * a).toFixed(3)})`
-    const borderColor = `rgba(0, 255, 255, ${(0.4 * a).toFixed(3)})`
-    const arrowColor = `rgba(0, 255, 255, ${(0.85 * a).toFixed(3)})`
+    if (isTouchMode()) {
+      // Touch controls hint — joystick graphic + tap instruction
+      const hintY = height / 2 + 160
 
-    // Key positions: up top-center, left/down/right bottom row
-    const keys = [
-      { x: cx, y: baseY - keySize - gap, arrow: '\u25B2' },             // up
-      { x: cx - keySize - gap, y: baseY, arrow: '\u25C0' },             // left
-      { x: cx, y: baseY, arrow: '\u25BC' },                             // down
-      { x: cx + keySize + gap, y: baseY, arrow: '\u25B6' },             // right
-    ]
-
-    ctx.font = 'bold 22px monospace'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    for (const k of keys) {
-      const kx = k.x - keySize / 2
-      const ky = k.y - keySize / 2
-      // Key background
-      ctx.fillStyle = keyColor
+      // Joystick icon — small circle with inner dot
+      const joyR = 30
       ctx.beginPath()
-      ctx.roundRect(kx, ky, keySize, keySize, 6)
+      ctx.arc(cx, hintY, joyR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(0, 255, 255, ${(0.4 * a).toFixed(3)})`
+      ctx.lineWidth = 2
+      ctx.stroke()
+      ctx.fillStyle = `rgba(0, 0, 0, ${(0.2 * a).toFixed(3)})`
       ctx.fill()
-      // Key border
-      ctx.strokeStyle = borderColor
+      // Inner knob offset to show movement
+      ctx.beginPath()
+      ctx.arc(cx + 8, hintY - 5, 10, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(0, 255, 255, ${(0.4 * a).toFixed(3)})`
+      ctx.fill()
+
+      // "DRAG TO MOVE" label
+      ctx.font = 'bold 20px monospace'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillStyle = `rgba(0, 255, 255, ${(0.7 * a).toFixed(3)})`
+      ctx.fillText('DRAG TO MOVE', cx, hintY + joyR + 28)
+
+      // "TAP 2ND FINGER TO DASH" label
+      ctx.font = 'bold 18px monospace'
+      ctx.fillStyle = `rgba(255, 50, 200, ${(0.6 * a).toFixed(3)})`
+      ctx.fillText('TAP 2ND FINGER = DASH', cx, hintY + joyR + 58)
+    } else {
+      // Keyboard controls hint — arrow keys + spacebar
+      const keySize = 48
+      const gap = 5
+      const baseY = height / 2 + 200
+      const keyColor = `rgba(255, 255, 255, ${(0.12 * a).toFixed(3)})`
+      const borderColor = `rgba(0, 255, 255, ${(0.4 * a).toFixed(3)})`
+      const arrowColor = `rgba(0, 255, 255, ${(0.85 * a).toFixed(3)})`
+
+      const keys = [
+        { x: cx, y: baseY - keySize - gap, arrow: '\u25B2' },
+        { x: cx - keySize - gap, y: baseY, arrow: '\u25C0' },
+        { x: cx, y: baseY, arrow: '\u25BC' },
+        { x: cx + keySize + gap, y: baseY, arrow: '\u25B6' },
+      ]
+
+      ctx.font = 'bold 22px monospace'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      for (const k of keys) {
+        const kx = k.x - keySize / 2
+        const ky = k.y - keySize / 2
+        ctx.fillStyle = keyColor
+        ctx.beginPath()
+        ctx.roundRect(kx, ky, keySize, keySize, 6)
+        ctx.fill()
+        ctx.strokeStyle = borderColor
+        ctx.lineWidth = 1.5
+        ctx.beginPath()
+        ctx.roundRect(kx, ky, keySize, keySize, 6)
+        ctx.stroke()
+        ctx.fillStyle = arrowColor
+        ctx.fillText(k.arrow, k.x, k.y)
+      }
+
+      // Spacebar key
+      const spaceY = baseY + keySize / 2 + gap + 18
+      const spaceW = keySize * 3 + gap * 2 + 80
+      const spaceH = 46
+      const spaceX = cx - spaceW / 2
+      ctx.fillStyle = `rgba(0, 255, 255, ${(0.1 * a).toFixed(3)})`
+      ctx.beginPath()
+      ctx.roundRect(spaceX, spaceY, spaceW, spaceH, 6)
+      ctx.fill()
+      ctx.strokeStyle = `rgba(0, 255, 255, ${(0.45 * a).toFixed(3)})`
       ctx.lineWidth = 1.5
       ctx.beginPath()
-      ctx.roundRect(kx, ky, keySize, keySize, 6)
+      ctx.roundRect(spaceX, spaceY, spaceW, spaceH, 6)
       ctx.stroke()
-      // Arrow symbol
-      ctx.fillStyle = arrowColor
-      ctx.fillText(k.arrow, k.x, k.y)
+      ctx.font = 'bold 24px monospace'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillStyle = `rgba(0, 255, 255, ${(0.7 * a).toFixed(3)})`
+      ctx.fillText('SPACE = DASH', cx, spaceY + spaceH / 2)
     }
 
-    // Spacebar key below arrows — "SPACE = DASH"
-    const spaceY = baseY + keySize / 2 + gap + 18
-    const spaceW = keySize * 3 + gap * 2 + 80
-    const spaceH = 46
-    const spaceX = cx - spaceW / 2
-    // Key background
-    ctx.fillStyle = `rgba(0, 255, 255, ${(0.1 * a).toFixed(3)})`
-    ctx.beginPath()
-    ctx.roundRect(spaceX, spaceY, spaceW, spaceH, 6)
-    ctx.fill()
-    // Key border
-    ctx.strokeStyle = `rgba(0, 255, 255, ${(0.45 * a).toFixed(3)})`
-    ctx.lineWidth = 1.5
-    ctx.beginPath()
-    ctx.roundRect(spaceX, spaceY, spaceW, spaceH, 6)
-    ctx.stroke()
-    // Label
-    ctx.font = 'bold 24px monospace'
-    ctx.textAlign = 'center'
-    ctx.textBaseline = 'middle'
-    ctx.fillStyle = `rgba(0, 255, 255, ${(0.7 * a).toFixed(3)})`
-    ctx.fillText('SPACE = DASH', cx, spaceY + spaceH / 2)
-
     ctx.restore()
+  }
+
+  // Touch pause button — top-left, always visible in touch mode during gameplay
+  if (isTouchMode() && getPhase() === 'playing' && !isRunComplete()) {
+    const pbX = 14
+    const pbY = 14
+    const pbSize = 56
+    ctx.beginPath()
+    ctx.roundRect(pbX, pbY, pbSize, pbSize, 12)
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.3)'
+    ctx.fill()
+    ctx.strokeStyle = 'rgba(255, 215, 64, 0.4)'
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+    // Subtle yellow glow
+    const pbCx = pbX + pbSize / 2
+    const pbCy = pbY + pbSize / 2
+    const pbGlow = ctx.createRadialGradient(pbCx, pbCy, pbSize * 0.3, pbCx, pbCy, pbSize * 0.8)
+    pbGlow.addColorStop(0, 'rgba(255, 215, 64, 0.08)')
+    pbGlow.addColorStop(1, 'rgba(255, 215, 64, 0)')
+    ctx.beginPath()
+    ctx.roundRect(pbX, pbY, pbSize, pbSize, 12)
+    ctx.fillStyle = pbGlow
+    ctx.fill()
+    // Pause bars ‖
+    const barW = 6
+    const barH = 24
+    const barGap = 8
+    const barY = pbY + (pbSize - barH) / 2
+    const barX = pbX + (pbSize - barW * 2 - barGap) / 2
+    ctx.fillStyle = 'rgba(255, 215, 64, 0.7)'
+    ctx.fillRect(barX, barY, barW, barH)
+    ctx.fillRect(barX + barW + barGap, barY, barW, barH)
+  }
+
+  // Touch joystick overlay
+  if (isTouchMode() && getPhase() === 'playing' && !isRunComplete()) {
+    const js = getJoystickState()
+    if (js.active) {
+      const baseR = js.maxRadius
+      const knobR = 33
+      const dx = js.currentX - js.originX
+      const dy = js.currentY - js.originY
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      const clampedDist = Math.min(dist, baseR)
+      const knobX = dist > 0 ? js.originX + (dx / dist) * clampedDist : js.originX
+      const knobY = dist > 0 ? js.originY + (dy / dist) * clampedDist : js.originY
+
+      const ox = js.originX
+      const oy = js.originY
+      const intensity = Math.min(dist / baseR, 1)  // 0 at center, 1 at edge
+
+      // Outer base — dark filled circle with defined edge
+      ctx.beginPath()
+      ctx.arc(ox, oy, baseR, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.3)'
+      ctx.fill()
+
+      // Outer ring — double stroke for definition
+      ctx.beginPath()
+      ctx.arc(ox, oy, baseR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(0, 255, 255, ${0.15 + intensity * 0.15})`
+      ctx.lineWidth = 3
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(ox, oy, baseR + 2, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(0, 255, 255, ${0.06 + intensity * 0.06})`
+      ctx.lineWidth = 5
+      ctx.stroke()
+
+      // Tick marks around base ring — 8 notches at 45° intervals
+      for (let i = 0; i < 8; i++) {
+        const ta = (i / 8) * Math.PI * 2
+        const isMajor = i % 2 === 0  // cardinal = longer
+        const tickInner = baseR - (isMajor ? 8 : 5)
+        const tickOuter = baseR + (isMajor ? 3 : 1)
+        ctx.beginPath()
+        ctx.moveTo(ox + Math.cos(ta) * tickInner, oy + Math.sin(ta) * tickInner)
+        ctx.lineTo(ox + Math.cos(ta) * tickOuter, oy + Math.sin(ta) * tickOuter)
+        ctx.strokeStyle = `rgba(0, 255, 255, ${isMajor ? 0.3 : 0.15})`
+        ctx.lineWidth = isMajor ? 2 : 1
+        ctx.stroke()
+      }
+
+      // Crosshair lines at center — subtle cardinal markers
+      const crossLen = 8
+      const crossGap = 4
+      ctx.strokeStyle = 'rgba(0, 255, 255, 0.12)'
+      ctx.lineWidth = 1
+      for (let i = 0; i < 4; i++) {
+        const ca = (i / 4) * Math.PI * 2
+        ctx.beginPath()
+        ctx.moveTo(ox + Math.cos(ca) * crossGap, oy + Math.sin(ca) * crossGap)
+        ctx.lineTo(ox + Math.cos(ca) * (crossGap + crossLen), oy + Math.sin(ca) * (crossGap + crossLen))
+        ctx.stroke()
+      }
+
+      // Direction arrow on outer edge — points in movement direction
+      if (dist > 12) {
+        const dirAngle = Math.atan2(dy, dx)
+        const arrowDist = baseR + 10
+        const arrowTipX = ox + Math.cos(dirAngle) * (arrowDist + 8)
+        const arrowTipY = oy + Math.sin(dirAngle) * (arrowDist + 8)
+        const arrowSize = 7
+        const arrowL = dirAngle + Math.PI * 0.75
+        const arrowR = dirAngle - Math.PI * 0.75
+        ctx.beginPath()
+        ctx.moveTo(arrowTipX, arrowTipY)
+        ctx.lineTo(arrowTipX + Math.cos(arrowL) * arrowSize, arrowTipY + Math.sin(arrowL) * arrowSize)
+        ctx.lineTo(arrowTipX + Math.cos(arrowR) * arrowSize, arrowTipY + Math.sin(arrowR) * arrowSize)
+        ctx.closePath()
+        ctx.fillStyle = `rgba(0, 255, 255, ${0.3 + intensity * 0.5})`
+        ctx.fill()
+      }
+
+      // Direction trail — glowing pink beam from origin to knob
+      if (dist > 12) {
+        // Outer glow
+        const glowGrad = ctx.createLinearGradient(ox, oy, knobX, knobY)
+        glowGrad.addColorStop(0, 'rgba(255, 50, 200, 0)')
+        glowGrad.addColorStop(0.3, `rgba(255, 50, 200, ${0.1 + intensity * 0.15})`)
+        glowGrad.addColorStop(1, `rgba(255, 80, 220, ${0.2 + intensity * 0.25})`)
+        ctx.beginPath()
+        ctx.moveTo(ox, oy)
+        ctx.lineTo(knobX, knobY)
+        ctx.strokeStyle = glowGrad
+        ctx.lineWidth = 8 + intensity * 4
+        ctx.lineCap = 'round'
+        ctx.stroke()
+
+        // Core bright line
+        const coreGrad = ctx.createLinearGradient(ox, oy, knobX, knobY)
+        coreGrad.addColorStop(0, 'rgba(255, 150, 240, 0)')
+        coreGrad.addColorStop(0.3, `rgba(255, 150, 240, ${0.3 + intensity * 0.3})`)
+        coreGrad.addColorStop(1, `rgba(255, 200, 255, ${0.5 + intensity * 0.4})`)
+        ctx.beginPath()
+        ctx.moveTo(ox, oy)
+        ctx.lineTo(knobX, knobY)
+        ctx.strokeStyle = coreGrad
+        ctx.lineWidth = 3 + intensity * 2
+        ctx.stroke()
+        ctx.lineCap = 'butt'
+      }
+
+      // Knob outer glow — intensifies as you push further
+      const knobGlow = ctx.createRadialGradient(knobX, knobY, 0, knobX, knobY, knobR + 12)
+      knobGlow.addColorStop(0, `rgba(0, 255, 255, ${0.15 + intensity * 0.2})`)
+      knobGlow.addColorStop(0.5, `rgba(0, 255, 255, ${0.04 + intensity * 0.08})`)
+      knobGlow.addColorStop(1, 'rgba(0, 255, 255, 0)')
+      ctx.beginPath()
+      ctx.arc(knobX, knobY, knobR + 12, 0, Math.PI * 2)
+      ctx.fillStyle = knobGlow
+      ctx.fill()
+
+      // Knob body — gradient fill
+      const knobFill = ctx.createRadialGradient(knobX, knobY, 0, knobX, knobY, knobR)
+      knobFill.addColorStop(0, `rgba(0, 255, 255, ${0.4 + intensity * 0.2})`)
+      knobFill.addColorStop(0.7, `rgba(0, 200, 220, ${0.25 + intensity * 0.15})`)
+      knobFill.addColorStop(1, `rgba(0, 150, 180, ${0.15 + intensity * 0.1})`)
+      ctx.beginPath()
+      ctx.arc(knobX, knobY, knobR, 0, Math.PI * 2)
+      ctx.fillStyle = knobFill
+      ctx.fill()
+
+      // Knob edge ring — crisp border
+      ctx.beginPath()
+      ctx.arc(knobX, knobY, knobR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(0, 255, 255, ${0.5 + intensity * 0.3})`
+      ctx.lineWidth = 2
+      ctx.stroke()
+
+      // Knob center dot — bright
+      ctx.beginPath()
+      ctx.arc(knobX, knobY, 3, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(0, 255, 255, ${0.6 + intensity * 0.3})`
+      ctx.fill()
+    }
   }
 
   // Victory screen overlay
@@ -5722,6 +5993,34 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.fillText('MENU', menuX + btnW / 2, btnBaseY + btnH / 2 + 8)
 
     ctx.textAlign = 'left'
+  }
+
+  // "Add to Home Screen" message — shown when fullscreen API unavailable (iOS)
+  if (addToHomeTimer > 0) {
+    addToHomeTimer -= frameDt
+    const msgAlpha = Math.min(1, addToHomeTimer)
+    ctx.save()
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    // Dark backdrop
+    const msgW = 500
+    const msgH = 70
+    const msgX = width / 2 - msgW / 2
+    const msgY = height - 100
+    ctx.fillStyle = `rgba(0, 0, 0, ${0.8 * msgAlpha})`
+    ctx.beginPath()
+    ctx.roundRect(msgX, msgY, msgW, msgH, 10)
+    ctx.fill()
+    ctx.strokeStyle = `rgba(0, 255, 255, ${0.3 * msgAlpha})`
+    ctx.lineWidth = 1
+    ctx.stroke()
+    ctx.font = 'bold 18px monospace'
+    ctx.fillStyle = `rgba(0, 255, 255, ${0.9 * msgAlpha})`
+    ctx.fillText('Tap Share \u2192 Add to Home Screen', width / 2, msgY + msgH / 2 - 10)
+    ctx.font = '14px monospace'
+    ctx.fillStyle = `rgba(255, 255, 255, ${0.5 * msgAlpha})`
+    ctx.fillText('for fullscreen experience', width / 2, msgY + msgH / 2 + 14)
+    ctx.restore()
   }
 }
 

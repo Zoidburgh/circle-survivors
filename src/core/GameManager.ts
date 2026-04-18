@@ -463,7 +463,7 @@ export function update(dt: number): void {
   }
 
   const dir = Input.getMovementDir()
-  updateCamera(cam, player.x, player.y, dir.x, dir.y, window.innerWidth, window.innerHeight, dt)
+  updateCamera(cam, player.x, player.y, dir.x, dir.y, Renderer.getLogicalSize().w, Renderer.getLogicalSize().h, dt)
 
   // Process revenge ring damage at peak (BEAT_SEC after spawn)
   for (let i = pendingRevenges.length - 1; i >= 0; i--) {
