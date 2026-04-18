@@ -20,16 +20,20 @@ const output = `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="mobile-web-app-capable" content="yes" />
 <title>BEATBACK</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-html, body { width: 100%; height: 100%; overflow: hidden; background: #0D0A1A; }
-canvas { display: block; width: 100%; height: 100%; }
+html, body { width: 100%; height: 100dvh; overflow: hidden; background: #0D0A1A; position: fixed; top: 0; left: 0; }
+canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 </style>
 </head>
 <body>
 <canvas id="game"></canvas>
+<input id="name-input" type="text" maxlength="16" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="text" style="position:fixed;top:40%;left:50%;transform:translate(-50%,-50%);width:1px;height:1px;opacity:0;pointer-events:none;font-size:16px;">
 <script>${js}</script>
 </body>
 </html>`
