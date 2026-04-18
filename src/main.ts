@@ -46,13 +46,34 @@ Renderer.init(canvas)
 
 // Hidden input for mobile keyboard — sync with game name entry
 let wasEnteringName = false
+function submitNameEntry(): void {
+  if (getPhase() !== 'entering_name') return
+  const text = getNameEntryText() || nameInput.value
+  const name = (text.trim() || 'Player').slice(0, 16)
+  if (!isNameClean(name)) {
+    nameInput.value = ''
+    setNameEntryText('')
+    return
+  }
+  const ch = getActiveChallenge()
+  const scoreTime = Math.ceil(getRunFinalTime())
+  if (ch) submitScore(ch.name, scoreTime, name)
+  setLastSubmittedName(name)
+  setLastSubmittedTime(scoreTime)
+  resetNameEntry()
+  nameInput.blur()
+  nameInput.style.pointerEvents = 'none'
+  nameInput.value = ''
+  setPhase('playing')
+}
+
 nameInput.addEventListener('input', () => {
   setNameEntryText(nameInput.value.slice(0, 16))
 })
 nameInput.addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     e.preventDefault()
-    // Submit handled by main keydown handler
+    submitNameEntry()
   }
 })
 import { loadScores, setLeaderboardUrl } from './game/HighScores.ts'
@@ -328,8 +349,8 @@ canvas.addEventListener('pointerdown', e => {
   // Touch tap handling — fires for all phases on touch devices
   if (e.pointerType === 'touch') {
     if (getPhase() === 'playing' && !isRunComplete()) {
-      // Touch pause button — top-left 56x56
-      if (p.x <= 70 && p.y <= 70) {
+      // Touch pause button — top-left 78x78
+      if (p.x <= 95 && p.y <= 95) {
         Input.clearKeys()
         setPhase('paused')
         return
@@ -341,6 +362,12 @@ canvas.addEventListener('pointerdown', e => {
         Input.touchJoystickStart(e.pointerId, p.x, p.y)
       }
     } else {
+      // Name entry — focus hidden input on tap to trigger mobile keyboard
+      if (getPhase() === 'entering_name') {
+        nameInput.value = getNameEntryText()
+        nameInput.style.pointerEvents = 'auto'
+        nameInput.focus()
+      }
       // Non-playing phases — simulate click for menu buttons
       canvas.dispatchEvent(new MouseEvent('click', { clientX: e.clientX, clientY: e.clientY }))
     }
@@ -362,6 +389,19 @@ canvas.addEventListener('pointercancel', e => {
 
 canvas.addEventListener('click', e => {
   const c = screenToCanvas(e.clientX, e.clientY)
+  // Name entry submit button
+  if (getPhase() === 'entering_name') {
+    const ncx = canvas.width / 2
+    const ncy = canvas.height * 0.2
+    const boxY = ncy + 245
+    const subW = 200, subH = 50
+    const subX = ncx - subW / 2
+    const subY = boxY + 60 + 16
+    if (c.x >= subX && c.x <= subX + subW && c.y >= subY && c.y <= subY + subH) {
+      submitNameEntry()
+    }
+    return
+  }
   // Victory buttons
   if (isRunComplete() && getPhase() === 'playing') {
     const vBtnW = 180, vBtnH = 44, vBtnGap = 14
@@ -404,6 +444,11 @@ canvas.addEventListener('click', e => {
     return
   }
   if (getPhase() === 'challenge_select') {
+    // Back button — top-left
+    if (c.x <= 180 && c.y <= 74) {
+      setPhase('title')
+      return
+    }
     const ch = handleChallengeSelectClick(c.x, c.y)
     if (ch) launchChallenge(ch)
     return

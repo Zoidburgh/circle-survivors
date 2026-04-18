@@ -20,8 +20,8 @@ let joystickOriginY = 0
 let joystickCurrentX = 0
 let joystickCurrentY = 0
 let joystickPointerId = -1
-const JOYSTICK_DEAD_ZONE = 12
-const JOYSTICK_MAX_RADIUS = 60
+const JOYSTICK_DEAD_ZONE = 15
+const JOYSTICK_MAX_RADIUS = 65
 export function getInputMode(): 'keyboard' | 'touch' { return inputMode }
 export function isTouchMode(): boolean { return inputMode === 'touch' }
 export function notifyTouchInput(): void { inputMode = 'touch' }

@@ -831,8 +831,9 @@ export function resetRenderer(): void {
 }
 
 export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0, dt = 0.016, cam?: Camera): void {
-  // Portrait orientation check — touch devices only
-  if (isTouchMode() && window.innerWidth < window.innerHeight) {
+  // Portrait orientation check — touch-capable devices
+  const hasTouchScreen = 'ontouchstart' in window || navigator.maxTouchPoints > 0
+  if (hasTouchScreen && window.innerWidth < window.innerHeight) {
     ctx.fillStyle = '#0D0A1A'
     ctx.fillRect(0, 0, width, height)
     ctx.save()
@@ -4796,10 +4797,23 @@ export function drawChallengeSelect(dt: number): void {
   ctx.fillStyle = 'rgba(0, 255, 255, 0.9)'
   ctx.fillText('SELECT CHALLENGE', cx, 70)
 
-  // Back hint
-  ctx.font = '14px monospace'
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.3)'
-  ctx.fillText('Escape to go back', cx, 95)
+  // Back button — top-left
+  const backW = 160
+  const backH = 56
+  const backX = 20
+  const backY = 18
+  const backHov = pauseMouseX >= backX && pauseMouseX <= backX + backW && pauseMouseY >= backY && pauseMouseY <= backY + backH
+  ctx.beginPath()
+  ctx.roundRect(backX, backY, backW, backH, 10)
+  ctx.strokeStyle = `rgba(0, 255, 255, ${backHov ? 0.7 : 0.35})`
+  ctx.lineWidth = backHov ? 2.5 : 1.5
+  ctx.stroke()
+  ctx.fillStyle = `rgba(0, 255, 255, ${backHov ? 0.15 : 0.06})`
+  ctx.fill()
+  ctx.font = 'bold 24px monospace'
+  ctx.textAlign = 'center'
+  ctx.fillStyle = `rgba(0, 255, 255, ${backHov ? 0.95 : 0.7})`
+  ctx.fillText('\u2190 BACK', backX + backW / 2, backY + backH / 2 + 8)
 
   if (challenges.length === 0) {
     ctx.font = '24px monospace'
@@ -5164,7 +5178,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
   if (isTouchMode() && getPhase() === 'playing' && !isRunComplete()) {
     const pbX = 14
     const pbY = 14
-    const pbSize = 56
+    const pbSize = 78
     ctx.beginPath()
     ctx.roundRect(pbX, pbY, pbSize, pbSize, 12)
     ctx.fillStyle = 'rgba(0, 0, 0, 0.3)'
@@ -5183,9 +5197,9 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.fillStyle = pbGlow
     ctx.fill()
     // Pause bars ‖
-    const barW = 6
-    const barH = 24
-    const barGap = 8
+    const barW = 8
+    const barH = 34
+    const barGap = 11
     const barY = pbY + (pbSize - barH) / 2
     const barX = pbX + (pbSize - barW * 2 - barGap) / 2
     ctx.fillStyle = 'rgba(255, 215, 64, 0.7)'
@@ -5198,7 +5212,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     const js = getJoystickState()
     if (js.active) {
       const baseR = js.maxRadius
-      const knobR = 33
+      const knobR = 41
       const dx = js.currentX - js.originX
       const dy = js.currentY - js.originY
       const dist = Math.sqrt(dx * dx + dy * dy)
@@ -5668,6 +5682,23 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     const cursor = Math.floor(performance.now() / 500) % 2 === 0 ? '|' : ''
     ctx.fillText(nameEntryText + cursor, ncx, boxY + boxH / 2 + 10)
 
+    // Submit button — always visible, essential for mobile
+    const subW = 200
+    const subH = 50
+    const subX = ncx - subW / 2
+    const subY = boxY + boxH + 16
+    const subHov = pauseMouseX >= subX && pauseMouseX <= subX + subW && pauseMouseY >= subY && pauseMouseY <= subY + subH
+    ctx.beginPath()
+    ctx.roundRect(subX, subY, subW, subH, 8)
+    ctx.strokeStyle = `rgba(100, 255, 160, ${subHov ? 0.8 : 0.5})`
+    ctx.lineWidth = subHov ? 2.5 : 1.5
+    ctx.stroke()
+    ctx.fillStyle = `rgba(100, 255, 160, ${subHov ? 0.2 : 0.08})`
+    ctx.fill()
+    ctx.font = 'bold 24px monospace'
+    ctx.fillStyle = `rgba(100, 255, 160, ${subHov ? 1 : 0.8})`
+    ctx.fillText('S U B M I T', ncx, subY + subH / 2 + 8)
+
     // Rank flavor text
     const rankMessages: Record<string, string[]> = {
       '1': [
@@ -6011,8 +6042,8 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.fillRect(0, 0, width, height)
 
     // Panel
-    const msgW = 600
-    const msgH = 220
+    const msgW = 650
+    const msgH = 200
     const msgX = width / 2 - msgW / 2
     const msgY = height / 2 - msgH / 2
     ctx.fillStyle = `rgba(0, 0, 0, ${0.85 * a})`
@@ -6027,23 +6058,19 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     let ly = msgY + 40
 
     // Title
-    ctx.font = 'bold 22px monospace'
+    ctx.font = 'bold 28px monospace'
     ctx.fillStyle = `rgba(0, 255, 255, ${0.9 * a})`
     ctx.fillText('FULLSCREEN ON iPHONE', cx, ly)
-    ly += 38
+    ly += 44
 
     // Steps
-    ctx.font = '16px monospace'
+    ctx.font = '20px monospace'
     ctx.fillStyle = `rgba(255, 255, 255, ${0.75 * a})`
-    ctx.fillText('1. Turn off Orientation Lock in Control Center', cx, ly)
-    ly += 26
-    ctx.fillText('2. Rotate your phone to landscape', cx, ly)
-    ly += 26
-    ctx.fillText('3. Tap the Share button (\u2191) in Safari', cx, ly)
-    ly += 26
-    ctx.fillText('4. Tap "Add to Home Screen"', cx, ly)
-    ly += 26
-    ctx.fillText('5. Open from Home Screen for full app experience', cx, ly)
+    ctx.fillText('1. Tap the Share button (\u2191) in Safari', cx, ly)
+    ly += 32
+    ctx.fillText('2. Tap "Add to Home Screen"', cx, ly)
+    ly += 32
+    ctx.fillText('3. Open it from Home Screen like an app', cx, ly)
     ly += 32
 
     // Dismiss hint
