@@ -831,12 +831,12 @@ export function resetRenderer(): void {
 }
 
 export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0, dt = 0.016, cam?: Camera): void {
-  // Portrait orientation check — touch-capable devices (use screen orientation, not window size for iframe compat)
-  const hasTouchScreen = 'ontouchstart' in window || navigator.maxTouchPoints > 0
+  // Portrait orientation check — mobile phones only (not desktop touchscreens)
+  const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) && 'ontouchstart' in window
   const isPortrait = screen.orientation
     ? screen.orientation.type.includes('portrait')
     : window.innerWidth < window.innerHeight
-  if (hasTouchScreen && isPortrait && window.innerWidth < 800) {
+  if (isMobileDevice && isPortrait) {
     ctx.fillStyle = '#0D0A1A'
     ctx.fillRect(0, 0, width, height)
     ctx.save()
