@@ -9,7 +9,7 @@ import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameStat
 import { update, render } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
 import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, onStartChallenge } from './game/EnemyDesigner.ts'
-import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas } from './render/Renderer.ts'
+import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage } from './render/Renderer.ts'
 import { setVolume } from './audio/AudioEngine.ts'
 import { submitScore, isNameClean, fetchOnlineScores } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
@@ -321,6 +321,7 @@ window.addEventListener('keydown', e => {
 canvas.addEventListener('pointerdown', e => {
   const p = screenToCanvas(e.clientX, e.clientY)
   if (e.pointerType === 'touch') Input.notifyTouchInput()
+  dismissAddToHomeMessage()
   if (isRunComplete()) handleVictoryScrollDragStart(p.x, p.y)
   if (getPhase() === 'title' || getPhase() === 'paused') startVolumeDrag(p.x, p.y)
 

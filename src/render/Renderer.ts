@@ -73,7 +73,8 @@ export function getLogicalSize(): { w: number; h: number } { return { w: width, 
 
 // "Add to Home Screen" message for iOS
 let addToHomeTimer = 0
-export function showAddToHomeMessage(): void { addToHomeTimer = 4 }
+export function showAddToHomeMessage(): void { addToHomeTimer = 15 }
+export function dismissAddToHomeMessage(): void { addToHomeTimer = Math.min(addToHomeTimer, 0.8) }
 
 /** Convert screen (CSS) coords to canvas (logical) coords */
 export function screenToCanvas(screenX: number, screenY: number): { x: number; y: number } {
@@ -5995,31 +5996,61 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.textAlign = 'left'
   }
 
-  // "Add to Home Screen" message — shown when fullscreen API unavailable (iOS)
+  // "Add to Home Screen" instructions — shown when fullscreen API unavailable (iOS)
   if (addToHomeTimer > 0) {
     addToHomeTimer -= frameDt
-    const msgAlpha = Math.min(1, addToHomeTimer)
+    const msgAlpha = Math.min(1, addToHomeTimer / 0.5)  // fade in over 0.5s
+    const fadeOut = addToHomeTimer < 1 ? addToHomeTimer : 1
+    const a = Math.min(msgAlpha, fadeOut)
     ctx.save()
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    // Dark backdrop
-    const msgW = 500
-    const msgH = 70
+
+    // Dark overlay behind panel
+    ctx.fillStyle = `rgba(0, 0, 0, ${0.5 * a})`
+    ctx.fillRect(0, 0, width, height)
+
+    // Panel
+    const msgW = 600
+    const msgH = 220
     const msgX = width / 2 - msgW / 2
-    const msgY = height - 100
-    ctx.fillStyle = `rgba(0, 0, 0, ${0.8 * msgAlpha})`
+    const msgY = height / 2 - msgH / 2
+    ctx.fillStyle = `rgba(0, 0, 0, ${0.85 * a})`
     ctx.beginPath()
-    ctx.roundRect(msgX, msgY, msgW, msgH, 10)
+    ctx.roundRect(msgX, msgY, msgW, msgH, 14)
     ctx.fill()
-    ctx.strokeStyle = `rgba(0, 255, 255, ${0.3 * msgAlpha})`
-    ctx.lineWidth = 1
+    ctx.strokeStyle = `rgba(0, 255, 255, ${0.3 * a})`
+    ctx.lineWidth = 1.5
     ctx.stroke()
-    ctx.font = 'bold 18px monospace'
-    ctx.fillStyle = `rgba(0, 255, 255, ${0.9 * msgAlpha})`
-    ctx.fillText('Tap Share \u2192 Add to Home Screen', width / 2, msgY + msgH / 2 - 10)
-    ctx.font = '14px monospace'
-    ctx.fillStyle = `rgba(255, 255, 255, ${0.5 * msgAlpha})`
-    ctx.fillText('for fullscreen experience', width / 2, msgY + msgH / 2 + 14)
+
+    const cx = width / 2
+    let ly = msgY + 40
+
+    // Title
+    ctx.font = 'bold 22px monospace'
+    ctx.fillStyle = `rgba(0, 255, 255, ${0.9 * a})`
+    ctx.fillText('FULLSCREEN ON iPHONE', cx, ly)
+    ly += 38
+
+    // Steps
+    ctx.font = '16px monospace'
+    ctx.fillStyle = `rgba(255, 255, 255, ${0.75 * a})`
+    ctx.fillText('1. Turn off Orientation Lock in Control Center', cx, ly)
+    ly += 26
+    ctx.fillText('2. Rotate your phone to landscape', cx, ly)
+    ly += 26
+    ctx.fillText('3. Tap the Share button (\u2191) in Safari', cx, ly)
+    ly += 26
+    ctx.fillText('4. Tap "Add to Home Screen"', cx, ly)
+    ly += 26
+    ctx.fillText('5. Open from Home Screen for full app experience', cx, ly)
+    ly += 32
+
+    // Dismiss hint
+    ctx.font = '12px monospace'
+    ctx.fillStyle = `rgba(255, 255, 255, ${0.35 * a})`
+    ctx.fillText('tap anywhere to dismiss', cx, ly)
+
     ctx.restore()
   }
 }
