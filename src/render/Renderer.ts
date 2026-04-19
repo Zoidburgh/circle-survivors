@@ -18,7 +18,7 @@ import type { BlockedArc } from '../game/RingOcclusion.ts'
 import { getEnemies, getRunTimer, isRunTimerActive, isRunComplete, getRunFinalTime, getPhase, getRunBeatCount } from '../core/GameState.ts'
 import { hasBonus } from '../game/UpgradeManager.ts'
 import { getOrbs } from '../entities/XPOrb.ts'
-import { getBeatName, getVolume } from '../audio/AudioEngine.ts'
+import { getBeatName, getVolume, playDashReady } from '../audio/AudioEngine.ts'
 import { isTouchMode, getJoystickState } from '../game/InputManager.ts'
 import { BEAT_SEC } from '../utils/constants.ts'
 import {
@@ -85,6 +85,7 @@ export function screenToCanvas(screenX: number, screenY: number): { x: number; y
   }
 }
 let outerPulseIntensity = 0
+let dashReadyFlash: { slotIndex: number; timer: number; duration: number }[] = []
 let dashSweepIntensity = 0
 let beatDashFlash = 0       // countdown for beat dash shockwave visual
 let beatDashX = 0
@@ -828,6 +829,7 @@ export function resetRenderer(): void {
   dashSweepPath = []
   shieldDisplayProgress = 0
   gameTimeMs = 0
+  dashReadyFlash.length = 0
 }
 
 export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0, dt = 0.016, cam?: Camera): void {
@@ -1038,17 +1040,26 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     if (dashSweepIntensity > 0.005 && dashSweepPath.length > 1) {
       const fade = dashSweepIntensity
       const grace = 8
-      // Draw along curved path
+      // Draw along curved path — filled zone with bright edges
       for (let s = 0; s < dashSweepPath.length; s++) {
         const pt = dashSweepPath[s]!
         const sx = pt.x - camX
         const sy = pt.y - camY
+        const posT = s / dashSweepPath.length  // 0 = oldest, 1 = newest
+        // Bright gold-white fill that fades along the trail
         ctx.beginPath()
         ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 80, 80, ${0.13 * fade})`
+        ctx.strokeStyle = `rgba(255, 200, 60, ${0.45 * fade * (0.3 + posT * 0.7)})`
         ctx.lineWidth = grace * 2
         ctx.stroke()
+        // Inner bright core
+        ctx.beginPath()
+        ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
+        ctx.strokeStyle = `rgba(255, 255, 200, ${0.25 * fade * (0.3 + posT * 0.7)})`
+        ctx.lineWidth = grace
+        ctx.stroke()
       }
+      // Crisp edge rings — gold outer, white inner
       for (const edgeR of [dashSweepRadius + grace, Math.max(0, dashSweepRadius - grace)]) {
         ctx.beginPath()
         for (const pt of dashSweepPath) {
@@ -1057,10 +1068,44 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
           ctx.moveTo(sx + edgeR, sy)
           ctx.arc(sx, sy, edgeR, 0, Math.PI * 2)
         }
-        ctx.strokeStyle = `rgba(255, 80, 80, ${0.4 * fade})`
-        ctx.lineWidth = 1
+        ctx.strokeStyle = `rgba(255, 215, 64, ${0.8 * fade})`
+        ctx.lineWidth = 2
         ctx.stroke()
       }
+      // Red danger fill — every position, drawn on top
+      for (let s = 0; s < dashSweepPath.length; s++) {
+        const pt = dashSweepPath[s]!
+        const sx = pt.x - camX
+        const sy = pt.y - camY
+        // Red filled band across the sweep zone
+        ctx.beginPath()
+        ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
+        ctx.strokeStyle = `rgba(255, 40, 40, ${0.35 * fade})`
+        ctx.lineWidth = grace * 1.6
+        ctx.stroke()
+        // Bright red edges
+        ctx.beginPath()
+        ctx.arc(sx, sy, dashSweepRadius + grace, 0, Math.PI * 2)
+        ctx.strokeStyle = `rgba(255, 60, 60, ${0.6 * fade})`
+        ctx.lineWidth = 2
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.arc(sx, sy, Math.max(0, dashSweepRadius - grace), 0, Math.PI * 2)
+        ctx.strokeStyle = `rgba(255, 60, 60, ${0.6 * fade})`
+        ctx.lineWidth = 2
+        ctx.stroke()
+      }
+      // Center ring — bright white
+      ctx.beginPath()
+      for (const pt of dashSweepPath) {
+        const sx = pt.x - camX
+        const sy = pt.y - camY
+        ctx.moveTo(sx + dashSweepRadius, sy)
+        ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
+      }
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.5 * fade})`
+      ctx.lineWidth = 2
+      ctx.stroke()
     }
   }
 
@@ -1620,15 +1665,13 @@ function resolveArcs(blocked: BlockedArc[]): { start: number; end: number }[] {
 }
 
 /** Draw a circle arc, skipping blocked angle ranges */
-function drawArcWithGaps(cx: number, cy: number, radius: number, blocked: BlockedArc[]): void {
-  if (blocked.length === 0) {
+function drawArcWithGapsResolved(cx: number, cy: number, radius: number, arcs: { start: number; end: number }[]): void {
+  if (arcs.length === 0) {
     ctx.beginPath()
     ctx.arc(cx, cy, radius, 0, Math.PI * 2)
     ctx.stroke()
     return
   }
-
-  const arcs = resolveArcs(blocked)
 
   let angle = 0
   for (const arc of arcs) {
@@ -1712,20 +1755,23 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
     }
   }
 
+  // Resolve blocked arcs once — reuse for all draw passes
+  const resolvedArcs = blockedArcs.length > 0 ? resolveArcs(blockedArcs) : []
+
   // Soft outer glow
   ctx.strokeStyle = `rgba(${ri}, ${gi}, ${bi}, ${alpha * 0.1})`
   ctx.lineWidth = lineW + 6
-  drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
+  drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
 
   // Mid glow
   ctx.strokeStyle = `rgba(${ri}, ${gi}, ${bi}, ${alpha * 0.2})`
   ctx.lineWidth = lineW + 2
-  drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
+  drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
 
   // Main ring — sharp crisp stroke
   ctx.strokeStyle = `rgba(${ri}, ${gi}, ${bi}, ${alpha})`
   ctx.lineWidth = lineW
-  drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
+  drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
 
   // Red flash at peak
   if (showRedRing) {
@@ -1733,19 +1779,19 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
     // Wide outer glow
     ctx.strokeStyle = `rgba(255, 100, 100, ${redAlpha * 0.08})`
     ctx.lineWidth = 26
-    drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
+    drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
     // Soft red glow
     ctx.strokeStyle = `rgba(255, 100, 100, ${redAlpha * 0.18})`
     ctx.lineWidth = 10
-    drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
+    drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
     // Mid red
     ctx.strokeStyle = `rgba(255, 80, 80, ${redAlpha * 0.5})`
     ctx.lineWidth = 5
-    drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
+    drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
     // Sharp red core
     ctx.strokeStyle = `rgba(255, 80, 80, ${redAlpha})`
     ctx.lineWidth = 3
-    drawArcWithGaps(sx, sy, currentRadius, blockedArcs)
+    drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
   }
 }
 
@@ -1829,29 +1875,26 @@ function drawXPOrbs(player: Player): void {
     const distToPlayer = Math.sqrt((orb.x - player.x) ** 2 + (orb.y - player.y) ** 2)
     const ringOver = playerRadius > 0 && Math.abs(distToPlayer - playerRadius) < r
 
-    // Soft outer glow
+    // Soft outer glow — flat circle, no gradient
     const glowR = r + (isDouble ? 6 : 4)
-    const glowGrad = ctx.createRadialGradient(sx, sy, r * 0.5, sx, sy, glowR)
-    if (ringOver) {
-      glowGrad.addColorStop(0, 'rgba(255, 255, 255, 0.2)')
-      glowGrad.addColorStop(1, 'rgba(255, 255, 255, 0)')
-    } else {
-      glowGrad.addColorStop(0, `rgba(${orbR}, ${orbG}, ${orbB}, ${isDouble ? 0.18 : 0.1})`)
-      glowGrad.addColorStop(1, `rgba(${orbR}, ${orbG}, ${orbB}, 0)`)
-    }
     ctx.beginPath()
     ctx.arc(sx, sy, glowR, 0, Math.PI * 2)
-    ctx.fillStyle = glowGrad
+    if (ringOver) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.08)'
+    } else {
+      ctx.fillStyle = `rgba(${orbR}, ${orbG}, ${orbB}, ${isDouble ? 0.06 : 0.04})`
+    }
     ctx.fill()
 
-    // Orb body — radial gradient (brighter center in orb color, darker edge)
-    const bodyGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
-    bodyGrad.addColorStop(0, `rgba(${Math.min(255, orbR + 80)}, ${Math.min(255, orbG + 40)}, ${Math.min(255, orbB + 40)}, 0.75)`)
-    bodyGrad.addColorStop(0.6, `rgba(${orbR}, ${orbG}, ${orbB}, 0.6)`)
-    bodyGrad.addColorStop(1, `rgba(${orbR}, ${orbG}, ${orbB}, 0.5)`)
+    // Orb body — outer ring + bright inner core (replaces per-frame gradient)
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.fillStyle = bodyGrad
+    ctx.fillStyle = `rgba(${orbR}, ${orbG}, ${orbB}, 0.55)`
+    ctx.fill()
+    // Bright inner core
+    ctx.beginPath()
+    ctx.arc(sx, sy, r * 0.55, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(${Math.min(255, orbR + 80)}, ${Math.min(255, orbG + 40)}, ${Math.min(255, orbB + 40)}, 0.3)`
     ctx.fill()
 
     // Edge glow — wider faint stroke underneath
@@ -2100,14 +2143,29 @@ function drawPlayer(player: Player): void {
       ctx.fill()
     }
 
-    // Main HP fill — use displayHp for smooth fill animation
+    // Main HP fill — radial gradient for depth
     const fillFraction = Math.min(hpFraction, actualPlayerHp)
     const mainEnd = hpStart + fillFraction * Math.PI * 2
     ctx.beginPath()
     ctx.moveTo(sx, sy)
     ctx.arc(sx, sy, drawRadius, hpStart, mainEnd)
     ctx.closePath()
-    ctx.fillStyle = fillColor
+    if (isGhostDashing) {
+      ctx.fillStyle = fillColor
+    } else if (player.hitFlash > 0) {
+      const t = player.hitFlash / HIT_FLASH_DURATION
+      const bodyGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, drawRadius)
+      bodyGrad.addColorStop(0, `rgba(255, ${Math.floor(200 * (1 - t))}, ${Math.floor(200 * (1 - t))}, ${0.55 + t * 0.3})`)
+      bodyGrad.addColorStop(0.35, `rgba(255, ${Math.floor(100 * (1 - t))}, ${Math.floor(80 * (1 - t))}, ${0.42 + t * 0.2})`)
+      bodyGrad.addColorStop(1, `rgba(200, ${Math.floor(50 * (1 - t))}, ${Math.floor(30 * (1 - t))}, ${0.25 + t * 0.15})`)
+      ctx.fillStyle = bodyGrad
+    } else {
+      const bodyGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, drawRadius)
+      bodyGrad.addColorStop(0, 'rgba(180, 255, 255, 0.55)')
+      bodyGrad.addColorStop(0.35, 'rgba(0, 230, 255, 0.42)')
+      bodyGrad.addColorStop(1, 'rgba(0, 180, 240, 0.25)')
+      ctx.fillStyle = bodyGrad
+    }
     ctx.fill()
 
     // Heal juice — glowing leading edge + particles when filling
@@ -2562,36 +2620,106 @@ function drawPlayer(player: Player): void {
     if (timer > 0 && prevTimer <= 0) {
       const worldX = player.x + Math.cos(baseAngle) * orbitR
       const worldY = player.y + Math.sin(baseAngle) * orbitR
-      for (let p = 0; p < 30; p++) {
-        const a = (p / 30) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
-        const speed = 250 + Math.random() * 250
+      // Green burst — trails opposite of dash direction
+      const dashAngle = Math.atan2(player.dashDirY, player.dashDirX)
+      const backAngle = dashAngle + Math.PI
+      for (let p = 0; p < 50; p++) {
+        const a = backAngle + (Math.random() - 0.5) * 2.5
+        const speed = 300 + Math.random() * 350
+        spawnParticle(worldX, worldY,
+          Math.cos(a) * speed + (Math.random() - 0.5) * 60,
+          Math.sin(a) * speed + (Math.random() - 0.5) * 60,
+          100, 255, 120, 0.3 + Math.random() * 0.2, 3 + Math.random() * 3)
+      }
+      // White-hot core sparks — also trail back
+      for (let p = 0; p < 12; p++) {
+        const a = backAngle + (Math.random() - 0.5) * 1.5
+        const speed = 450 + Math.random() * 300
         spawnParticle(worldX, worldY,
           Math.cos(a) * speed, Math.sin(a) * speed,
-          100, 255, 120, 0.25 + Math.random() * 0.15, 3 + Math.random() * 2.5)
+          220, 255, 230, 0.2 + Math.random() * 0.15, 2 + Math.random() * 2)
+      }
+    }
+
+    // Dash charge just became ready — converge burst + flash
+    if (player.dashJustReady[i]) {
+      player.dashJustReady[i] = false
+      dashReadyFlash.push({ slotIndex: i, timer: 0.4, duration: 0.4 })
+      playDashReady()
+      const worldX = player.x + Math.cos(baseAngle) * orbitR
+      const worldY = player.y + Math.sin(baseAngle) * orbitR
+      // Converge particles from around toward the dot
+      for (let p = 0; p < 16; p++) {
+        const a = (p / 16) * Math.PI * 2
+        const dist = 45 + Math.random() * 25
+        const px = worldX + Math.cos(a) * dist
+        const py = worldY + Math.sin(a) * dist
+        const toAngle = Math.atan2(worldY - py, worldX - px)
+        const speed = 80 + Math.random() * 60
+        spawnParticle(px, py,
+          Math.cos(toAngle) * speed, Math.sin(toAngle) * speed,
+          100, 255, 120, 0.25 + Math.random() * 0.15, 4 + Math.random() * 2.5)
+      }
+      // Small outward pop
+      for (let p = 0; p < 8; p++) {
+        const a = (p / 8) * Math.PI * 2 + Math.random() * 0.3
+        const speed = 60 + Math.random() * 50
+        spawnParticle(worldX, worldY,
+          Math.cos(a) * speed, Math.sin(a) * speed,
+          200, 255, 210, 0.2 + Math.random() * 0.1, 3.5 + Math.random() * 2)
       }
     }
 
     if (timer <= 0) {
-      // Ready — green dot
+      // Bounce effect — check if this slot has an active ready flash (in shockwave phase)
+      let bounce = 1.0
+      for (const f of dashReadyFlash) {
+        if (f.slotIndex === i) {
+          const ft = 1 - (f.timer / f.duration)
+          if (ft >= 0.5) {
+            const shockT = (ft - 0.5) / 0.5  // 0→1
+            bounce = 1 + (1 - shockT) * 0.8  // 1.8x → 1.0x
+          }
+        }
+      }
+
+      // Trail particles behind orbiting dot
+      if (Math.random() < 0.7) {
+        const worldDotX = player.x + Math.cos(baseAngle) * orbitR
+        const worldDotY = player.y + Math.sin(baseAngle) * orbitR
+        const spread = orbitR * 0.15
+        spawnParticle(
+          worldDotX + (Math.random() - 0.5) * spread,
+          worldDotY + (Math.random() - 0.5) * spread,
+          (Math.random() - 0.5) * 12, (Math.random() - 0.5) * 12,
+          100, 255, 120, 0.22 + Math.random() * 0.18, 2.5 + Math.random() * 1.5)
+      }
+      // Ready — green dot with beat-pulsing glow
+      const glowPulse = 0.12 + globalBeatPulse * 0.15
+      const dotR = 7.5 * bounce
+      const glowSize = (14 + globalBeatPulse * 4) * bounce
       ctx.beginPath()
-      ctx.arc(dotX, dotY, 5, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(100, 255, 120, 0.95)'
+      ctx.arc(dotX, dotY, glowSize, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(100, 255, 120, ${glowPulse * bounce})`
       ctx.fill()
       ctx.beginPath()
-      ctx.arc(dotX, dotY, 10, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(100, 255, 120, 0.25)'
+      ctx.arc(dotX, dotY, dotR, 0, Math.PI * 2)
+      ctx.fillStyle = bounce > 1.1 ? `rgba(220, 255, 230, 0.95)` : 'rgba(100, 255, 120, 0.95)'
       ctx.fill()
+      ctx.strokeStyle = 'rgba(100, 255, 120, 0.6)'
+      ctx.lineWidth = 1.5
+      ctx.stroke()
     } else {
       // Charging — white pie in place
       const fill = 1 - (timer / (player.dashChargeTime * player.modifiers.dashChargeMult))
       ctx.beginPath()
-      ctx.arc(dotX, dotY, 5.2, 0, Math.PI * 2)
+      ctx.arc(dotX, dotY, 7.5, 0, Math.PI * 2)
       ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'
       ctx.fill()
       if (fill > 0) {
         ctx.beginPath()
         ctx.moveTo(dotX, dotY)
-        ctx.arc(dotX, dotY, 5.2, -Math.PI / 2, -Math.PI / 2 + fill * Math.PI * 2)
+        ctx.arc(dotX, dotY, 7.5, -Math.PI / 2, -Math.PI / 2 + fill * Math.PI * 2)
         ctx.closePath()
         ctx.fillStyle = 'rgba(255, 255, 255, 0.7)'
         ctx.fill()
@@ -2599,6 +2727,60 @@ function drawPlayer(player: Player): void {
     }
   }
   prevDashSlots = player.dashSlots.map(t => t)
+
+  // Dash ready flash — spiral converge + shockwave, follows orbiting dot
+  for (let i = dashReadyFlash.length - 1; i >= 0; i--) {
+    const f = dashReadyFlash[i]!
+    f.timer -= frameDt
+    if (f.timer <= 0) { dashReadyFlash.splice(i, 1); continue }
+
+    // Compute current dot position (follows player)
+    const fAngle = orbitSpeed + (Math.PI * 2 * f.slotIndex) / player.dashSlots.length
+    const fx = sx + Math.cos(fAngle) * orbitR
+    const fy = sy + Math.sin(fAngle) * orbitR
+
+    const t = 1 - (f.timer / f.duration)  // 0→1 (progress)
+    const fadeT = f.timer / f.duration    // 1→0 (fade)
+
+    if (t < 0.5) {
+      // Phase 1: spiral converge
+      const spiralT = t / 0.5  // 0→1
+      const count = 8
+      const outerR = 86 * (1 - spiralT * spiralT)  // shrinks inward
+      const spiralRot = spiralT * Math.PI * 2.5  // 2.5 rotations
+      for (let s = 0; s < count; s++) {
+        const a = (s / count) * Math.PI * 2 + spiralRot
+        const px = fx + Math.cos(a) * outerR
+        const py = fy + Math.sin(a) * outerR
+        const dotSize = 3 + (1 - spiralT) * 2 + spiralT * 2  // grows as it converges
+        // Dim green → white-hot as they converge
+        const dr = Math.floor(100 + spiralT * 155)
+        const dg = 255
+        const db = Math.floor(120 + spiralT * 135)
+        ctx.beginPath()
+        ctx.arc(px, py, dotSize, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${dr}, ${dg}, ${db}, ${0.4 + spiralT * 0.55})`
+        ctx.fill()
+      }
+    } else {
+      // Phase 2: shockwave ring
+      const shockT = (t - 0.5) / 0.5  // 0→1
+      const ringR = 14 + shockT * 52
+      ctx.beginPath()
+      ctx.arc(fx, fy, ringR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(100, 255, 120, ${(1 - shockT) * 0.7})`
+      ctx.lineWidth = 3 * (1 - shockT)
+      ctx.stroke()
+
+      // Bright center flash
+      if (shockT < 0.4) {
+        ctx.beginPath()
+        ctx.arc(fx, fy, 20 * (1 - shockT), 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(200, 255, 220, ${(1 - shockT * 2.5) * 0.6})`
+        ctx.fill()
+      }
+    }
+  }
 
   // Green dash particles — trail behind during entire dash
   if (player.dashTimer >= 0 && player.dashTimer > 0) {
@@ -5049,6 +5231,22 @@ function drawChallengePlacements(): void {
 }
 
 function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
+  // Low HP red vignette — fades in below 30% health, intensifies toward death
+  const hpRatio = player.hp / player.maxHp
+  if (hpRatio < 0.3 && hpRatio > 0 && getPhase() === 'playing') {
+    const urgency = 1 - (hpRatio / 0.3)  // 0 at 30%, 1 at 0%
+    const beatPulse = globalBeatPulse * (0.5 + urgency * 0.5)  // syncs to beat, stronger near death
+    const vigAlpha = urgency * (0.3 + beatPulse * 0.25)
+    const vig = ctx.createRadialGradient(width / 2, height / 2, height * 0.15, width / 2, height / 2, height * 0.8)
+    vig.addColorStop(0, 'rgba(0, 0, 0, 0)')
+    vig.addColorStop(0.4, 'rgba(0, 0, 0, 0)')
+    vig.addColorStop(0.65, `rgba(120, 15, 15, ${vigAlpha * 0.3})`)
+    vig.addColorStop(0.85, `rgba(160, 20, 20, ${vigAlpha * 0.7})`)
+    vig.addColorStop(1, `rgba(180, 20, 20, ${vigAlpha})`)
+    ctx.fillStyle = vig
+    ctx.fillRect(0, 0, width, height)
+  }
+
   ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
   ctx.font = '12px monospace'
   const x = width - 200

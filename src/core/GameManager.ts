@@ -382,6 +382,11 @@ on('summon:phase', (enemy: Enemy) => {
   }
 })
 
+export function resetPendingEffects(): void {
+  pendingExplosions.length = 0
+  pendingRevenges.length = 0
+}
+
 export function update(dt: number): void {
   const phase = getPhase()
 

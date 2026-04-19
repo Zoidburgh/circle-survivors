@@ -591,6 +591,38 @@ export function playBeatTick(): void {
   playKick()
 }
 
+export function playDashReady(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  // Quick rising chime — positive, light
+  const chime = c.createOscillator()
+  const chimeGain = c.createGain()
+  chime.type = 'sine'
+  chime.frequency.setValueAtTime(rPitch(600), t)
+  chime.frequency.exponentialRampToValueAtTime(rPitch(900), t + 0.08)
+  chimeGain.gain.setValueAtTime(rVol(0.2), t)
+  chimeGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
+  chime.connect(chimeGain)
+  chimeGain.connect(reverbInput)
+  chime.start(t)
+  chime.stop(t + 0.15)
+
+  // Soft pop
+  const pop = c.createOscillator()
+  const popGain = c.createGain()
+  pop.type = 'sine'
+  pop.frequency.setValueAtTime(rPitch(200), t)
+  pop.frequency.exponentialRampToValueAtTime(rPitch(120), t + 0.06)
+  popGain.gain.setValueAtTime(rVol(0.15), t)
+  popGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08)
+  pop.connect(popGain)
+  popGain.connect(master)
+  pop.start(t)
+  pop.stop(t + 0.08)
+}
+
 export function playDash(): void {
   ensureContext()
   const c = ctx!

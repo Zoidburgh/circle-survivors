@@ -94,6 +94,7 @@ export interface Player {
   shieldBreakFlash: number
   shieldRechargeTime: number   // base 5s, modified by upgrades
   modifiers: PlayerModifiers
+  dashJustReady: boolean[]     // flags set when a slot finishes charging
 }
 
 export function createPlayer(x: number, y: number): Player {
@@ -135,6 +136,7 @@ export function createPlayer(x: number, y: number): Player {
     shieldBreakFlash: 0,
     shieldRechargeTime: SHIELD_RECHARGE_TIME,
     modifiers: createDefaultModifiers(),
+    dashJustReady: Array(DASH_MAX_CHARGES).fill(false),
   }
 }
 
@@ -171,6 +173,7 @@ export function resetPlayer(player: Player): void {
   player.shieldBreakFlash = 0
   player.shieldRechargeTime = SHIELD_RECHARGE_TIME
   player.modifiers = createDefaultModifiers()
+  player.dashJustReady = Array(DASH_MAX_CHARGES).fill(false)
 }
 
 export function getEffectiveRadius(player: Player): number {
@@ -241,7 +244,10 @@ export function updatePlayer(player: Player, dt: number): void {
   for (let i = 0; i < player.dashSlots.length; i++) {
     if (player.dashSlots[i]! > 0) {
       player.dashSlots[i]! -= dt
-      if (player.dashSlots[i]! <= 0) player.dashSlots[i] = 0
+      if (player.dashSlots[i]! <= 0) {
+        player.dashSlots[i] = 0
+        player.dashJustReady[i] = true
+      }
     }
   }
 
