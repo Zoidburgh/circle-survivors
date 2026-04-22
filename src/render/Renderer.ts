@@ -97,6 +97,7 @@ let ringPeakY = 0
 let dashSweepPath: { x: number; y: number }[] = []
 let prevShieldCharges = -1  // track for restore particle trigger
 let shieldRestoreAnim = 0   // countdown for restore converge effect
+let shieldActivateSweep = 0 // countdown for top-to-bottom pink sweep
 let shieldDisplayProgress = 0  // smoothed recharge progress for retreat animation
 let prevDashSlots: number[] = []  // track dash slot states for burst detection
 let frameDt = 0.016         // render dt stored for use in draw functions
@@ -414,24 +415,49 @@ function updateAndDrawVolatileEffects(dt: number): void {
     const erG = Math.floor(ex.g * 0.4)
     const erB = Math.floor(ex.b * 0.4)
 
-    // Full area flash
+    // White-hot flash — fills most of blast zone, fast fade
+    if (t < 0.45) {
+      const centerT = t / 0.45
+      ctx.beginPath()
+      ctx.arc(sx, sy, ex.range, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 255, 255, ${(1 - centerT) * 0.7})`
+      ctx.fill()
+    }
+
+    // Full area flash — punchy initial, fast falloff
+    const flashAlpha = t < 0.15 ? 0.5 * (1 - t / 0.15) : alpha * 0.15
     ctx.beginPath()
     ctx.arc(sx, sy, ex.range, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(255, 200, 200, ${alpha * 0.3})`
+    ctx.fillStyle = `rgba(${erR}, ${erG}, ${erB}, ${flashAlpha})`
     ctx.fill()
 
-    // Red-tinted fill
+    // Crisp edge ring — exact hitbox boundary
     ctx.beginPath()
     ctx.arc(sx, sy, ex.range, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(${erR}, ${erG}, ${erB}, ${alpha * 0.25})`
-    ctx.fill()
-
-    // Edge ring
-    ctx.beginPath()
-    ctx.arc(sx, sy, ex.range, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(${erR}, ${erG}, ${erB}, ${alpha * 0.5})`
-    ctx.lineWidth = 3 * (1 - t)
+    ctx.strokeStyle = `rgba(${erR}, ${erG}, ${erB}, ${alpha * 0.7})`
+    ctx.lineWidth = 4 * (1 - t)
     ctx.stroke()
+    // Sharp white edge on top — reads as "this is the boundary"
+    ctx.beginPath()
+    ctx.arc(sx, sy, ex.range, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.4})`
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+
+    // Expanding ripples — shoot outward from blast edge
+    for (let rip = 0; rip < 2; rip++) {
+      const ripDelay = rip * 0.08
+      const ripT = Math.max(0, t - ripDelay) / (ex.duration - ripDelay)
+      if (ripT > 0 && ripT < 1) {
+        const ripR = ex.range + ripT * 40
+        const ripAlpha = (1 - ripT) * (1 - ripT) * 0.4
+        ctx.beginPath()
+        ctx.arc(sx, sy, ripR, 0, Math.PI * 2)
+        ctx.strokeStyle = `rgba(${erR}, ${erG}, ${erB}, ${ripAlpha})`
+        ctx.lineWidth = 2 * (1 - ripT)
+        ctx.stroke()
+      }
+    }
   }
 }
 
@@ -830,6 +856,7 @@ export function resetRenderer(): void {
   shieldDisplayProgress = 0
   gameTimeMs = 0
   dashReadyFlash.length = 0
+  shieldActivateSweep = 0
 }
 
 export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0, dt = 0.016, cam?: Camera): void {
@@ -1742,10 +1769,10 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
     spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, trailCount, 20 + buildup * 40, 0.3, 2, blockedArcs)
   }
 
-  // Explosion at peak — interleave white + colored for even distribution
+  // Explosion at peak — white-hot sparks racing along the ring circumference
   if (showRedRing && pastPeak < lastDt * 2 && particles.length < MAX_PARTICLES - 20) {
     const ringScale = Math.max(1, currentRadius / 140)
-    const totalCount = Math.round(25 * ringScale)
+    const totalCount = Math.round(30 * ringScale)
     const angleOffset = Math.random() * Math.PI * 2
     for (let i = 0; i < totalCount; i++) {
       const angle = angleOffset + (i / totalCount) * Math.PI * 2 + (Math.random() - 0.5) * (Math.PI * 2 / totalCount) * 0.3
@@ -1761,16 +1788,21 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
       }
       const px = worldX + Math.cos(angle) * currentRadius
       const py = worldY + Math.sin(angle) * currentRadius
-      const isWhite = i % 3 === 0  // every 3rd is white
-      const sp = isWhite ? 20 : 15
-      const sv = sp * (0.5 + Math.random())
-      const vx = Math.cos(angle) * sv + (Math.random() - 0.5) * sv * 0.7
-      const vy = Math.sin(angle) * sv + (Math.random() - 0.5) * sv * 0.7
-      const lt = (isWhite ? 0.5 : 0.6) * (0.8 + Math.random() * 0.2)
-      const sz = (isWhite ? 8 : 7) * 1.1
-      const pr = isWhite ? 255 : ri
-      const pg = isWhite ? 255 : gi
-      const pb = isWhite ? 255 : bi
+      // Tangential velocity — races along the ring
+      const dir = i % 2 === 0 ? 1 : -1  // alternating CW/CCW
+      const tangentAngle = angle + (Math.PI / 2) * dir
+      const tangentSpeed = 120 + Math.random() * 180
+      // Slight inward pull
+      const inwardSpeed = -(10 + Math.random() * 15)
+      const vx = Math.cos(tangentAngle) * tangentSpeed + Math.cos(angle) * inwardSpeed
+      const vy = Math.sin(tangentAngle) * tangentSpeed + Math.sin(angle) * inwardSpeed
+      const isRed = i % 10 === 0
+      const isWhite = !isRed && i % 4 === 0
+      const lt = 0.16 + Math.random() * 0.12  // short life — punchy
+      const sz = (isWhite ? 10.3 : 8.6) * (0.9 + Math.random() * 0.3)
+      const pr = isRed ? 255 : isWhite ? 255 : Math.min(255, ri + 100)
+      const pg = isRed ? 60 + Math.floor(Math.random() * 40) : isWhite ? 255 : Math.min(255, gi + 60)
+      const pb = isRed ? 50 + Math.floor(Math.random() * 30) : isWhite ? 255 : Math.min(255, bi + 60)
       spawnParticle(px, py, vx, vy, pr, pg, pb, lt, sz)
     }
   }
@@ -1792,6 +1824,19 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   ctx.strokeStyle = `rgba(${ri}, ${gi}, ${bi}, ${alpha})`
   ctx.lineWidth = lineW
   drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
+
+  // White-gold flash at exact peak — 1-2 frames
+  if (showRedRing && pastPeak < 0.03) {
+    const peakFlash = 1 - (pastPeak / 0.03)
+    // Bright white ring
+    ctx.strokeStyle = `rgba(255, 255, 255, ${peakFlash * 0.8})`
+    ctx.lineWidth = lineW * 2
+    drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
+    // Sharp 1px edge
+    ctx.strokeStyle = `rgba(255, 255, 255, ${peakFlash})`
+    ctx.lineWidth = 1
+    drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
+  }
 
   // Red flash at peak
   if (showRedRing) {
@@ -2231,36 +2276,49 @@ function drawPlayer(player: Player): void {
       }
     }
 
-    // HP segment lines — only on remaining health
+    // HP segment lines — across full pie including missing health
     if (player.maxHp <= 40) {
-      const segStart = player.hp < player.maxHp ? 1 : 0
       const now = performance.now()
       const segBeat = player.attackTimer >= 0 && player.attackTimer < ATTACK_EXPAND_TIME
         ? Math.min(player.attackTimer / (ATTACK_EXPAND_TIME * 0.80), 0.6)
         : globalBeatPulse
       const segInner = drawRadius * (0.60 - segBeat * 0.30)
-      for (let i = segStart; i < player.hp; i++) {
+      for (let i = 0; i < player.maxHp; i++) {
         const phase = (i / player.maxHp) * Math.PI * 2
         const wave = 0.5 + 0.5 * Math.sin(now / 800 - phase * 1.5)
-        const segAlpha = 0.12 + wave * 0.18
+        const isMissing = i >= player.hp
+        const segAlpha = isMissing ? 0.15 + wave * 0.15 : 0.12 + wave * 0.18
         const segAngle = hpStart + (i / player.maxHp) * Math.PI * 2
         const ix = sx + Math.cos(segAngle) * segInner
         const iy = sy + Math.sin(segAngle) * segInner
         const ox = sx + Math.cos(segAngle) * drawRadius
         const oy = sy + Math.sin(segAngle) * drawRadius
-        // Glow layer — soft white-cyan
+        // Glow layer
+        const shielded = player.shieldCharges > 0
         ctx.beginPath()
         ctx.moveTo(ix, iy)
         ctx.lineTo(ox, oy)
-        ctx.strokeStyle = `rgba(180, 230, 255, ${segAlpha * 0.6})`
-        ctx.lineWidth = 4
+        ctx.strokeStyle = isMissing
+          ? shielded
+            ? `rgba(255, 50, 200, ${segAlpha + 0.15})`
+            : `rgba(255, 80, 80, ${segAlpha})`
+          : shielded
+            ? `rgba(255, 50, 200, ${segAlpha + 0.35})`
+            : `rgba(180, 230, 255, ${segAlpha * 0.6})`
+        ctx.lineWidth = isMissing ? (shielded ? 5 : 3) : shielded ? 6 : 4
         ctx.stroke()
-        // Core line — bright white-pink
+        // Core line
         ctx.beginPath()
         ctx.moveTo(ix, iy)
         ctx.lineTo(ox, oy)
-        ctx.strokeStyle = `rgba(230, 210, 255, ${segAlpha + 0.12})`
-        ctx.lineWidth = 1.5
+        ctx.strokeStyle = isMissing
+          ? shielded
+            ? `rgba(255, 180, 255, ${segAlpha + 0.25})`
+            : `rgba(255, 150, 150, ${segAlpha + 0.1})`
+          : shielded
+            ? `rgba(255, 180, 255, ${segAlpha + 0.5})`
+            : `rgba(230, 210, 255, ${segAlpha + 0.12})`
+        ctx.lineWidth = isMissing ? (shielded ? 2 : 1) : shielded ? 2.5 : 1.5
         ctx.stroke()
       }
     }
@@ -2510,6 +2568,7 @@ function drawPlayer(player: Player): void {
   // Shield restore — detect trigger
   if (prevShieldCharges === 0 && player.shieldCharges > 0) {
     shieldRestoreAnim = 0.47
+    shieldActivateSweep = 0.3
   }
   prevShieldCharges = player.shieldCharges
 
@@ -2595,6 +2654,40 @@ function drawPlayer(player: Player): void {
         }
       }
     }
+  }
+
+  // Shield activation sweep — pink band top to bottom
+  if (shieldActivateSweep > 0) {
+    shieldActivateSweep -= frameDt
+    const sweepT = 1 - (shieldActivateSweep / 0.3)  // 0→1
+    const sweepY = sy - drawRadius + sweepT * drawRadius * 2  // top to bottom
+    const bandH = drawRadius * 0.35  // band thickness
+
+    ctx.save()
+    // Clip to player body circle
+    ctx.beginPath()
+    ctx.arc(sx, sy, drawRadius + 1, 0, Math.PI * 2)
+    ctx.clip()
+
+    // Bright pink band
+    const bandGrad = ctx.createLinearGradient(sx, sweepY - bandH, sx, sweepY + bandH)
+    bandGrad.addColorStop(0, 'rgba(255, 50, 200, 0)')
+    bandGrad.addColorStop(0.3, `rgba(255, 100, 220, ${0.6 * (1 - sweepT * 0.5)})`)
+    bandGrad.addColorStop(0.5, `rgba(255, 200, 255, ${0.8 * (1 - sweepT * 0.5)})`)
+    bandGrad.addColorStop(0.7, `rgba(255, 100, 220, ${0.6 * (1 - sweepT * 0.5)})`)
+    bandGrad.addColorStop(1, 'rgba(255, 50, 200, 0)')
+    ctx.fillStyle = bandGrad
+    ctx.fillRect(sx - drawRadius, sweepY - bandH, drawRadius * 2, bandH * 2)
+
+    // Sharp leading edge line
+    ctx.beginPath()
+    ctx.moveTo(sx - drawRadius, sweepY)
+    ctx.lineTo(sx + drawRadius, sweepY)
+    ctx.strokeStyle = `rgba(255, 220, 255, ${0.9 * (1 - sweepT * 0.6)})`
+    ctx.lineWidth = 2
+    ctx.stroke()
+
+    ctx.restore()
   }
 
   // Beat anticipation — 10 chained rings shrinking toward player body
@@ -5295,6 +5388,19 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     vig.addColorStop(0.85, `rgba(160, 20, 20, ${vigAlpha * 0.7})`)
     vig.addColorStop(1, `rgba(180, 20, 20, ${vigAlpha})`)
     ctx.fillStyle = vig
+    ctx.fillRect(0, 0, width, height)
+  }
+
+  // Hit flash vignette — brief red flash on edges when taking HP damage (not shield break)
+  if (player.hitFlash > 0 && player.shieldBreakFlash <= 0 && getPhase() === 'playing') {
+    const hitT = player.hitFlash / HIT_FLASH_DURATION  // 1→0
+    const flashAlpha = hitT * 0.3  // linear, gentler falloff
+    const hitVig = ctx.createRadialGradient(width / 2, height / 2, height * 0.35, width / 2, height / 2, height * 0.85)
+    hitVig.addColorStop(0, 'rgba(0, 0, 0, 0)')
+    hitVig.addColorStop(0.7, 'rgba(0, 0, 0, 0)')
+    hitVig.addColorStop(0.85, `rgba(200, 20, 20, ${flashAlpha * 0.4})`)
+    hitVig.addColorStop(1, `rgba(255, 30, 30, ${flashAlpha})`)
+    ctx.fillStyle = hitVig
     ctx.fillRect(0, 0, width, height)
   }
 

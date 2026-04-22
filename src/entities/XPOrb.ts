@@ -16,7 +16,7 @@ export interface XPOrb {
   consumedBy: 'player' | 'enemy' | null
 }
 
-const ORB_RADIUS = PLAYER_RADIUS * 0.5
+const ORB_RADIUS = PLAYER_RADIUS * 0.575
 const DEATH_DUR = 0.2
 const MAX_ORBS = 150
 
