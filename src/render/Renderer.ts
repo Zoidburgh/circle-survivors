@@ -98,6 +98,8 @@ let dashSweepPath: { x: number; y: number }[] = []
 let prevShieldCharges = -1  // track for restore particle trigger
 let shieldRestoreAnim = 0   // countdown for restore converge effect
 let shieldActivateSweep = 0 // countdown for top-to-bottom pink sweep
+let shieldPulsePhase = 0    // accumulated phase for smooth shield fuse pulse
+let shieldFuseCompletionFlash = 0  // flash at 12 o'clock when fuse completes
 let shieldDisplayProgress = 0  // smoothed recharge progress for retreat animation
 let prevDashSlots: number[] = []  // track dash slot states for burst detection
 let frameDt = 0.016         // render dt stored for use in draw functions
@@ -857,6 +859,8 @@ export function resetRenderer(): void {
   gameTimeMs = 0
   dashReadyFlash.length = 0
   shieldActivateSweep = 0
+  shieldPulsePhase = 0
+  shieldFuseCompletionFlash = 0
 }
 
 export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0, dt = 0.016, cam?: Camera): void {
@@ -2220,16 +2224,23 @@ function drawPlayer(player: Player): void {
     } else if (player.hitFlash > 0) {
       const t = player.hitFlash / HIT_FLASH_DURATION
       const bodyGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, drawRadius)
-      bodyGrad.addColorStop(0, `rgba(255, ${Math.floor(200 * (1 - t))}, ${Math.floor(200 * (1 - t))}, ${0.55 + t * 0.3})`)
-      bodyGrad.addColorStop(0.35, `rgba(255, ${Math.floor(100 * (1 - t))}, ${Math.floor(80 * (1 - t))}, ${0.42 + t * 0.2})`)
-      bodyGrad.addColorStop(1, `rgba(200, ${Math.floor(50 * (1 - t))}, ${Math.floor(30 * (1 - t))}, ${0.25 + t * 0.15})`)
+      bodyGrad.addColorStop(0, `rgba(255, ${Math.floor(220 * (1 - t))}, ${Math.floor(220 * (1 - t))}, ${0.7 + t * 0.3})`)
+      bodyGrad.addColorStop(0.35, `rgba(255, ${Math.floor(80 * (1 - t))}, ${Math.floor(60 * (1 - t))}, ${0.55 + t * 0.25})`)
+      bodyGrad.addColorStop(1, `rgba(240, ${Math.floor(40 * (1 - t))}, ${Math.floor(20 * (1 - t))}, ${0.35 + t * 0.2})`)
       ctx.fillStyle = bodyGrad
     } else {
       const bp = globalBeatPulse * 0.4
+      const shielded = player.shieldCharges > 0
       const bodyGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, drawRadius)
-      bodyGrad.addColorStop(0, `rgba(180, 255, 255, ${0.55 + bp})`)
-      bodyGrad.addColorStop(0.35, `rgba(0, 230, 255, ${0.42 + bp * 0.5})`)
-      bodyGrad.addColorStop(1, `rgba(0, 180, 240, ${0.25 + bp * 0.3})`)
+      if (shielded) {
+        bodyGrad.addColorStop(0, `rgba(255, 220, 255, ${0.6 + bp})`)
+        bodyGrad.addColorStop(0.35, `rgba(230, 170, 255, ${0.48 + bp * 0.5})`)
+        bodyGrad.addColorStop(1, `rgba(190, 120, 245, ${0.32 + bp * 0.3})`)
+      } else {
+        bodyGrad.addColorStop(0, `rgba(210, 255, 255, ${0.58 + bp})`)
+        bodyGrad.addColorStop(0.35, `rgba(80, 240, 255, ${0.45 + bp * 0.5})`)
+        bodyGrad.addColorStop(1, `rgba(40, 200, 245, ${0.28 + bp * 0.3})`)
+      }
       ctx.fillStyle = bodyGrad
     }
     ctx.fill()
@@ -2343,7 +2354,7 @@ function drawPlayer(player: Player): void {
     ctx.beginPath()
     ctx.arc(sx, sy, drawRadius, 0, Math.PI * 2)
     ctx.strokeStyle = `rgba(255, 50, 200, ${0.85 + fastPulse * 0.15})`
-    ctx.lineWidth = 2.5 + pulse * 0.5
+    ctx.lineWidth = 4 + pulse * 0.5
     ctx.stroke()
 
     // Hot inner edge
@@ -2354,7 +2365,7 @@ function drawPlayer(player: Player): void {
     ctx.stroke()
 
 
-    // Ambient shield sparks — constant stream around circumference
+    // Ambient shield sparks — edge + interior
     const sparkCount = globalBeatPulse > 0.5 ? 5 : 2
     for (let s = 0; s < sparkCount; s++) {
       if (Math.random() < 0.7) {
@@ -2368,6 +2379,17 @@ function drawPlayer(player: Player): void {
           255, 100 + Math.floor(Math.random() * 100), 220,
           0.14 + Math.random() * 0.1, 2.5 + Math.random() * 1.5)
       }
+    }
+    // Interior shield particles — float inside the body, solid pink
+    if (Math.random() < 0.6) {
+      const ia = Math.random() * Math.PI * 2
+      const idist = Math.random() * drawRadius * 0.85
+      spawnParticle(
+        player.x + Math.cos(ia) * idist,
+        player.y + Math.sin(ia) * idist,
+        (Math.random() - 0.5) * 20, -12 - Math.random() * 25,
+        255, 50, 200,
+        0.2 + Math.random() * 0.15, 2.5 + Math.random() * 2)
     }
   } else if (player.shieldRechargeTimer > 0) {
     // Recharging — normal stroke underneath, purple arc filling on top
@@ -2392,31 +2414,33 @@ function drawPlayer(player: Player): void {
     // Magenta progress arc clockwise from top — pulses throughout, intensifies near end
     const visProgress = Math.max(0, shieldDisplayProgress)
     if (visProgress > 0) {
-      const eighthNote = BEAT_SEC * 500  // 8th note period in ms
-      const pulse = 0.5 + 0.5 * Math.sin(performance.now() * Math.PI * 2 / eighthNote)
-      const nearEnd = visProgress > 0.5 ? (visProgress - 0.5) / 0.5 : 0
-      const flash = pulse * (0.5 + nearEnd * 0.5)
+      // Pulse: same white intensity throughout, just speeds up near end
+      const period = 1500 - visProgress * 1300  // 1500ms at start → 200ms at end
+      // Accumulate phase to avoid discontinuities
+      shieldPulsePhase += frameDt * 1000 / period * Math.PI * 2
+      const pulse = 0.5 + 0.5 * Math.sin(shieldPulsePhase)
+      const flash = pulse
       ctx.beginPath()
-      ctx.arc(sx, sy, drawRadius, -Math.PI / 2, -Math.PI / 2 + visProgress * Math.PI * 2)
+      ctx.arc(sx, sy, drawRadius, -Math.PI / 2, -Math.PI / 2 - visProgress * Math.PI * 2, true)
       const r = 255
-      const g = Math.round(50 + flash * 150)
-      const b = Math.round(200 + flash * 40)
+      const g = Math.round(50 + flash * 200)
+      const b = Math.round(200 + flash * 55)
 
-      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${0.6 + progress * 0.35 + flash * 0.05})`
-      ctx.lineWidth = 3 + flash + progress * 1.5
+      ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${0.6 + progress * 0.35 + flash * 0.1})`
+      ctx.lineWidth = 3 + flash * 0.5 + progress * 1.5
       ctx.stroke()
 
       // Outer glow that grows with progress
       if (progress > 0.2) {
         ctx.beginPath()
-        ctx.arc(sx, sy, drawRadius + 1, -Math.PI / 2, -Math.PI / 2 + visProgress * Math.PI * 2)
+        ctx.arc(sx, sy, drawRadius + 1, -Math.PI / 2, -Math.PI / 2 - visProgress * Math.PI * 2, true)
         ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${progress * 0.2})`
         ctx.lineWidth = 3 + progress * 3
         ctx.stroke()
       }
 
       // Leading tip glow + sparks
-      const tipAngle = -Math.PI / 2 + visProgress * Math.PI * 2
+      const tipAngle = -Math.PI / 2 - visProgress * Math.PI * 2
       const tipX = sx + Math.cos(tipAngle) * drawRadius
       const tipY = sy + Math.sin(tipAngle) * drawRadius
 
@@ -2567,17 +2591,38 @@ function drawPlayer(player: Player): void {
 
   // Shield restore — detect trigger
   if (prevShieldCharges === 0 && player.shieldCharges > 0) {
-    shieldRestoreAnim = 0.47
-    shieldActivateSweep = 0.3
+    shieldRestoreAnim = 0.59
+    shieldActivateSweep = 0.36
+    shieldFuseCompletionFlash = 0.55
+
+    // Burst particles from the top (12 o'clock) where fuse completes
+    const topX = player.x
+    const topY = player.y - drawRadius
+    for (let p = 0; p < 14; p++) {
+      const a = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 0.8
+      const speed = 100 + Math.random() * 150
+      spawnParticle(topX, topY,
+        Math.cos(a) * speed, Math.sin(a) * speed,
+        255, 150 + Math.floor(Math.random() * 80), 230,
+        0.2 + Math.random() * 0.15, 3.5 + Math.random() * 3)
+    }
+    // White-hot center sparks
+    for (let p = 0; p < 6; p++) {
+      const a = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 0.5
+      const speed = 140 + Math.random() * 100
+      spawnParticle(topX, topY,
+        Math.cos(a) * speed, Math.sin(a) * speed,
+        255, 240, 255, 0.15 + Math.random() * 0.1, 2.5 + Math.random() * 2)
+    }
   }
   prevShieldCharges = player.shieldCharges
 
   // Shield restore — spiral converge + impact shockwave
   if (shieldRestoreAnim > 0) {
     shieldRestoreAnim -= frameDt
-    const totalDur = 0.47
-    const convergeDur = 0.28  // spiral phase
-    const shockDur = 0.19     // shockwave phase
+    const totalDur = 0.59
+    const convergeDur = 0.35  // spiral phase
+    const shockDur = 0.24     // shockwave phase
     const elapsed = totalDur - shieldRestoreAnim
 
     if (elapsed < convergeDur) {
@@ -2659,9 +2704,9 @@ function drawPlayer(player: Player): void {
   // Shield activation sweep — pink band top to bottom
   if (shieldActivateSweep > 0) {
     shieldActivateSweep -= frameDt
-    const sweepT = 1 - (shieldActivateSweep / 0.3)  // 0→1
+    const sweepT = 1 - (shieldActivateSweep / 0.36)  // 0→1
     const sweepY = sy - drawRadius + sweepT * drawRadius * 2  // top to bottom
-    const bandH = drawRadius * 0.35  // band thickness
+    const bandH = drawRadius * 0.75  // band thickness
 
     ctx.save()
     // Clip to player body circle
@@ -2669,25 +2714,67 @@ function drawPlayer(player: Player): void {
     ctx.arc(sx, sy, drawRadius + 1, 0, Math.PI * 2)
     ctx.clip()
 
-    // Bright pink band
+    const fadeA = 1 - sweepT * 0.5
+
+    // Top-to-bottom band
     const bandGrad = ctx.createLinearGradient(sx, sweepY - bandH, sx, sweepY + bandH)
     bandGrad.addColorStop(0, 'rgba(255, 50, 200, 0)')
-    bandGrad.addColorStop(0.3, `rgba(255, 100, 220, ${0.6 * (1 - sweepT * 0.5)})`)
-    bandGrad.addColorStop(0.5, `rgba(255, 200, 255, ${0.8 * (1 - sweepT * 0.5)})`)
-    bandGrad.addColorStop(0.7, `rgba(255, 100, 220, ${0.6 * (1 - sweepT * 0.5)})`)
+    bandGrad.addColorStop(0.3, `rgba(255, 100, 220, ${0.75 * fadeA})`)
+    bandGrad.addColorStop(0.5, `rgba(255, 220, 255, ${0.9 * fadeA})`)
+    bandGrad.addColorStop(0.7, `rgba(255, 100, 220, ${0.75 * fadeA})`)
     bandGrad.addColorStop(1, 'rgba(255, 50, 200, 0)')
     ctx.fillStyle = bandGrad
     ctx.fillRect(sx - drawRadius, sweepY - bandH, drawRadius * 2, bandH * 2)
 
-    // Sharp leading edge line
+    // Bottom-to-top band
+    const sweepY2 = sy + drawRadius - sweepT * drawRadius * 2
+    const bandGrad2 = ctx.createLinearGradient(sx, sweepY2 - bandH, sx, sweepY2 + bandH)
+    bandGrad2.addColorStop(0, 'rgba(255, 50, 200, 0)')
+    bandGrad2.addColorStop(0.3, `rgba(255, 100, 220, ${0.75 * fadeA})`)
+    bandGrad2.addColorStop(0.5, `rgba(255, 220, 255, ${0.9 * fadeA})`)
+    bandGrad2.addColorStop(0.7, `rgba(255, 100, 220, ${0.75 * fadeA})`)
+    bandGrad2.addColorStop(1, 'rgba(255, 50, 200, 0)')
+    ctx.fillStyle = bandGrad2
+    ctx.fillRect(sx - drawRadius, sweepY2 - bandH, drawRadius * 2, bandH * 2)
+
+    // Sharp leading edge lines
     ctx.beginPath()
     ctx.moveTo(sx - drawRadius, sweepY)
     ctx.lineTo(sx + drawRadius, sweepY)
+    ctx.moveTo(sx - drawRadius, sweepY2)
+    ctx.lineTo(sx + drawRadius, sweepY2)
     ctx.strokeStyle = `rgba(255, 220, 255, ${0.9 * (1 - sweepT * 0.6)})`
     ctx.lineWidth = 2
     ctx.stroke()
 
     ctx.restore()
+  }
+
+  // Fuse completion flash at 12 o'clock — draws on top of everything
+  if (shieldFuseCompletionFlash > 0) {
+    shieldFuseCompletionFlash -= frameDt
+    const ft = Math.max(0, shieldFuseCompletionFlash / 0.55)  // 1→0 over 0.55s
+    const topX = sx
+    const topY = sy - drawRadius
+    // Big expanding ring
+    const ringR = 30 + (1 - ft) * 100
+    ctx.beginPath()
+    ctx.arc(topX, topY, Math.max(0, ringR), 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(200, 80, 255, ${ft * ft * 0.9})`
+    ctx.lineWidth = Math.max(0.1, 7 * ft)
+    ctx.stroke()
+    // Bright glow dot
+    ctx.beginPath()
+    ctx.arc(topX, topY, Math.max(0, 40 * ft), 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(220, 140, 255, ${ft * 0.9})`
+    ctx.fill()
+    // Second smaller ring
+    const ringR2 = 15 + (1 - ft) * 55
+    ctx.beginPath()
+    ctx.arc(topX, topY, Math.max(0, ringR2), 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(180, 100, 255, ${ft * ft * 0.6})`
+    ctx.lineWidth = Math.max(0.1, 2 * ft)
+    ctx.stroke()
   }
 
   // Beat anticipation — 10 chained rings shrinking toward player body
@@ -2832,7 +2919,7 @@ function drawPlayer(player: Player): void {
       }
       // Ready — green dot with beat-pulsing glow
       const glowPulse = 0.12 + globalBeatPulse * 0.15
-      const dotR = 7.5 * bounce
+      const dotR = 8.6 * bounce
       const glowSize = (14 + globalBeatPulse * 4) * bounce
       ctx.beginPath()
       ctx.arc(dotX, dotY, glowSize, 0, Math.PI * 2)
@@ -2849,13 +2936,13 @@ function drawPlayer(player: Player): void {
       // Charging — white pie in place
       const fill = 1 - (timer / (player.dashChargeTime * player.modifiers.dashChargeMult))
       ctx.beginPath()
-      ctx.arc(dotX, dotY, 7.5, 0, Math.PI * 2)
+      ctx.arc(dotX, dotY, 8.6, 0, Math.PI * 2)
       ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'
       ctx.fill()
       if (fill > 0) {
         ctx.beginPath()
         ctx.moveTo(dotX, dotY)
-        ctx.arc(dotX, dotY, 7.5, -Math.PI / 2, -Math.PI / 2 + fill * Math.PI * 2)
+        ctx.arc(dotX, dotY, 8.6, -Math.PI / 2, -Math.PI / 2 + fill * Math.PI * 2)
         ctx.closePath()
         ctx.fillStyle = 'rgba(255, 255, 255, 0.7)'
         ctx.fill()
@@ -5393,12 +5480,12 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
 
   // Hit flash vignette — brief red flash on edges when taking HP damage (not shield break)
   if (player.hitFlash > 0 && player.shieldBreakFlash <= 0 && getPhase() === 'playing') {
-    const hitT = player.hitFlash / HIT_FLASH_DURATION  // 1→0
-    const flashAlpha = hitT * 0.3  // linear, gentler falloff
-    const hitVig = ctx.createRadialGradient(width / 2, height / 2, height * 0.35, width / 2, height / 2, height * 0.85)
+    const hitT = Math.min(1, player.hitFlash / (HIT_FLASH_DURATION * 0.75))  // stretches the flash 25% longer
+    const flashAlpha = hitT * 0.3
+    const hitVig = ctx.createRadialGradient(width / 2, height / 2, height * 0.25, width / 2, height / 2, height * 0.8)
     hitVig.addColorStop(0, 'rgba(0, 0, 0, 0)')
-    hitVig.addColorStop(0.7, 'rgba(0, 0, 0, 0)')
-    hitVig.addColorStop(0.85, `rgba(200, 20, 20, ${flashAlpha * 0.4})`)
+    hitVig.addColorStop(0.55, 'rgba(0, 0, 0, 0)')
+    hitVig.addColorStop(0.75, `rgba(200, 20, 20, ${flashAlpha * 0.4})`)
     hitVig.addColorStop(1, `rgba(255, 30, 30, ${flashAlpha})`)
     ctx.fillStyle = hitVig
     ctx.fillRect(0, 0, width, height)
