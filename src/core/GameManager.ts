@@ -15,7 +15,7 @@ import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat } from '../audio/PatternClock.ts'
-import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn } from '../audio/AudioEngine.ts'
+import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit } from '../audio/AudioEngine.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
 import { getScoresForChallenge, fetchOnlineScores } from '../game/HighScores.ts'
 import { getActiveChallenge } from '../game/ChallengeBuilder.ts'
@@ -76,11 +76,12 @@ function findClearSpawnPos(x: number, y: number, radius: number, enemies: Enemy[
 }
 
 on('totem:spawn', (totemEnemy: Enemy) => {
-  const typeName = totemEnemy.totemSpawn
-  if (!typeName) return
-  const type = getEnemyType(typeName)
+  const raw = totemEnemy.totemSpawn
+  if (!raw) return
+  const [typeName, countStr] = raw.split(':')
+  const type = getEnemyType(typeName!.trim())
   if (!type) return
-  // Spawn on the far side of the totem from the player — try multiple angles if blocked
+  const count = parseInt(countStr ?? '1') || 1
   const player = getPlayer()
   const dx = totemEnemy.x - player.x
   const dy = totemEnemy.y - player.y
@@ -90,38 +91,35 @@ on('totem:spawn', (totemEnemy: Enemy) => {
   const dist = (totemEnemy.radius + spawnRadius + 60) * 1.38
   const enemies = getEnemies()
 
-  // Try 8 angles, starting from away-from-player, pick the one with least overlap
-  let bestX = totemEnemy.x, bestY = totemEnemy.y, bestOverlap = Infinity
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const angle = baseAngle + (attempt * Math.PI / 4) + (Math.random() - 0.5) * 0.3
-    const rawX = totemEnemy.x + Math.cos(angle) * dist
-    const rawY = totemEnemy.y + Math.sin(angle) * dist
-    const clamped = clampToArena(rawX, rawY, spawnRadius)
-    const pos = findClearSpawnPos(clamped.x, clamped.y, spawnRadius, enemies, player)
-
-    // Measure total overlap at this position
-    let overlap = 0
-    for (const e of enemies) {
-      if (!e.alive || e.dying) continue
-      const edx = pos.x - e.x, edy = pos.y - e.y
-      const eDist = Math.sqrt(edx * edx + edy * edy)
-      const minDist = spawnRadius + e.radius
-      if (eDist < minDist) overlap += minDist - eDist
+  for (let s = 0; s < count; s++) {
+    const spawnBaseAngle = baseAngle + (s / count) * Math.PI * 2
+    let bestX = totemEnemy.x, bestY = totemEnemy.y, bestOverlap = Infinity
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const angle = spawnBaseAngle + (attempt * Math.PI / 4) + (Math.random() - 0.5) * 0.3
+      const rawX = totemEnemy.x + Math.cos(angle) * dist
+      const rawY = totemEnemy.y + Math.sin(angle) * dist
+      const clamped = clampToArena(rawX, rawY, spawnRadius)
+      const pos = findClearSpawnPos(clamped.x, clamped.y, spawnRadius, enemies, player)
+      let overlap = 0
+      for (const e of enemies) {
+        if (!e.alive || e.dying) continue
+        const edx = pos.x - e.x, edy = pos.y - e.y
+        const eDist = Math.sqrt(edx * edx + edy * edy)
+        const minDist = spawnRadius + e.radius
+        if (eDist < minDist) overlap += minDist - eDist
+      }
+      const wallDist = Math.sqrt((rawX - pos.x) ** 2 + (rawY - pos.y) ** 2)
+      overlap += wallDist * 0.5
+      if (overlap < bestOverlap) {
+        bestOverlap = overlap
+        bestX = pos.x
+        bestY = pos.y
+      }
+      if (overlap < 1) break
     }
-    // Check wall proximity (how much the clamp moved us)
-    const wallDist = Math.sqrt((rawX - pos.x) ** 2 + (rawY - pos.y) ** 2)
-    overlap += wallDist * 0.5
-
-    if (overlap < bestOverlap) {
-      bestOverlap = overlap
-      bestX = pos.x
-      bestY = pos.y
-    }
-    if (overlap < 1) break  // good enough
+    enemies.push(createEnemy(bestX, bestY, type))
+    addSpawnEffect(totemEnemy.x, totemEnemy.y, totemEnemy.radius, bestX, bestY, type.color)
   }
-
-  enemies.push(createEnemy(bestX, bestY, type))
-  addSpawnEffect(totemEnemy.x, totemEnemy.y, totemEnemy.radius, bestX, bestY, type.color)
   playTotemSpawn()
   playHit()
 })
@@ -213,7 +211,43 @@ on('player:beatDash', (player: Player) => {
         enemy.hp -= 1
         enemy.hitFlash = 0.2
         enemy.displayHp = enemy.hp
+        playShrineHit()
         const shrineColor = enemy.color
+
+        // Edge burst particles — localized to the segment that just died
+        const er = parseInt(shrineColor.slice(1, 3), 16)
+        const eg = parseInt(shrineColor.slice(3, 5), 16)
+        const eb = parseInt(shrineColor.slice(5, 7), 16)
+        const segments = enemy.maxHp
+        const gapAngle = segments > 1 ? 0.08 : 0
+        const segAngle = (Math.PI * 2 - gapAngle * segments) / segments
+        const deadSegIdx = enemy.hp  // this segment just died (0-indexed after decrement)
+        const segMid = -Math.PI / 2 + (deadSegIdx + 0.5) * (segAngle + gapAngle)
+        const segSpread = segAngle * 0.5
+        for (let p = 0; p < 18; p++) {
+          const a = segMid + (Math.random() - 0.5) * segSpread * 2
+          const edgeDist = enemy.radius * (0.85 + Math.random() * 0.15)
+          const px = enemy.x + Math.cos(a) * edgeDist
+          const py = enemy.y + Math.sin(a) * edgeDist
+          const outA = Math.atan2(py - enemy.y, px - enemy.x)
+          const speed = 150 + Math.random() * 200
+          Renderer.spawnParticleExport(px, py,
+            Math.cos(outA) * speed + (Math.random() - 0.5) * 60,
+            Math.sin(outA) * speed + (Math.random() - 0.5) * 60,
+            Math.min(255, er + 40), Math.min(255, eg + 20), Math.min(255, eb + 20),
+            0.3 + Math.random() * 0.2, 4 + Math.random() * 3)
+        }
+        // White-hot sparks from the segment
+        for (let p = 0; p < 6; p++) {
+          const a = segMid + (Math.random() - 0.5) * segSpread
+          const px = enemy.x + Math.cos(a) * enemy.radius
+          const py = enemy.y + Math.sin(a) * enemy.radius
+          const outA = Math.atan2(py - enemy.y, px - enemy.x)
+          const speed = 200 + Math.random() * 250
+          Renderer.spawnParticleExport(px, py,
+            Math.cos(outA) * speed, Math.sin(outA) * speed,
+            255, 255, 255, 0.2 + Math.random() * 0.1, 2.5 + Math.random() * 2)
+        }
 
         // Spawn XP orbs per hit
         const totalOrbs = enemy.shrineXpCount + enemy.shrineHpCount
@@ -236,18 +270,22 @@ on('player:beatDash', (player: Player) => {
           Renderer.addSpawnEffect(enemy.x, enemy.y, enemy.radius, ox, oy, shrineColor)
         }
 
-        // Spawn enemy per hit
+        // Spawn enemies per hit — supports "name:count" format
         if (enemy.shrineSpawnEnemy) {
-          const spawnType = getEnemyType(enemy.shrineSpawnEnemy)
+          const [spawnName, spawnCountStr] = enemy.shrineSpawnEnemy.split(':')
+          const spawnType = getEnemyType(spawnName!.trim())
+          const spawnCount = parseInt(spawnCountStr ?? '1') || 1
           if (spawnType) {
-            const spawnAngle = Math.atan2(dy, dx) + Math.PI  // away from player
-            const spawnDist = (enemy.radius + (spawnType.radius ?? 40) + 30) * 1.38
-            const sx = enemy.x + Math.cos(spawnAngle) * spawnDist
-            const sy = enemy.y + Math.sin(spawnAngle) * spawnDist
-            const clamped = clampToArena(sx, sy, spawnType.radius ?? 40)
-            const newEnemy = createEnemy(clamped.x, clamped.y, spawnType)
-            getEnemies().push(newEnemy)
-            Renderer.addSpawnEffect(enemy.x, enemy.y, enemy.radius, clamped.x, clamped.y, spawnType.color)
+            for (let s = 0; s < spawnCount; s++) {
+              const spawnAngle = Math.atan2(dy, dx) + Math.PI + (s / spawnCount) * Math.PI * 2
+              const spawnDist = (enemy.radius + (spawnType.radius ?? 40) + 30) * 1.38
+              const spawnX = enemy.x + Math.cos(spawnAngle) * spawnDist
+              const spawnY = enemy.y + Math.sin(spawnAngle) * spawnDist
+              const clamped = clampToArena(spawnX, spawnY, spawnType.radius ?? 40)
+              const newEnemy = createEnemy(clamped.x, clamped.y, spawnType)
+              getEnemies().push(newEnemy)
+              Renderer.addSpawnEffect(enemy.x, enemy.y, enemy.radius, clamped.x, clamped.y, spawnType.color)
+            }
           }
         }
 

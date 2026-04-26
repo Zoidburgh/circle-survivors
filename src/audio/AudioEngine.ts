@@ -591,45 +591,57 @@ export function playBeatTick(): void {
   playKick()
 }
 
-export function playShrineActivate(isXP: boolean): void {
+export function playShrineHit(): void {
   ensureContext()
   const c = ctx!
   const t = c.currentTime
 
-  // Satisfying collect burst — rising sparkle
-  const freq = isXP ? rPitch(500) : rPitch(600)
-  const freq2 = isXP ? rPitch(750) : rPitch(900)
-  const osc = c.createOscillator()
-  const osc2 = c.createOscillator()
-  const gain = c.createGain()
-  osc.type = 'sine'
-  osc2.type = 'sine'
-  osc.frequency.setValueAtTime(freq, t)
-  osc.frequency.exponentialRampToValueAtTime(freq * 1.5, t + 0.15)
-  osc2.frequency.setValueAtTime(freq2, t + 0.05)
-  osc2.frequency.exponentialRampToValueAtTime(freq2 * 1.3, t + 0.18)
-  gain.gain.setValueAtTime(rVol(0.3), t)
-  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25)
-  osc.connect(gain)
-  osc2.connect(gain)
-  gain.connect(reverbInput)
-  osc.start(t)
-  osc2.start(t + 0.05)
-  osc.stop(t + 0.25)
-  osc2.stop(t + 0.25)
+  // Crystalline chime — rising, rewarding
+  const chime = c.createOscillator()
+  const chime2 = c.createOscillator()
+  const chimeGain = c.createGain()
+  chime.type = 'sine'
+  chime2.type = 'sine'
+  chime.frequency.setValueAtTime(rPitch(700), t)
+  chime.frequency.exponentialRampToValueAtTime(rPitch(1100), t + 0.12)
+  chime2.frequency.setValueAtTime(rPitch(1050), t)  // fifth above
+  chime2.frequency.exponentialRampToValueAtTime(rPitch(1650), t + 0.12)
+  chimeGain.gain.setValueAtTime(rVol(0.25), t)
+  chimeGain.gain.exponentialRampToValueAtTime(0.001, t + 0.25)
+  chime.connect(chimeGain)
+  chime2.connect(chimeGain)
+  chimeGain.connect(reverbInput)
+  chime.start(t)
+  chime2.start(t)
+  chime.stop(t + 0.25)
+  chime2.stop(t + 0.25)
 
-  // Sub thump for weight
-  const sub = c.createOscillator()
-  const subGain = c.createGain()
-  sub.type = 'sine'
-  sub.frequency.setValueAtTime(rPitch(80), t)
-  sub.frequency.exponentialRampToValueAtTime(rPitch(40), t + 0.12)
-  subGain.gain.setValueAtTime(rVol(0.25), t)
-  subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12)
-  sub.connect(subGain)
-  subGain.connect(master)
-  sub.start(t)
-  sub.stop(t + 0.12)
+  // Warm thud — grounds it, not too heavy
+  const thud = c.createOscillator()
+  const thudGain = c.createGain()
+  thud.type = 'triangle'
+  thud.frequency.setValueAtTime(rPitch(150), t)
+  thud.frequency.exponentialRampToValueAtTime(rPitch(80), t + 0.1)
+  thudGain.gain.setValueAtTime(rVol(0.3), t)
+  thudGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12)
+  thud.connect(thudGain)
+  thudGain.connect(master)
+  thud.start(t)
+  thud.stop(t + 0.12)
+
+  // Shimmer tail — sparkly reverb
+  const shimmer = c.createOscillator()
+  const shimmerGain = c.createGain()
+  shimmer.type = 'sine'
+  shimmer.frequency.setValueAtTime(rPitch(1800), t + 0.05)
+  shimmer.frequency.exponentialRampToValueAtTime(rPitch(2400), t + 0.2)
+  shimmerGain.gain.setValueAtTime(0.001, t + 0.05)
+  shimmerGain.gain.linearRampToValueAtTime(rVol(0.08), t + 0.08)
+  shimmerGain.gain.exponentialRampToValueAtTime(0.001, t + 0.25)
+  shimmer.connect(shimmerGain)
+  shimmerGain.connect(reverbInput)
+  shimmer.start(t + 0.05)
+  shimmer.stop(t + 0.25)
 }
 
 export function playDashReady(): void {

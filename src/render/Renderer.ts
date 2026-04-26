@@ -3079,46 +3079,191 @@ function drawShrine(enemy: Enemy, player: Player): void {
   const bp = globalBeatPulse
   const alive = enemy.hp > 0
 
-  // Ground fill — subtle
+  // Ground fill — subtle zone indicator
   ctx.beginPath()
   ctx.arc(sx, sy, r, 0, Math.PI * 2)
-  ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, ${alive ? 0.06 + bp * 0.03 : 0.02})`
+  ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, ${alive ? 0.05 + bp * 0.02 : 0.02})`
   ctx.fill()
 
-  // HP arc — shows remaining hits as a filling arc from top
-  if (alive && hpFrac < 1) {
-    // Dark background arc (full circle)
-    ctx.beginPath()
-    ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.1)`
-    ctx.lineWidth = 4
-    ctx.stroke()
-    // Remaining HP arc
-    ctx.beginPath()
-    ctx.arc(sx, sy, r, -Math.PI / 2, -Math.PI / 2 + hpFrac * Math.PI * 2)
-    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.5)`
-    ctx.lineWidth = 4
-    ctx.stroke()
+  // Segmented outer ring ��� each HP is a distinct arc with gaps
+  // Segmented outer ring — inset so outer edge aligns with collision boundary
+  const strokeW = 5
+  const drawR = r - strokeW / 2
+
+  if (alive && enemy.maxHp <= 30) {
+    const segments = enemy.maxHp
+    const gapAngle = segments > 1 ? 0.08 : 0
+    const segAngle = (Math.PI * 2 - gapAngle * segments) / segments
+    const startAngle = -Math.PI / 2
+
+    for (let i = 0; i < segments; i++) {
+      const segStart = startAngle + i * (segAngle + gapAngle)
+      const segEnd = segStart + segAngle
+      const isDead = i >= enemy.hp
+
+      ctx.beginPath()
+      ctx.arc(sx, sy, drawR, segStart, segEnd)
+
+      if (isDead) {
+        // Glow behind dotted line
+        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.1)`
+        ctx.lineWidth = strokeW + 4
+        ctx.stroke()
+        // Fast animated dotted line
+        ctx.save()
+        ctx.setLineDash([4, 4])
+        ctx.lineDashOffset = -gameTimeMs / 20
+        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.5)`
+        ctx.lineWidth = strokeW
+        ctx.stroke()
+        ctx.restore()
+        continue
+      } else if (playerInside) {
+        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.8 + bp * 0.2})`
+        ctx.lineWidth = strokeW + 1
+      } else {
+        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.5 + bp * 0.15})`
+        ctx.lineWidth = strokeW
+      }
+      ctx.stroke()
+    }
   } else if (alive) {
-    // Full HP — solid ring
+    ctx.save()
+    ctx.setLineDash([8, 6])
+    ctx.lineDashOffset = -gameTimeMs / 40
     ctx.beginPath()
-    ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.3 + bp * 0.15})`
-    ctx.lineWidth = 3
+    ctx.arc(sx, sy, drawR, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${playerInside ? 0.7 + bp * 0.2 : 0.3 + bp * 0.1})`
+    ctx.lineWidth = playerInside ? strokeW + 1 : strokeW
     ctx.stroke()
+    ctx.restore()
   }
 
-  // Player-inside glow
+  // Idle — inviting pulse when player is NOT inside
+  if (alive && !playerInside) {
+    // Inward pulse ring — shrinks from edge to center on beat cycle
+    const pulseT = (gameTimeMs % 1500) / 1500  // 0→1 over 1.5s
+    const pulseR = drawR * (1 - pulseT * 0.7)  // shrinks inward
+    const pulseAlpha = (1 - pulseT) * (1 - pulseT) * 0.2
+    ctx.beginPath()
+    ctx.arc(sx, sy, pulseR, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${pulseAlpha})`
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+
+    // Breathing center — 3 concentric rings synced to beat, staggered sizes
+    for (let ring = 0; ring < 3; ring++) {
+      const ringR = r * (0.12 + ring * 0.12 + bp * 0.25)
+      // Glow behind
+      ctx.beginPath()
+      ctx.arc(sx, sy, ringR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.04 + bp * (0.1 - ring * 0.02)})`
+      ctx.lineWidth = 5 - ring * 0.5
+      ctx.stroke()
+      // Core
+      ctx.beginPath()
+      ctx.arc(sx, sy, ringR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.12 + bp * (0.25 - ring * 0.05)})`
+      ctx.lineWidth = 2 - ring * 0.3
+      ctx.stroke()
+    }
+  }
+
+  // Player-inside targeting reticle — spinning, pulsing lock-on
   if (alive && playerInside) {
+    const spinSpeed = gameTimeMs / 2000  // slow rotation
+    const reticleCount = 6
+    const innerR = r * 0.2
+    const outerR = r * 0.9
+
+    // Sharp beat flash — spikes to 1 then drops fast
+    const beatHit = bp > 0.3 ? Math.pow(bp, 0.3) : bp * 2  // sharp spike
+
+    // Glow fill when inside — flashes on beat
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.6 + bp * 0.3})`
+    ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.06 + beatHit * 0.12})`
+    ctx.fill()
+
+    // Spinning radial lines with glow — flash on beat
+    for (let i = 0; i < reticleCount; i++) {
+      const a = (i / reticleCount) * Math.PI * 2 + spinSpeed
+      const lineOuter = outerR - beatHit * r * 0.15
+      const lineInner = innerR + beatHit * r * 0.1
+      // Glow behind line
+      ctx.beginPath()
+      ctx.moveTo(sx + Math.cos(a) * lineInner, sy + Math.sin(a) * lineInner)
+      ctx.lineTo(sx + Math.cos(a) * lineOuter, sy + Math.sin(a) * lineOuter)
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.05 + beatHit * 0.2})`
+      ctx.lineWidth = 6
+      ctx.stroke()
+      // Core line
+      ctx.beginPath()
+      ctx.moveTo(sx + Math.cos(a) * lineInner, sy + Math.sin(a) * lineInner)
+      ctx.lineTo(sx + Math.cos(a) * lineOuter, sy + Math.sin(a) * lineOuter)
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.2 + beatHit * 0.5})`
+      ctx.lineWidth = 2
+      ctx.stroke()
+    }
+
+    // Inner ring — contracts sharply on beat, glowing
+    const innerRingR = r * (0.38 - beatHit * 0.12)
+    ctx.beginPath()
+    ctx.arc(sx, sy, innerRingR, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.1 + beatHit * 0.3})`
     ctx.lineWidth = 4
     ctx.stroke()
     ctx.beginPath()
-    ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.08 + bp * 0.06})`
-    ctx.fill()
+    ctx.arc(sx, sy, innerRingR, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.2 + beatHit * 0.5})`
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+
+    // Mid radius dashed ring — slow spin
+    ctx.save()
+    ctx.setLineDash([4, 8])
+    ctx.beginPath()
+    ctx.arc(sx, sy, r * 0.6, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.1 + beatHit * 0.2})`
+    ctx.lineWidth = 1.5
+    ctx.lineDashOffset = -gameTimeMs / 100
+    ctx.stroke()
+    ctx.restore()
+
+    // Red "HIT NOW" flash — targeting reticle goes red at ring peak
+    const peakTarget = ATTACK_EXPAND_TIME - 0.05  // 50ms earlier
+    const nearPeak = player.attackTimer >= 0 && Math.abs(player.attackTimer - peakTarget) < 0.15
+    if (nearPeak) {
+      const peakDist = Math.abs(player.attackTimer - peakTarget) / 0.15
+      const redAlpha = (1 - peakDist)
+      // Inner ring goes bright red with glow
+      ctx.beginPath()
+      ctx.arc(sx, sy, innerRingR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 40, 40, ${redAlpha * 0.3})`
+      ctx.lineWidth = 12
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(sx, sy, innerRingR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 60, 50, ${redAlpha * 0.9})`
+      ctx.lineWidth = 3
+      ctx.stroke()
+      // Radial lines flash bright red with glow
+      for (let i = 0; i < reticleCount; i++) {
+        const a = (i / reticleCount) * Math.PI * 2 + spinSpeed
+        ctx.beginPath()
+        ctx.moveTo(sx + Math.cos(a) * innerR, sy + Math.sin(a) * innerR)
+        ctx.lineTo(sx + Math.cos(a) * outerR, sy + Math.sin(a) * outerR)
+        ctx.strokeStyle = `rgba(255, 40, 40, ${redAlpha * 0.25})`
+        ctx.lineWidth = 8
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.moveTo(sx + Math.cos(a) * innerR, sy + Math.sin(a) * innerR)
+        ctx.lineTo(sx + Math.cos(a) * outerR, sy + Math.sin(a) * outerR)
+        ctx.strokeStyle = `rgba(255, 60, 50, ${redAlpha * 0.7})`
+        ctx.lineWidth = 2.5
+        ctx.stroke()
+      }
+    }
   }
 
   // Hit flash
@@ -3126,37 +3271,8 @@ function drawShrine(enemy: Enemy, player: Player): void {
     const ft = enemy.hitFlash / 0.2
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(255, 255, 255, ${ft * 0.2})`
+    ctx.fillStyle = `rgba(255, 255, 255, ${ft * 0.25})`
     ctx.fill()
-  }
-
-  // HP segment dividers
-  if (alive && enemy.maxHp <= 20) {
-    for (let i = 1; i < enemy.maxHp; i++) {
-      const segAngle = -Math.PI / 2 + (i / enemy.maxHp) * Math.PI * 2
-      const inner = r * 0.7
-      ctx.beginPath()
-      ctx.moveTo(sx + Math.cos(segAngle) * inner, sy + Math.sin(segAngle) * inner)
-      ctx.lineTo(sx + Math.cos(segAngle) * r, sy + Math.sin(segAngle) * r)
-      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.2)`
-      ctx.lineWidth = 1
-      ctx.stroke()
-    }
-  }
-
-  // Tick marks — 8 around edge
-  if (alive) {
-    for (let i = 0; i < 8; i++) {
-      const ta = (i / 8) * Math.PI * 2
-      const isMajor = i % 2 === 0
-      const inner = r - (isMajor ? 8 : 5)
-      ctx.beginPath()
-      ctx.moveTo(sx + Math.cos(ta) * inner, sy + Math.sin(ta) * inner)
-      ctx.lineTo(sx + Math.cos(ta) * r, sy + Math.sin(ta) * r)
-      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${isMajor ? 0.25 : 0.12})`
-      ctx.lineWidth = isMajor ? 2 : 1
-      ctx.stroke()
-    }
   }
 }
 
