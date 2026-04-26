@@ -15,7 +15,7 @@ import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat } from '../audio/PatternClock.ts'
-import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn } from '../audio/AudioEngine.ts'
+import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineActivate } from '../audio/AudioEngine.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
 import { getScoresForChallenge, fetchOnlineScores } from '../game/HighScores.ts'
 import { getActiveChallenge } from '../game/ChallengeBuilder.ts'
@@ -202,6 +202,7 @@ on('player:beatDash', (player: Player) => {
   const enemies = getEnemies()
   for (const enemy of enemies) {
     if (!enemy.alive || enemy.dying) continue
+    if (enemy.isShrine) continue  // shrines handled separately below
     if (enemy.summon) {
       // Check if shockwave hits active summon node
       const N = enemy.summonNodes
@@ -271,6 +272,32 @@ on('player:beatDash', (player: Player) => {
       }
     }
   }
+  // Check shrines — player must be FULLY inside + beat-dash
+  const playerRadius = getEffectiveRadius(player) * player.modifiers.sizeMult
+  for (const enemy of enemies) {
+    if (!enemy.isShrine || !enemy.alive || enemy.shrineTimer > 0) continue
+    const sdx = enemy.x - player.x
+    const sdy = enemy.y - player.y
+    const dist = Math.sqrt(sdx * sdx + sdy * sdy)
+    const effectiveRadius = enemy.radius * player.modifiers.shrineSizeMult
+    if (dist + playerRadius <= effectiveRadius) {
+      const count = Math.round(enemy.shrineSpawnCount * player.modifiers.shrineSpawnMult)
+      if (enemy.shrineType === 'xp') {
+        for (let i = 0; i < count; i++) {
+          const angle = (i / count) * Math.PI * 2
+          const orbDist = enemy.radius * 0.4
+          spawnOrb(enemy.x + Math.cos(angle) * orbDist, enemy.y + Math.sin(angle) * orbDist, 1, 'xp')
+        }
+      } else {
+        player.hp = Math.min(player.hp + count, player.maxHp)
+      }
+      enemy.shrineTimer = enemy.shrineCooldown * player.modifiers.shrineCooldownMult
+      enemy.shrineActivationFlash = 0.5
+      emit('shrine:activate', enemy)
+      playShrineActivate(enemy.shrineType === 'xp')
+    }
+  }
+
   // SFX + Visual — shockwave flash on top of everything + particles
   playBeatDash()
   Renderer.triggerBeatDashFlash(player.x, player.y, shockRadius)

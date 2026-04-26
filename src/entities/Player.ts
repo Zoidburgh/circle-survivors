@@ -38,6 +38,9 @@ export interface PlayerModifiers {
   shieldRechargeMult: number
   sizeMult: number
   beatBlastMult: number
+  shrineCooldownMult: number
+  shrineSizeMult: number
+  shrineSpawnMult: number
 }
 
 export function createDefaultModifiers(): PlayerModifiers {
@@ -52,6 +55,9 @@ export function createDefaultModifiers(): PlayerModifiers {
     shieldRechargeMult: 1.0,
     sizeMult: 1.0,
     beatBlastMult: 1.0,
+    shrineCooldownMult: 1.0,
+    shrineSizeMult: 1.0,
+    shrineSpawnMult: 1.0,
   }
 }
 

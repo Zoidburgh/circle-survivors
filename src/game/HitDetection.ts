@@ -68,6 +68,7 @@ export function initHitDetection(): void {
         if (!('hp' in entity)) continue  // skip orbs
         const enemy = entity as Enemy
         if (!enemy.alive || hitEnemies.has(enemy)) continue
+        if (enemy.isShrine) continue  // shrines can't be damaged
         if (enemy.summon) continue  // summoners only interact via their nodes
         const dist = distance({ x: sx, y: sy }, { x: enemy.x, y: enemy.y })
         // Also check blink destination if mid-phase

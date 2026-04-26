@@ -1039,6 +1039,12 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   updateAndDrawRevengeRings(lastDt)
   perfEnd('e_rings')
 
+  // Shrines — ground layer, drawn before enemy bodies
+  for (const enemy of enemies) {
+    if (!enemy.alive || !enemy.isShrine) continue
+    drawShrine(enemy, player)
+  }
+
   perfStart('e_bodies')
   for (const enemy of enemies) {
     if (!enemy.alive && !enemy.dying) continue
@@ -3052,7 +3058,95 @@ function drawPlayer(player: Player): void {
   }
 }
 
+function drawShrine(enemy: Enemy, player: Player): void {
+  const sx = enemy.x - camX
+  const sy = enemy.y - camY
+  const r = enemy.radius * enemy.spawnTimer  // grow in
+  if (r < 1) return
+  const ready = enemy.shrineTimer <= 0
+  const isXP = enemy.shrineType === 'xp'
+  const cr = parseInt(enemy.color.slice(1, 3), 16)
+  const cg = parseInt(enemy.color.slice(3, 5), 16)
+  const cb = parseInt(enemy.color.slice(5, 7), 16)
+
+  // Check if player is fully inside
+  const playerRadius = getEffectiveRadius(player) * player.modifiers.sizeMult
+  const dx = enemy.x - player.x
+  const dy = enemy.y - player.y
+  const dist = Math.sqrt(dx * dx + dy * dy)
+  const playerInside = dist + playerRadius <= r * player.modifiers.shrineSizeMult
+
+  // Beat pulse
+  const beatPulseR = ready ? r + globalBeatPulse * 6 : r
+
+  // Ground fill — translucent
+  ctx.beginPath()
+  ctx.arc(sx, sy, beatPulseR, 0, Math.PI * 2)
+  ctx.fillStyle = ready
+    ? `rgba(${cr}, ${cg}, ${cb}, ${playerInside ? 0.18 : 0.1})`
+    : `rgba(${cr}, ${cg}, ${cb}, 0.04)`
+  ctx.fill()
+
+  // Edge ring
+  ctx.beginPath()
+  ctx.arc(sx, sy, beatPulseR, 0, Math.PI * 2)
+  ctx.strokeStyle = ready
+    ? `rgba(${cr}, ${cg}, ${cb}, ${playerInside ? 0.7 : 0.4})`
+    : `rgba(${cr}, ${cg}, ${cb}, 0.15)`
+  ctx.lineWidth = ready ? (playerInside ? 3.5 : 2.5) : 1.5
+  ctx.stroke()
+
+  // Cooldown pie arc — fills up as cooldown completes
+  if (!ready) {
+    const cooldownProgress = 1 - (enemy.shrineTimer / (enemy.shrineCooldown * player.modifiers.shrineCooldownMult))
+    if (cooldownProgress > 0) {
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.arc(sx, sy, r * 0.9, -Math.PI / 2, -Math.PI / 2 + cooldownProgress * Math.PI * 2)
+      ctx.closePath()
+      ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, 0.08)`
+      ctx.fill()
+    }
+  }
+
+  // Center icon
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  const iconAlpha = ready ? 0.6 + globalBeatPulse * 0.2 : 0.2
+  ctx.font = `bold ${Math.floor(r * 0.4)}px monospace`
+  ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${iconAlpha})`
+  ctx.fillText(isXP ? 'XP' : '+', sx, sy + 2)
+  ctx.textBaseline = 'alphabetic'
+
+  // Player-inside ready indicator — pulsing inner ring
+  if (ready && playerInside) {
+    ctx.beginPath()
+    ctx.arc(sx, sy, r * 0.7, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.2 + globalBeatPulse * 0.3})`
+    ctx.lineWidth = 2
+    ctx.stroke()
+  }
+
+  // Activation burst
+  if (enemy.shrineActivationFlash > 0) {
+    const ft = enemy.shrineActivationFlash / 0.5
+    // Expanding ring
+    const burstR = r + (1 - ft) * r * 0.5
+    ctx.beginPath()
+    ctx.arc(sx, sy, Math.max(0, burstR), 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${ft * 0.7})`
+    ctx.lineWidth = Math.max(0.1, 4 * ft)
+    ctx.stroke()
+    // Center flash
+    ctx.beginPath()
+    ctx.arc(sx, sy, Math.max(0, r * 0.6 * ft), 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(255, 255, 255, ${ft * 0.5})`
+    ctx.fill()
+  }
+}
+
 function drawEnemy(enemy: Enemy, player: Player): void {
+  if (enemy.isShrine) return  // shrines drawn separately
   let sx = enemy.x - camX
   let sy = enemy.y - camY
   let r = enemy.radius

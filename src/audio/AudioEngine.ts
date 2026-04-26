@@ -591,6 +591,47 @@ export function playBeatTick(): void {
   playKick()
 }
 
+export function playShrineActivate(isXP: boolean): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  // Satisfying collect burst — rising sparkle
+  const freq = isXP ? rPitch(500) : rPitch(600)
+  const freq2 = isXP ? rPitch(750) : rPitch(900)
+  const osc = c.createOscillator()
+  const osc2 = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'sine'
+  osc2.type = 'sine'
+  osc.frequency.setValueAtTime(freq, t)
+  osc.frequency.exponentialRampToValueAtTime(freq * 1.5, t + 0.15)
+  osc2.frequency.setValueAtTime(freq2, t + 0.05)
+  osc2.frequency.exponentialRampToValueAtTime(freq2 * 1.3, t + 0.18)
+  gain.gain.setValueAtTime(rVol(0.3), t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.25)
+  osc.connect(gain)
+  osc2.connect(gain)
+  gain.connect(reverbInput)
+  osc.start(t)
+  osc2.start(t + 0.05)
+  osc.stop(t + 0.25)
+  osc2.stop(t + 0.25)
+
+  // Sub thump for weight
+  const sub = c.createOscillator()
+  const subGain = c.createGain()
+  sub.type = 'sine'
+  sub.frequency.setValueAtTime(rPitch(80), t)
+  sub.frequency.exponentialRampToValueAtTime(rPitch(40), t + 0.12)
+  subGain.gain.setValueAtTime(rVol(0.25), t)
+  subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12)
+  sub.connect(subGain)
+  subGain.connect(master)
+  sub.start(t)
+  sub.stop(t + 0.12)
+}
+
 export function playDashReady(): void {
   ensureContext()
   const c = ctx!

@@ -102,6 +102,12 @@ export interface Enemy {
   summonBeatCount: number         // monotonic beat counter
   summonLastBeat: number          // last whole beat seen
   summonActivationTimer: number   // >0 = activation animation playing, counts down
+  isShrine: boolean               // static ground pickup
+  shrineType: 'xp' | 'hp'
+  shrineCooldown: number          // configured cooldown duration
+  shrineSpawnCount: number        // orbs per activation
+  shrineTimer: number             // current cooldown remaining (0 = ready)
+  shrineActivationFlash: number   // visual timer for activation burst
 }
 
 /** Get the world positions a ring fires from (center or edge offsets) */
@@ -216,11 +222,24 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     summonBeatCount: 0,
     summonLastBeat: -1,
     summonActivationTimer: 0,
+    isShrine: type.isShrine ?? false,
+    shrineType: type.shrineType ?? 'xp',
+    shrineCooldown: type.shrineCooldown ?? 10,
+    shrineSpawnCount: type.shrineSpawnCount ?? 5,
+    shrineTimer: 0,
+    shrineActivationFlash: 0,
   }
 }
 
 export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: SpatialGrid): void {
   if (!enemy.alive || enemy.dying) return
+  // Shrines: only process spawn-in, cooldown, and activation flash
+  if (enemy.isShrine) {
+    if (enemy.spawnTimer < 1) enemy.spawnTimer = Math.min(1, enemy.spawnTimer + dt * 3)
+    if (enemy.shrineTimer > 0) enemy.shrineTimer = Math.max(0, enemy.shrineTimer - dt)
+    if (enemy.shrineActivationFlash > 0) enemy.shrineActivationFlash -= dt
+    return
+  }
   // Summon beat counter — must run before any early returns
   if (enemy.summon) {
     const cb = Math.floor(getLoopPosition())
@@ -648,7 +667,7 @@ export function rollDrop(enemy: Enemy): 'xp' | 'hp' | null {
 }
 
 export function damageEnemy(enemy: Enemy, amount: number): void {
-  if (enemy.dying) return
+  if (enemy.dying || enemy.isShrine) return
   enemy.hp -= amount
   enemy.hitFlash = HIT_FLASH_DURATION
   if (enemy.hp <= 0) {

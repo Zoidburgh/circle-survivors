@@ -689,6 +689,27 @@ function addEnemyForm(existing?: DesignedEnemy): void {
             <input id="ed-totem-check-${id}" type="checkbox" ${existing?.totemSpawn ? 'checked' : ''}>
             <span style="color:#66BB6A;font:11px monospace;">Totem</span>
           </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input id="ed-shrine-${id}" type="checkbox" ${existing?.isShrine ? 'checked' : ''}>
+            <span style="color:#FFD700;font:11px monospace;">Shrine</span>
+          </label>
+        </div>
+        <div id="ed-shrine-wrap-${id}" style="margin-top:4px;display:${existing?.isShrine ? 'block' : 'none'};">
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span style="color:#FFD700;font:10px monospace;">Type:</span>
+            <select id="ed-shrine-type-${id}" style="padding:2px 4px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+              <option value="xp" ${(existing?.shrineType ?? 'xp') === 'xp' ? 'selected' : ''}>XP</option>
+              <option value="hp" ${existing?.shrineType === 'hp' ? 'selected' : ''}>HP</option>
+            </select>
+          </div>
+          <div style="margin-top:3px;">
+            <span style="color:#FFD700;font:10px monospace;">Cooldown: <span id="ed-shrine-cooldown-val-${id}">${existing?.shrineCooldown ?? 10}</span>s</span>
+            <input id="ed-shrine-cooldown-${id}" type="range" min="1" max="30" step="1" value="${existing?.shrineCooldown ?? 10}" style="width:100%;">
+          </div>
+          <div style="margin-top:3px;">
+            <span style="color:#FFD700;font:10px monospace;">Spawn: <span id="ed-shrine-spawn-val-${id}">${existing?.shrineSpawnCount ?? 5}</span> orbs</span>
+            <input id="ed-shrine-spawn-${id}" type="range" min="1" max="20" step="1" value="${existing?.shrineSpawnCount ?? 5}" style="width:100%;">
+          </div>
         </div>
         <div id="ed-magnet-range-wrap-${id}" style="margin-top:6px;display:${existing?.magnet ? 'block' : 'none'};">
           <span style="color:#50B4FF;font:10px monospace;">Range: <span id="ed-magnet-range-val-${id}">${existing?.magnetRange ?? 200}</span></span>
@@ -1053,6 +1074,23 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     totemWrap.style.display = totemCheckbox.checked ? 'block' : 'none'
   })
 
+  // Shrine checkbox toggles shrine settings
+  const shrineCheckbox = body.querySelector(`#ed-shrine-${id}`) as HTMLInputElement
+  const shrineWrap = body.querySelector(`#ed-shrine-wrap-${id}`) as HTMLDivElement
+  const shrineCooldownInput = body.querySelector(`#ed-shrine-cooldown-${id}`) as HTMLInputElement
+  const shrineCooldownVal = body.querySelector(`#ed-shrine-cooldown-val-${id}`) as HTMLSpanElement
+  const shrineSpawnInput = body.querySelector(`#ed-shrine-spawn-${id}`) as HTMLInputElement
+  const shrineSpawnVal = body.querySelector(`#ed-shrine-spawn-val-${id}`) as HTMLSpanElement
+  shrineCheckbox.addEventListener('change', () => {
+    shrineWrap.style.display = shrineCheckbox.checked ? 'block' : 'none'
+  })
+  shrineCooldownInput.addEventListener('input', () => {
+    shrineCooldownVal.textContent = shrineCooldownInput.value
+  })
+  shrineSpawnInput.addEventListener('input', () => {
+    shrineSpawnVal.textContent = shrineSpawnInput.value
+  })
+
   function updatePreview(): void {
     const form = readForm()
     const newRings: PreviewRing[] = form.rings.map((rc, i) => {
@@ -1146,11 +1184,15 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const dropCount = parseInt((div.querySelector(`#ed-drop-count-${id}`) as HTMLInputElement).value) || 1
     const dropType: 'xp' | 'hp' | 'none' = dropXp > 0 ? 'xp' : dropHp > 0 ? 'hp' : 'none'
     const movePattern = (div.querySelector(`#ed-move-${id}`) as HTMLSelectElement).value as import('../entities/EnemyTypes.ts').MovePattern
-    const rings: RingConfig[] = readRingForms()
+    const isShrine = (div.querySelector(`#ed-shrine-${id}`) as HTMLInputElement).checked
+    const shrineType = (div.querySelector(`#ed-shrine-type-${id}`) as HTMLSelectElement).value as 'xp' | 'hp'
+    const shrineCooldown = parseInt((div.querySelector(`#ed-shrine-cooldown-${id}`) as HTMLInputElement).value) || 10
+    const shrineSpawnCount = parseInt((div.querySelector(`#ed-shrine-spawn-${id}`) as HTMLInputElement).value) || 5
+    const rings: RingConfig[] = isShrine ? [] : readRingForms()
     const sound = (rings[0]?.sound ?? 'pop') as SoundName
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
-    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases }
+    return { name, color, hp: isShrine ? 1 : hp, moveSpeed: isShrine ? 0 : speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, movePattern: isShrine ? 'immovable' as any : movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, isShrine, shrineType, shrineCooldown, shrineSpawnCount }
   }
 
 

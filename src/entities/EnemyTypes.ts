@@ -40,6 +40,10 @@ export interface EnemyType {
   summon?: boolean                  // has orbiting ritual nodes, phased spawning
   summonNodes?: number              // how many nodes (3 = triangle, 5 = pentagon, default 3)
   summonPhases?: SummonPhase[]      // each phase = one completed sequence, spawns enemies
+  isShrine?: boolean                // static ground pickup — beat-dash to activate
+  shrineType?: 'xp' | 'hp'         // what the shrine dispenses
+  shrineCooldown?: number           // seconds to recharge after use (default 10)
+  shrineSpawnCount?: number         // orbs released per activation (default 5)
 }
 
 export interface SummonPhase {
