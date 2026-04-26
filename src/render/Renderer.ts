@@ -1039,15 +1039,15 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   updateAndDrawRevengeRings(lastDt)
   perfEnd('e_rings')
 
-  // Shrines — ground layer, drawn before enemy bodies
+  perfStart('e_bodies')
+  // Draw shrines first (ground layer, under everything)
   for (const enemy of enemies) {
     if (!enemy.alive || !enemy.isShrine) continue
     drawShrine(enemy, player)
   }
-
-  perfStart('e_bodies')
   for (const enemy of enemies) {
     if (!enemy.alive && !enemy.dying) continue
+    if (enemy.isShrine) continue  // already drawn above
     drawEnemy(enemy, player)
   }
   perfEnd('e_bodies')
@@ -3061,92 +3061,106 @@ function drawPlayer(player: Player): void {
 function drawShrine(enemy: Enemy, player: Player): void {
   const sx = enemy.x - camX
   const sy = enemy.y - camY
-  const r = enemy.radius * enemy.spawnTimer  // grow in
-  if (r < 1) return
-  const ready = enemy.shrineTimer <= 0
-  const isXP = enemy.shrineType === 'xp'
-  const cr = parseInt(enemy.color.slice(1, 3), 16)
-  const cg = parseInt(enemy.color.slice(3, 5), 16)
-  const cb = parseInt(enemy.color.slice(5, 7), 16)
+  const r = enemy.radius
+  const hpFrac = enemy.hp / enemy.maxHp
+
+  // Color from enemy designer
+  const hr = parseInt(enemy.color.slice(1, 3), 16)
+  const hg = parseInt(enemy.color.slice(3, 5), 16)
+  const hb = parseInt(enemy.color.slice(5, 7), 16)
 
   // Check if player is fully inside
-  const playerRadius = getEffectiveRadius(player) * player.modifiers.sizeMult
   const dx = enemy.x - player.x
   const dy = enemy.y - player.y
   const dist = Math.sqrt(dx * dx + dy * dy)
-  const playerInside = dist + playerRadius <= r * player.modifiers.shrineSizeMult
+  const playerR = PLAYER_RADIUS * player.modifiers.sizeMult
+  const playerInside = dist + playerR <= r
 
-  // Beat pulse
-  const beatPulseR = ready ? r + globalBeatPulse * 6 : r
+  const bp = globalBeatPulse
+  const alive = enemy.hp > 0
 
-  // Ground fill — translucent
+  // Ground fill — subtle
   ctx.beginPath()
-  ctx.arc(sx, sy, beatPulseR, 0, Math.PI * 2)
-  ctx.fillStyle = ready
-    ? `rgba(${cr}, ${cg}, ${cb}, ${playerInside ? 0.18 : 0.1})`
-    : `rgba(${cr}, ${cg}, ${cb}, 0.04)`
+  ctx.arc(sx, sy, r, 0, Math.PI * 2)
+  ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, ${alive ? 0.06 + bp * 0.03 : 0.02})`
   ctx.fill()
 
-  // Edge ring
-  ctx.beginPath()
-  ctx.arc(sx, sy, beatPulseR, 0, Math.PI * 2)
-  ctx.strokeStyle = ready
-    ? `rgba(${cr}, ${cg}, ${cb}, ${playerInside ? 0.7 : 0.4})`
-    : `rgba(${cr}, ${cg}, ${cb}, 0.15)`
-  ctx.lineWidth = ready ? (playerInside ? 3.5 : 2.5) : 1.5
-  ctx.stroke()
+  // HP arc — shows remaining hits as a filling arc from top
+  if (alive && hpFrac < 1) {
+    // Dark background arc (full circle)
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.1)`
+    ctx.lineWidth = 4
+    ctx.stroke()
+    // Remaining HP arc
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, -Math.PI / 2, -Math.PI / 2 + hpFrac * Math.PI * 2)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.5)`
+    ctx.lineWidth = 4
+    ctx.stroke()
+  } else if (alive) {
+    // Full HP — solid ring
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.3 + bp * 0.15})`
+    ctx.lineWidth = 3
+    ctx.stroke()
+  }
 
-  // Cooldown pie arc — fills up as cooldown completes
-  if (!ready) {
-    const cooldownProgress = 1 - (enemy.shrineTimer / (enemy.shrineCooldown * player.modifiers.shrineCooldownMult))
-    if (cooldownProgress > 0) {
+  // Player-inside glow
+  if (alive && playerInside) {
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.6 + bp * 0.3})`
+    ctx.lineWidth = 4
+    ctx.stroke()
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.08 + bp * 0.06})`
+    ctx.fill()
+  }
+
+  // Hit flash
+  if (enemy.hitFlash > 0) {
+    const ft = enemy.hitFlash / 0.2
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(255, 255, 255, ${ft * 0.2})`
+    ctx.fill()
+  }
+
+  // HP segment dividers
+  if (alive && enemy.maxHp <= 20) {
+    for (let i = 1; i < enemy.maxHp; i++) {
+      const segAngle = -Math.PI / 2 + (i / enemy.maxHp) * Math.PI * 2
+      const inner = r * 0.7
       ctx.beginPath()
-      ctx.moveTo(sx, sy)
-      ctx.arc(sx, sy, r * 0.9, -Math.PI / 2, -Math.PI / 2 + cooldownProgress * Math.PI * 2)
-      ctx.closePath()
-      ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, 0.08)`
-      ctx.fill()
+      ctx.moveTo(sx + Math.cos(segAngle) * inner, sy + Math.sin(segAngle) * inner)
+      ctx.lineTo(sx + Math.cos(segAngle) * r, sy + Math.sin(segAngle) * r)
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.2)`
+      ctx.lineWidth = 1
+      ctx.stroke()
     }
   }
 
-  // Center icon
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  const iconAlpha = ready ? 0.6 + globalBeatPulse * 0.2 : 0.2
-  ctx.font = `bold ${Math.floor(r * 0.4)}px monospace`
-  ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${iconAlpha})`
-  ctx.fillText(isXP ? 'XP' : '+', sx, sy + 2)
-  ctx.textBaseline = 'alphabetic'
-
-  // Player-inside ready indicator — pulsing inner ring
-  if (ready && playerInside) {
-    ctx.beginPath()
-    ctx.arc(sx, sy, r * 0.7, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(255, 255, 255, ${0.2 + globalBeatPulse * 0.3})`
-    ctx.lineWidth = 2
-    ctx.stroke()
-  }
-
-  // Activation burst
-  if (enemy.shrineActivationFlash > 0) {
-    const ft = enemy.shrineActivationFlash / 0.5
-    // Expanding ring
-    const burstR = r + (1 - ft) * r * 0.5
-    ctx.beginPath()
-    ctx.arc(sx, sy, Math.max(0, burstR), 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${ft * 0.7})`
-    ctx.lineWidth = Math.max(0.1, 4 * ft)
-    ctx.stroke()
-    // Center flash
-    ctx.beginPath()
-    ctx.arc(sx, sy, Math.max(0, r * 0.6 * ft), 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(255, 255, 255, ${ft * 0.5})`
-    ctx.fill()
+  // Tick marks — 8 around edge
+  if (alive) {
+    for (let i = 0; i < 8; i++) {
+      const ta = (i / 8) * Math.PI * 2
+      const isMajor = i % 2 === 0
+      const inner = r - (isMajor ? 8 : 5)
+      ctx.beginPath()
+      ctx.moveTo(sx + Math.cos(ta) * inner, sy + Math.sin(ta) * inner)
+      ctx.lineTo(sx + Math.cos(ta) * r, sy + Math.sin(ta) * r)
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${isMajor ? 0.25 : 0.12})`
+      ctx.lineWidth = isMajor ? 2 : 1
+      ctx.stroke()
+    }
   }
 }
 
 function drawEnemy(enemy: Enemy, player: Player): void {
-  if (enemy.isShrine) return  // shrines drawn separately
   let sx = enemy.x - camX
   let sy = enemy.y - camY
   let r = enemy.radius

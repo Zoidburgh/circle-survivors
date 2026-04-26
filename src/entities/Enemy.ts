@@ -102,12 +102,10 @@ export interface Enemy {
   summonBeatCount: number         // monotonic beat counter
   summonLastBeat: number          // last whole beat seen
   summonActivationTimer: number   // >0 = activation animation playing, counts down
-  isShrine: boolean               // static ground pickup
-  shrineType: 'xp' | 'hp'
-  shrineCooldown: number          // configured cooldown duration
-  shrineSpawnCount: number        // orbs per activation
-  shrineTimer: number             // current cooldown remaining (0 = ready)
-  shrineActivationFlash: number   // visual timer for activation burst
+  isShrine: boolean
+  shrineSpawnEnemy: string        // enemy type name per hit (empty = none)
+  shrineXpCount: number           // XP orbs per hit
+  shrineHpCount: number           // HP orbs per hit
 }
 
 /** Get the world positions a ring fires from (center or edge offsets) */
@@ -149,7 +147,7 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     peakCaptured: false,
   }))
 
-  return {
+  const e: Enemy = {
     x,
     y,
     rings,
@@ -223,23 +221,21 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     summonLastBeat: -1,
     summonActivationTimer: 0,
     isShrine: type.isShrine ?? false,
-    shrineType: type.shrineType ?? 'xp',
-    shrineCooldown: type.shrineCooldown ?? 10,
-    shrineSpawnCount: type.shrineSpawnCount ?? 5,
-    shrineTimer: 0,
-    shrineActivationFlash: 0,
+    shrineSpawnEnemy: type.shrineSpawnEnemy ?? '',
+    shrineXpCount: type.shrineXpCount ?? 0,
+    shrineHpCount: type.shrineHpCount ?? 0,
   }
+  // Shrines: skip spawn animation, pushable by enemies, HP from designer
+  if (e.isShrine) {
+    e.immovable = false
+    e.radius = e.baseRadius  // full size immediately, no spawn anim
+    e.spawnTimer = 1          // mark spawn complete
+  }
+  return e
 }
 
 export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: SpatialGrid): void {
   if (!enemy.alive || enemy.dying) return
-  // Shrines: only process spawn-in, cooldown, and activation flash
-  if (enemy.isShrine) {
-    if (enemy.spawnTimer < 1) enemy.spawnTimer = Math.min(1, enemy.spawnTimer + dt * 3)
-    if (enemy.shrineTimer > 0) enemy.shrineTimer = Math.max(0, enemy.shrineTimer - dt)
-    if (enemy.shrineActivationFlash > 0) enemy.shrineActivationFlash -= dt
-    return
-  }
   // Summon beat counter — must run before any early returns
   if (enemy.summon) {
     const cb = Math.floor(getLoopPosition())
@@ -511,7 +507,8 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     }
   }
 
-  // Don't overlap player — bounce off player too
+  // Don't overlap player — bounce off player too (shrines let player walk through)
+  if (enemy.isShrine) { /* skip player push */ } else {
   const pMinDist = enemy.radius + PLAYER_RADIUS
   const pDx = enemy.x - player.x
   const pDy = enemy.y - player.y
@@ -530,6 +527,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
       }
     }
   }
+  } // end shrine player-push skip
 
   // Preserve bounce speed — reflections can degrade magnitude over time
   if (isBounce) {
