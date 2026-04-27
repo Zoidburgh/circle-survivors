@@ -15,7 +15,7 @@ import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat } from '../audio/PatternClock.ts'
-import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit } from '../audio/AudioEngine.ts'
+import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon } from '../audio/AudioEngine.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
 import { getScoresForChallenge, fetchOnlineScores } from '../game/HighScores.ts'
 import { getActiveChallenge } from '../game/ChallengeBuilder.ts'
@@ -193,6 +193,17 @@ on('enemy:killed', (enemy: Enemy) => {
   })
 })
 
+// Pending shrine spawns — delayed by one beat
+interface PendingShrineSpawn {
+  shrine: Enemy  // reference to the shrine entity
+  shrineX: number; shrineY: number; shrineRadius: number; shrineColor: string
+  playerX: number; playerY: number
+  spawnEnemy: string; xpCount: number; hpCount: number
+  timer: number  // counts down in seconds
+  isLastHit: boolean  // shrine should die when this fires
+}
+const pendingShrineSpawns: PendingShrineSpawn[] = []
+
 // On-beat dash shockwave — area damage at dash start position
 on('player:beatDash', (player: Player) => {
   const shockRadius = getEffectiveRadius(player) * 0.7 * player.modifiers.beatBlastMult
@@ -209,7 +220,7 @@ on('player:beatDash', (player: Player) => {
       if (dist + playerBodyR <= enemy.radius) {
         // Player fully inside — deal 1 HP
         enemy.hp -= 1
-        enemy.hitFlash = 0.2
+        enemy.hitFlash = 0.75
         enemy.displayHp = enemy.hp
         playShrineHit()
         const shrineColor = enemy.color
@@ -249,48 +260,39 @@ on('player:beatDash', (player: Player) => {
             255, 255, 255, 0.2 + Math.random() * 0.1, 2.5 + Math.random() * 2)
         }
 
-        // Spawn XP orbs per hit
-        const totalOrbs = enemy.shrineXpCount + enemy.shrineHpCount
-        let orbIdx = 0
-        for (let i = 0; i < enemy.shrineXpCount; i++, orbIdx++) {
-          const angle = (orbIdx / Math.max(1, totalOrbs)) * Math.PI * 2 + Math.random() * 0.3
-          const orbDist = enemy.radius + 75 + Math.random() * 65
-          const ox = enemy.x + Math.cos(angle) * orbDist
-          const oy = enemy.y + Math.sin(angle) * orbDist
-          spawnOrb(ox, oy, 1, 'xp')
-          Renderer.addSpawnEffect(enemy.x, enemy.y, enemy.radius, ox, oy, shrineColor)
-        }
-        // Spawn HP orbs per hit
-        for (let i = 0; i < enemy.shrineHpCount; i++, orbIdx++) {
-          const angle = (orbIdx / Math.max(1, totalOrbs)) * Math.PI * 2 + Math.random() * 0.3
-          const orbDist = enemy.radius + 75 + Math.random() * 65
-          const ox = enemy.x + Math.cos(angle) * orbDist
-          const oy = enemy.y + Math.sin(angle) * orbDist
-          spawnOrb(ox, oy, 1, 'hp')
-          Renderer.addSpawnEffect(enemy.x, enemy.y, enemy.radius, ox, oy, shrineColor)
+        // Blood splash inside shrine — spread across shrine area
+        for (let p = 0; p < 30; p++) {
+          const a = Math.random() * Math.PI * 2
+          const dist = Math.random() * enemy.radius * 0.85
+          const px = enemy.x + Math.cos(a) * dist
+          const py = enemy.y + Math.sin(a) * dist
+          const speed = 40 + Math.random() * 80
+          const outA = Math.atan2(py - enemy.y, px - enemy.x) + (Math.random() - 0.5) * 1.5
+          Renderer.spawnParticleExport(px, py,
+            Math.cos(outA) * speed, Math.sin(outA) * speed,
+            255, 40 + Math.floor(Math.random() * 50), 30 + Math.floor(Math.random() * 40),
+            0.35 + Math.random() * 0.25, 4 + Math.random() * 4)
         }
 
-        // Spawn enemies per hit — supports "name:count" format
-        if (enemy.shrineSpawnEnemy) {
-          const [spawnName, spawnCountStr] = enemy.shrineSpawnEnemy.split(':')
-          const spawnType = getEnemyType(spawnName!.trim())
-          const spawnCount = parseInt(spawnCountStr ?? '1') || 1
-          if (spawnType) {
-            for (let s = 0; s < spawnCount; s++) {
-              const spawnAngle = Math.atan2(dy, dx) + Math.PI + (s / spawnCount) * Math.PI * 2
-              const spawnDist = (enemy.radius + (spawnType.radius ?? 40) + 30) * 1.38
-              const spawnX = enemy.x + Math.cos(spawnAngle) * spawnDist
-              const spawnY = enemy.y + Math.sin(spawnAngle) * spawnDist
-              const clamped = clampToArena(spawnX, spawnY, spawnType.radius ?? 40)
-              const newEnemy = createEnemy(clamped.x, clamped.y, spawnType)
-              getEnemies().push(newEnemy)
-              Renderer.addSpawnEffect(enemy.x, enemy.y, enemy.radius, clamped.x, clamped.y, spawnType.color)
-            }
-          }
+        // Queue spawns — delayed by half beat so impact animation plays first
+        if (enemy.shrineXpCount > 0 || enemy.shrineHpCount > 0 || enemy.shrineSpawnEnemy) {
+          enemy.shrineSummonTimer = BEAT_SEC * 0.5
+          playShrineSummon()
+          pendingShrineSpawns.push({
+            shrine: enemy,
+            shrineX: enemy.x, shrineY: enemy.y,
+            shrineRadius: enemy.radius, shrineColor,
+            playerX: player.x, playerY: player.y,
+            spawnEnemy: enemy.shrineSpawnEnemy,
+            xpCount: enemy.shrineXpCount,
+            hpCount: enemy.shrineHpCount,
+            timer: BEAT_SEC * 0.5,
+            isLastHit: enemy.hp <= 0,
+          })
         }
 
-        // Check death
-        if (enemy.hp <= 0) {
+        // Check death — no spawns to queue, die immediately
+        if (enemy.hp <= 0 && !enemy.shrineSpawnEnemy && enemy.shrineXpCount <= 0 && enemy.shrineHpCount <= 0) {
           enemy.dying = true
           enemy.deathTimer = 0
           spawnDrops(enemy, 1, spawnOrb)
@@ -482,6 +484,7 @@ on('summon:phase', (enemy: Enemy) => {
 export function resetPendingEffects(): void {
   pendingExplosions.length = 0
   pendingRevenges.length = 0
+  pendingShrineSpawns.length = 0
 }
 
 export function update(dt: number): void {
@@ -506,6 +509,98 @@ export function update(dt: number): void {
   const cam = getCamera()
 
   Input.flush()
+
+  // Process pending shrine spawns
+  for (let i = pendingShrineSpawns.length - 1; i >= 0; i--) {
+    const ps = pendingShrineSpawns[i]!
+    ps.timer -= dt
+    if (ps.timer <= 0) {
+      pendingShrineSpawns.splice(i, 1)
+      // Spawn XP orbs
+      const totalOrbs = ps.xpCount + ps.hpCount
+      let orbIdx = 0
+      for (let o = 0; o < ps.xpCount; o++, orbIdx++) {
+        const angle = (orbIdx / Math.max(1, totalOrbs)) * Math.PI * 2 + Math.random() * 0.3
+        const orbDist = ps.shrineRadius + 30 + Math.random() * 40
+        const ox = ps.shrineX + Math.cos(angle) * orbDist
+        const oy = ps.shrineY + Math.sin(angle) * orbDist
+        spawnOrb(ox, oy, 1, 'xp')
+        Renderer.addSpawnEffect(ps.shrineX, ps.shrineY, ps.shrineRadius, ox, oy, ps.shrineColor)
+      }
+      // Spawn HP orbs
+      for (let o = 0; o < ps.hpCount; o++, orbIdx++) {
+        const angle = (orbIdx / Math.max(1, totalOrbs)) * Math.PI * 2 + Math.random() * 0.3
+        const orbDist = ps.shrineRadius + 30 + Math.random() * 40
+        const ox = ps.shrineX + Math.cos(angle) * orbDist
+        const oy = ps.shrineY + Math.sin(angle) * orbDist
+        spawnOrb(ox, oy, 1, 'hp')
+        Renderer.addSpawnEffect(ps.shrineX, ps.shrineY, ps.shrineRadius, ox, oy, ps.shrineColor)
+      }
+      // Spawn enemies
+      if (ps.spawnEnemy) {
+        const [spawnName, spawnCountStr] = ps.spawnEnemy.split(':')
+        const spawnType = getEnemyType(spawnName!.trim())
+        const spawnCount = parseInt(spawnCountStr ?? '1') || 1
+        if (spawnType) {
+          const baseAngle = Math.atan2(ps.shrineY - ps.playerY, ps.shrineX - ps.playerX)
+          for (let s = 0; s < spawnCount; s++) {
+            const spawnAngle = baseAngle + (s / spawnCount) * Math.PI * 2
+            const spawnDist = ps.shrineRadius + (spawnType.radius ?? 40) + 20
+            const sx = ps.shrineX + Math.cos(spawnAngle) * spawnDist
+            const sy = ps.shrineY + Math.sin(spawnAngle) * spawnDist
+            const clamped = clampToArena(sx, sy, spawnType.radius ?? 40)
+            const newEnemy = createEnemy(clamped.x, clamped.y, spawnType)
+            enemies.push(newEnemy)
+            Renderer.addSpawnEffect(ps.shrineX, ps.shrineY, ps.shrineRadius, clamped.x, clamped.y, spawnType.color)
+          }
+        }
+      }
+      // Kill shrine on last hit — death + spawns + explosion happen together
+      if (ps.isLastHit && ps.shrine.alive) {
+        ps.shrine.dying = true
+        ps.shrine.deathTimer = 0
+        spawnDrops(ps.shrine, 1, spawnOrb)
+        emit('enemy:killed', ps.shrine)
+
+        // Death explosion particles
+        const er = parseInt(ps.shrineColor.slice(1, 3), 16)
+        const eg = parseInt(ps.shrineColor.slice(3, 5), 16)
+        const eb = parseInt(ps.shrineColor.slice(5, 7), 16)
+        // Shrine-colored burst from edge
+        for (let p = 0; p < 40; p++) {
+          const a = (p / 40) * Math.PI * 2 + Math.random() * 0.3
+          const dist = ps.shrineRadius * (0.6 + Math.random() * 0.4)
+          const px = ps.shrineX + Math.cos(a) * dist
+          const py = ps.shrineY + Math.sin(a) * dist
+          const speed = 300 + Math.random() * 400
+          const outA = Math.atan2(py - ps.shrineY, px - ps.shrineX)
+          Renderer.spawnParticleExport(px, py,
+            Math.cos(outA) * speed + (Math.random() - 0.5) * 150,
+            Math.sin(outA) * speed + (Math.random() - 0.5) * 150,
+            Math.min(255, er + 40), Math.min(255, eg + 30), Math.min(255, eb + 30),
+            0.4 + Math.random() * 0.3, 6 + Math.random() * 7)
+        }
+        // White-hot core burst
+        for (let p = 0; p < 20; p++) {
+          const a = Math.random() * Math.PI * 2
+          const speed = 400 + Math.random() * 350
+          Renderer.spawnParticleExport(ps.shrineX, ps.shrineY,
+            Math.cos(a) * speed, Math.sin(a) * speed,
+            255, 255, 255, 0.3 + Math.random() * 0.2, 5 + Math.random() * 5)
+        }
+        // Red blood burst
+        for (let p = 0; p < 15; p++) {
+          const a = Math.random() * Math.PI * 2
+          const speed = 250 + Math.random() * 300
+          Renderer.spawnParticleExport(ps.shrineX, ps.shrineY,
+            Math.cos(a) * speed + (Math.random() - 0.5) * 120,
+            Math.sin(a) * speed + (Math.random() - 0.5) * 120,
+            255, 50 + Math.floor(Math.random() * 40), 40 + Math.floor(Math.random() * 30),
+            0.4 + Math.random() * 0.25, 7 + Math.random() * 6)
+        }
+      }
+    }
+  }
 
   // Toggle arena shape with G key
   if (Input.isKeyDown('g') && !arenaToggleLock) {

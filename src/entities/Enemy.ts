@@ -106,6 +106,7 @@ export interface Enemy {
   shrineSpawnEnemy: string        // enemy type name per hit (empty = none)
   shrineXpCount: number           // XP orbs per hit
   shrineHpCount: number           // HP orbs per hit
+  shrineSummonTimer: number       // >0 = summoning animation playing, counts down
 }
 
 /** Get the world positions a ring fires from (center or edge offsets) */
@@ -224,6 +225,7 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     shrineSpawnEnemy: type.shrineSpawnEnemy ?? '',
     shrineXpCount: type.shrineXpCount ?? 0,
     shrineHpCount: type.shrineHpCount ?? 0,
+    shrineSummonTimer: 0,
   }
   // Shrines: skip spawn animation, pushable by enemies, HP from designer
   if (e.isShrine) {
@@ -255,6 +257,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   }
 
   if (enemy.hitFlash > 0) enemy.hitFlash -= dt
+  if (enemy.isShrine && enemy.shrineSummonTimer > 0) enemy.shrineSummonTimer -= dt
 
   // Chill stack decay
   if (enemy.chillStacks > 0) {

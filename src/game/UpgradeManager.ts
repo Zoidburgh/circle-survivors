@@ -27,9 +27,6 @@ export interface UpgradeBonus {
   shieldRechargeMult?: number  // negative = faster recharge
   shieldMaxCharges?: number    // +1 shield charge per stack
   noShield?: boolean           // tradeoff: removes shield entirely
-  shrineCooldownMult?: number  // negative = faster shrine recharge
-  shrineSizeMult?: number      // +% shrine activation radius
-  shrineSpawnMult?: number     // +% shrine orb yield
 }
 
 export interface ActiveUpgrade {
@@ -116,9 +113,6 @@ export function computeModifiers(): PlayerModifiers {
   let shieldRecharge = 0
   let size = 0
   let beatBlast = 0
-  let shrineCooldown = 0
-  let shrineSize = 0
-  let shrineSpawn = 0
 
   for (const u of activeUpgrades) {
     speed += u.bonus.speedMult ?? 0
@@ -131,9 +125,6 @@ export function computeModifiers(): PlayerModifiers {
     shieldRecharge += u.bonus.shieldRechargeMult ?? 0
     size += u.bonus.sizeMult ?? 0
     beatBlast += u.bonus.beatBlastMult ?? 0
-    shrineCooldown += u.bonus.shrineCooldownMult ?? 0
-    shrineSize += u.bonus.shrineSizeMult ?? 0
-    shrineSpawn += u.bonus.shrineSpawnMult ?? 0
   }
 
   return {
@@ -147,9 +138,6 @@ export function computeModifiers(): PlayerModifiers {
     shieldRechargeMult: 1 + shieldRecharge,
     sizeMult: 1 + size,
     beatBlastMult: 1 + beatBlast,
-    shrineCooldownMult: 1 + shrineCooldown,
-    shrineSizeMult: 1 + shrineSize,
-    shrineSpawnMult: 1 + shrineSpawn,
   }
 }
 
@@ -178,9 +166,6 @@ export function applyModifiers(player: { modifiers: PlayerModifiers; dashMaxChar
   player.modifiers.shieldRechargeMult = mods.shieldRechargeMult
   player.modifiers.sizeMult = mods.sizeMult
   player.modifiers.beatBlastMult = mods.beatBlastMult
-  player.modifiers.shrineCooldownMult = mods.shrineCooldownMult
-  player.modifiers.shrineSizeMult = mods.shrineSizeMult
-  player.modifiers.shrineSpawnMult = mods.shrineSpawnMult
 
   // Structural: extra HP
   let extraHp = 0

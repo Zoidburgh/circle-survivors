@@ -13,7 +13,6 @@ export interface GameEventMap {
   'summon:phase': [enemy: Enemy]
   'player:beatDash': [player: Player]
   'player:shieldRechargeReset': [player: Player]
-  'shrine:activate': [shrine: Enemy]
 }
 
 type EventName = keyof GameEventMap

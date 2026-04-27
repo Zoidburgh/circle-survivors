@@ -591,6 +591,62 @@ export function playBeatTick(): void {
   playKick()
 }
 
+export function playShrineSummon(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime + 0.1  // slight delay so hit sound plays first
+
+  // Rising whoosh — energy gathering
+  const whooshDur = 0.4
+  const whooshBuf = c.createBuffer(1, Math.floor(c.sampleRate * whooshDur), c.sampleRate)
+  const whooshData = whooshBuf.getChannelData(0)
+  for (let i = 0; i < whooshData.length; i++) whooshData[i] = (Math.random() * 2 - 1) * 0.4
+  const whoosh = c.createBufferSource()
+  whoosh.buffer = whooshBuf
+  const whooshFilter = c.createBiquadFilter()
+  whooshFilter.type = 'bandpass'
+  whooshFilter.Q.value = 2
+  whooshFilter.frequency.setValueAtTime(300, t)
+  whooshFilter.frequency.exponentialRampToValueAtTime(2500, t + whooshDur)
+  const whooshGain = c.createGain()
+  whooshGain.gain.setValueAtTime(0.001, t)
+  whooshGain.gain.linearRampToValueAtTime(rVol(0.45), t + whooshDur * 0.7)
+  whooshGain.gain.exponentialRampToValueAtTime(0.001, t + whooshDur)
+  whoosh.connect(whooshFilter)
+  whooshFilter.connect(whooshGain)
+  whooshGain.connect(reverbInput)
+  whoosh.start(t)
+  whoosh.stop(t + whooshDur)
+
+  // Rising tone — builds tension
+  const rise = c.createOscillator()
+  const riseGain = c.createGain()
+  rise.type = 'triangle'
+  rise.frequency.setValueAtTime(rPitch(150), t)
+  rise.frequency.exponentialRampToValueAtTime(rPitch(500), t + 0.35)
+  riseGain.gain.setValueAtTime(rVol(0.25), t)
+  riseGain.gain.linearRampToValueAtTime(rVol(0.45), t + 0.3)
+  riseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.4)
+  rise.connect(riseGain)
+  riseGain.connect(master)
+  rise.start(t)
+  rise.stop(t + 0.4)
+
+  // Sub buildup
+  const sub = c.createOscillator()
+  const subGain = c.createGain()
+  sub.type = 'sine'
+  sub.frequency.setValueAtTime(rPitch(60), t)
+  sub.frequency.exponentialRampToValueAtTime(rPitch(120), t + 0.35)
+  subGain.gain.setValueAtTime(rVol(0.3), t)
+  subGain.gain.linearRampToValueAtTime(rVol(0.5), t + 0.3)
+  subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.4)
+  sub.connect(subGain)
+  subGain.connect(master)
+  sub.start(t)
+  sub.stop(t + 0.4)
+}
+
 export function playShrineHit(): void {
   ensureContext()
   const c = ctx!

@@ -1042,8 +1042,13 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfStart('e_bodies')
   // Draw shrines first (ground layer, under everything)
   for (const enemy of enemies) {
-    if (!enemy.alive || !enemy.isShrine) continue
-    drawShrine(enemy, player)
+    if (!enemy.isShrine) continue
+    if (!enemy.alive && !enemy.dying) continue
+    if (enemy.dying) {
+      drawEnemy(enemy, player)  // use enemy death animation (dissolve + ripples)
+    } else {
+      drawShrine(enemy, player)
+    }
   }
   for (const enemy of enemies) {
     if (!enemy.alive && !enemy.dying) continue
@@ -3087,7 +3092,7 @@ function drawShrine(enemy: Enemy, player: Player): void {
 
   // Segmented outer ring ��� each HP is a distinct arc with gaps
   // Segmented outer ring — inset so outer edge aligns with collision boundary
-  const strokeW = 5
+  const strokeW = 7.5
   const drawR = r - strokeW / 2
 
   if (alive && enemy.maxHp <= 30) {
@@ -3113,7 +3118,11 @@ function drawShrine(enemy: Enemy, player: Player): void {
         ctx.save()
         ctx.setLineDash([4, 4])
         ctx.lineDashOffset = -gameTimeMs / 20
-        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, 0.5)`
+        const redMix = 0.5
+        const deadR = Math.min(255, Math.floor(hr + (255 - hr) * redMix))
+        const deadG = Math.floor(hg * (1 - redMix * 0.7))
+        const deadB = Math.floor(hb * (1 - redMix * 0.7))
+        ctx.strokeStyle = `rgba(${deadR}, ${deadG}, ${deadB}, 0.5)`
         ctx.lineWidth = strokeW
         ctx.stroke()
         ctx.restore()
@@ -3141,32 +3150,45 @@ function drawShrine(enemy: Enemy, player: Player): void {
 
   // Idle — inviting pulse when player is NOT inside
   if (alive && !playerInside) {
-    // Inward pulse ring — shrinks from edge to center on beat cycle
-    const pulseT = (gameTimeMs % 1500) / 1500  // 0→1 over 1.5s
-    const pulseR = drawR * (1 - pulseT * 0.7)  // shrinks inward
-    const pulseAlpha = (1 - pulseT) * (1 - pulseT) * 0.2
+    const slowSpin = gameTimeMs / 3000
+
+    // Rotating arc segments — 3 arcs at different radii, ripple outward on beat
+    for (let ring = 0; ring < 3; ring++) {
+      // Ripple: each ring pulses with a staggered delay
+      const rippleDelay = ring * 0.12
+      const rippleBp = Math.max(0, bp - rippleDelay) / (1 - rippleDelay)
+      const ringR = r * (0.15 + ring * 0.15 + rippleBp * 0.3)
+
+      // 2 arc segments per ring, rotating in alternating directions
+      const arcLen = Math.PI * 0.6  // 108° each
+      const rot = slowSpin * (ring % 2 === 0 ? 1 : -0.7) + ring * 1.2
+      for (let a = 0; a < 2; a++) {
+        const arcStart = rot + a * Math.PI + rippleBp * 0.6
+        const arcEnd = arcStart + arcLen
+        // Glow
+        ctx.beginPath()
+        ctx.arc(sx, sy, ringR, arcStart, arcEnd)
+        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.04 + rippleBp * 0.08})`
+        ctx.lineWidth = 5 - ring * 0.8
+        ctx.stroke()
+        // Core
+        ctx.beginPath()
+        ctx.arc(sx, sy, ringR, arcStart, arcEnd)
+        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.1 + rippleBp * 0.2})`
+        ctx.lineWidth = 1.8 - ring * 0.3
+        ctx.stroke()
+      }
+    }
+
+    // Inward pulse ring — ripple from edge to center
+    const pulseT = (gameTimeMs % 1500) / 1500
+    const pulseR = drawR * (1 - pulseT * 0.7)
+    const pulseAlpha = (1 - pulseT) * (1 - pulseT) * 0.15
     ctx.beginPath()
     ctx.arc(sx, sy, pulseR, 0, Math.PI * 2)
     ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${pulseAlpha})`
     ctx.lineWidth = 1.5
     ctx.stroke()
-
-    // Breathing center — 3 concentric rings synced to beat, staggered sizes
-    for (let ring = 0; ring < 3; ring++) {
-      const ringR = r * (0.12 + ring * 0.12 + bp * 0.25)
-      // Glow behind
-      ctx.beginPath()
-      ctx.arc(sx, sy, ringR, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.04 + bp * (0.1 - ring * 0.02)})`
-      ctx.lineWidth = 5 - ring * 0.5
-      ctx.stroke()
-      // Core
-      ctx.beginPath()
-      ctx.arc(sx, sy, ringR, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.12 + bp * (0.25 - ring * 0.05)})`
-      ctx.lineWidth = 2 - ring * 0.3
-      ctx.stroke()
-    }
   }
 
   // Player-inside targeting reticle — spinning, pulsing lock-on
@@ -3266,13 +3288,191 @@ function drawShrine(enemy: Enemy, player: Player): void {
     }
   }
 
-  // Hit flash
+  // Hit impact animation — multi-layered
   if (enemy.hitFlash > 0) {
-    const ft = enemy.hitFlash / 0.2
+    const ft = enemy.hitFlash / 0.75  // 1→0
+    // Color transition: red early (ft > 0.5) → white late (ft < 0.5)
+    const redPhase = Math.max(0, (ft - 0.4) / 0.6)  // 1 at start, 0 at 40%
+    const whitePhase = Math.max(0, (0.5 - ft) / 0.5)  // 0 until halfway, 1 at end
+    const fr = 255
+    const fg = Math.floor(50 + whitePhase * 205)  // 50→255
+    const fb = Math.floor(40 + whitePhase * 215)  // 40→255
+
+    // 1. Ground flash — red→white
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(255, 255, 255, ${ft * 0.25})`
+    ctx.fillStyle = `rgba(${fr}, ${fg}, ${fb}, ${ft * 0.4})`
     ctx.fill()
+
+    // Center explosion pop — bright core expanding outward
+    const popT = 1 - ft  // 0→1
+    const popR = r * 0.15 + popT * r * 0.4
+    const popAlpha = ft * ft
+    // Warm glow
+    ctx.beginPath()
+    ctx.arc(sx, sy, popR + 10, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(${fr}, ${Math.floor(fg * 0.6)}, ${Math.floor(fb * 0.5)}, ${popAlpha * 0.35})`
+    ctx.fill()
+    // White-red core
+    ctx.beginPath()
+    ctx.arc(sx, sy, popR, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(${fr}, ${fg}, ${fb}, ${popAlpha * 0.5})`
+    ctx.fill()
+    // Hot center dot
+    if (ft > 0.5) {
+      const dotAlpha = (ft - 0.5) * 2
+      ctx.beginPath()
+      ctx.arc(sx, sy, r * 0.1, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 255, 255, ${dotAlpha * 0.9})`
+      ctx.fill()
+    }
+
+    // 2. Expanding shockwave — thick, bright
+    const shockT = 1 - ft  // 0→1
+    const shockR = shockT * drawR
+    // Wide glow ring
+    ctx.beginPath()
+    ctx.arc(sx, sy, Math.max(1, shockR), 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${ft * 0.5})`
+    ctx.lineWidth = 10 * ft
+    ctx.stroke()
+    // White-red core ring
+    ctx.beginPath()
+    ctx.arc(sx, sy, Math.max(1, shockR), 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${fr}, ${fg}, ${fb}, ${ft * 0.8})`
+    ctx.lineWidth = 3 * ft + 1
+    ctx.stroke()
+
+    // 3. Alive segments flash white — full opacity
+    if (alive && enemy.maxHp <= 30) {
+      const segments = enemy.maxHp
+      const gapAngle = segments > 1 ? 0.08 : 0
+      const segAngle = (Math.PI * 2 - gapAngle * segments) / segments
+      const startAngle = -Math.PI / 2
+      for (let i = 0; i < enemy.hp; i++) {
+        const segStart = startAngle + i * (segAngle + gapAngle)
+        const segEnd = segStart + segAngle
+        ctx.beginPath()
+        ctx.arc(sx, sy, drawR, segStart, segEnd)
+        ctx.strokeStyle = `rgba(${fr}, ${fg}, ${fb}, ${ft * 0.9})`
+        ctx.lineWidth = strokeW + 3
+        ctx.stroke()
+      }
+    }
+
+    // 4. Reticle collapse + white flash
+    if (playerInside) {
+      const collapse = ft > 0.6 ? (1 - ft) * 5 : 1
+      const reticleCount = 6
+      const spinSpeed = gameTimeMs / 2000
+      for (let i = 0; i < reticleCount; i++) {
+        const a = (i / reticleCount) * Math.PI * 2 + spinSpeed
+        const lineInner = r * 0.1 * collapse
+        const lineOuter = r * 0.9 * collapse
+        // Glow
+        ctx.beginPath()
+        ctx.moveTo(sx + Math.cos(a) * lineInner, sy + Math.sin(a) * lineInner)
+        ctx.lineTo(sx + Math.cos(a) * lineOuter, sy + Math.sin(a) * lineOuter)
+        ctx.strokeStyle = `rgba(255, 255, 255, ${ft * 0.3})`
+        ctx.lineWidth = 7
+        ctx.stroke()
+        // Core
+        ctx.beginPath()
+        ctx.moveTo(sx + Math.cos(a) * lineInner, sy + Math.sin(a) * lineInner)
+        ctx.lineTo(sx + Math.cos(a) * lineOuter, sy + Math.sin(a) * lineOuter)
+        ctx.strokeStyle = `rgba(255, 255, 255, ${ft * 0.7})`
+        ctx.lineWidth = 2.5
+        ctx.stroke()
+      }
+      // Inner ring flash
+      ctx.beginPath()
+      ctx.arc(sx, sy, Math.max(1, r * 0.3 * collapse), 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 255, 255, ${ft * 0.8})`
+      ctx.lineWidth = 4
+      ctx.stroke()
+    }
+  }
+
+  // Summoning animation — energy converging to center before spawns release
+  if (enemy.shrineSummonTimer > 0) {
+    const sumDur = BEAT_SEC * 0.5
+    const st = 1 - (enemy.shrineSummonTimer / sumDur)  // 0→1
+
+    // Two rings of converging dots — outer fast, inner slower
+    for (let ring = 0; ring < 2; ring++) {
+      const dotCount = ring === 0 ? 10 : 6
+      const spiralRot = st * Math.PI * (ring === 0 ? 2.5 : -1.5)
+      const ringDelay = ring * 0.15
+      const ringT = Math.max(0, st - ringDelay) / (1 - ringDelay)
+      const outerR = drawR * (1 - ringT * ringT)
+      for (let d = 0; d < dotCount; d++) {
+        const a = (d / dotCount) * Math.PI * 2 + spiralRot
+        const dx2 = sx + Math.cos(a) * outerR
+        const dy2 = sy + Math.sin(a) * outerR
+        const dotSize = 3 + ringT * 5
+        const cMix = ringT * ringT
+        const dr = Math.floor(hr + (255 - hr) * cMix)
+        const dg = Math.floor(hg + (255 - hg) * cMix)
+        const db = Math.floor(hb + (255 - hb) * cMix)
+        // Glow behind dot
+        ctx.beginPath()
+        ctx.arc(dx2, dy2, dotSize + 5, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${dr}, ${dg}, ${db}, ${ringT * 0.15})`
+        ctx.fill()
+        // Bright dot
+        ctx.beginPath()
+        ctx.arc(dx2, dy2, dotSize, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${dr}, ${dg}, ${db}, ${0.5 + ringT * 0.45})`
+        ctx.fill()
+      }
+    }
+
+    // Two contracting rings — staggered
+    for (let cr = 0; cr < 2; cr++) {
+      const crT = Math.max(0, st - cr * 0.1) / (1 - cr * 0.1)
+      const contractR = drawR * (1 - crT)
+      ctx.beginPath()
+      ctx.arc(sx, sy, Math.max(1, contractR), 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${(0.2 + crT * 0.4) * (1 - cr * 0.3)})`
+      ctx.lineWidth = 2 + crT * 3
+      ctx.stroke()
+    }
+
+    // Center buildup glow — intensifies
+    const glowR = r * 0.15 + st * r * 0.25
+    ctx.beginPath()
+    ctx.arc(sx, sy, glowR + 10, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, ${st * st * 0.2})`
+    ctx.fill()
+    ctx.beginPath()
+    ctx.arc(sx, sy, glowR, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(255, 255, 255, ${st * st * 0.3})`
+    ctx.fill()
+
+    // Final flash right before spawns
+    if (st > 0.85) {
+      const finalT = (st - 0.85) / 0.15
+      ctx.beginPath()
+      ctx.arc(sx, sy, r * 0.4, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 255, 255, ${finalT * 0.5})`
+      ctx.fill()
+    }
+
+    // Spawn trail particles converging to center
+    if (Math.random() < 0.5 + st * 0.5) {
+      const a = Math.random() * Math.PI * 2
+      const dist = drawR * (1 - st) * (0.5 + Math.random() * 0.5)
+      const toCenter = Math.atan2(sy - (sy + Math.sin(a) * dist), sx - (sx + Math.cos(a) * dist))
+      const speed = 60 + st * 100
+      spawnParticle(
+        enemy.x + Math.cos(a) * dist,
+        enemy.y + Math.sin(a) * dist,
+        Math.cos(toCenter) * speed, Math.sin(toCenter) * speed,
+        Math.min(255, hr + Math.floor(st * 80)),
+        Math.min(255, hg + Math.floor(st * 80)),
+        Math.min(255, hb + Math.floor(st * 80)),
+        0.15 + st * 0.15, 2.5 + st * 2)
+    }
   }
 }
 
@@ -5610,41 +5810,53 @@ function drawSpawnPanel(): void {
   const panelX = 10
   const panelY = 10
   const boxW = 140
-  const boxH = 32
-  const gap = 4
+  const boxH = 28
+  const gap = 3
+  const cols = 2
+  const colW = boxW + 8
+  const maxRows = Math.ceil(height / (boxH + gap)) - 2  // fit screen height
 
   spawnPanelRects.length = 0
 
+  const totalCols = Math.ceil(ENEMY_TYPES.length / maxRows)
+  const panelW = colW * Math.min(totalCols, cols) + 4
+  const panelH = (boxH + gap) * Math.min(ENEMY_TYPES.length, maxRows) + 8
+
   ctx.fillStyle = 'rgba(13, 10, 26, 0.85)'
-  ctx.fillRect(panelX - 4, panelY - 4, boxW + 8, (boxH + gap) * ENEMY_TYPES.length + 8)
+  ctx.fillRect(panelX - 4, panelY - 4, panelW, panelH)
 
   ctx.font = '11px monospace'
   for (let i = 0; i < ENEMY_TYPES.length; i++) {
     const t = ENEMY_TYPES[i]!
-    const y = panelY + i * (boxH + gap)
+    const col = Math.floor(i / maxRows)
+    const row = i % maxRows
+    const x = panelX + col * colW
+    const y = panelY + row * (boxH + gap)
 
-    spawnPanelRects.push({ x: panelX, y, w: boxW, h: boxH, typeIndex: i })
+    if (col >= cols) continue  // don't draw beyond visible columns
+
+    spawnPanelRects.push({ x, y, w: boxW, h: boxH, typeIndex: i })
 
     ctx.fillStyle = 'rgba(255, 255, 255, 0.05)'
-    ctx.fillRect(panelX, y, boxW, boxH)
+    ctx.fillRect(x, y, boxW, boxH)
 
     ctx.fillStyle = t.color
-    ctx.fillRect(panelX, y, 4, boxH)
+    ctx.fillRect(x, y, 4, boxH)
 
     ctx.fillStyle = t.color
     ctx.globalAlpha = 0.8
-    ctx.fillRect(panelX + 8, y + 6, 20, 20)
+    ctx.fillRect(x + 8, y + 5, 18, 18)
     ctx.globalAlpha = 1.0
     ctx.fillStyle = '#0D0A1A'
-    ctx.font = 'bold 13px monospace'
-    ctx.fillText(t.key, panelX + 14, y + 21)
+    ctx.font = 'bold 12px monospace'
+    ctx.fillText(t.key, x + 13, y + 18)
 
     ctx.fillStyle = t.color
-    ctx.font = '11px monospace'
-    ctx.fillText(`${t.name}`, panelX + 34, y + 15)
-    ctx.fillStyle = 'rgba(255,255,255,0.4)'
     ctx.font = '10px monospace'
-    ctx.fillText(t.role, panelX + 34, y + 27)
+    ctx.fillText(`${t.name}`, x + 30, y + 12)
+    ctx.fillStyle = 'rgba(255,255,255,0.35)'
+    ctx.font = '9px monospace'
+    ctx.fillText(t.isShrine ? 'shrine' : t.role, x + 30, y + 23)
   }
 }
 
