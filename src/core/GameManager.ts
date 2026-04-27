@@ -654,6 +654,7 @@ export function update(dt: number): void {
 
   // Death check
   if (player.hp <= 0 && getPhase() === 'playing') {
+    // hitFlash stays for jitter/color but shrink is skipped when dead (checked in renderer)
     setPhase('dead')
     const ch = getActiveChallenge()
     if (ch) fetchOnlineScores(ch.name)
@@ -1057,6 +1058,7 @@ export function render(alpha: number): void {
   }
   if (getPhase() === 'challenge_select') {
     Renderer.drawChallengeSelect(renderDt)
+    Renderer.drawIrisTransition(renderDt)
     return
   }
 
@@ -1073,4 +1075,7 @@ export function render(alpha: number): void {
   if (getPhase() === 'shopping') {
     drawShopScreen(ctx, canvas.width, canvas.height)
   }
+
+  // Iris transition overlay — draws on top of everything
+  Renderer.drawIrisTransition(renderDt)
 }

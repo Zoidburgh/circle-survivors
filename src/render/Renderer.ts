@@ -101,6 +101,148 @@ let shieldActivateSweep = 0 // countdown for top-to-bottom pink sweep
 let shieldPulsePhase = 0    // accumulated phase for smooth shield fuse pulse
 let shieldFuseCompletionFlash = 0  // flash at 12 o'clock when fuse completes
 let shieldDisplayProgress = 0  // smoothed recharge progress for retreat animation
+
+// Iris transition
+let irisActive = false
+let irisTimer = 0
+const IRIS_DURATION = 0.55
+let irisCx = 0
+let irisCy = 0
+let irisCallback: (() => void) | null = null
+
+let irisPhase: 'closing' | 'opening' = 'closing'
+
+export function startIrisTransition(cx: number, cy: number, onComplete: () => void): void {
+  irisActive = true
+  irisTimer = 0
+  irisPhase = 'closing'
+  irisCx = cx
+  irisCy = cy
+  irisCallback = onComplete
+}
+
+export function drawIrisTransition(dt: number): boolean {
+  if (!irisActive) return false
+  irisTimer += dt
+
+  const maxR = Math.sqrt(
+    Math.max(irisCx, width - irisCx) ** 2 +
+    Math.max(irisCy, height - irisCy) ** 2
+  )
+
+  if (irisPhase === 'closing') {
+    const t = Math.min(irisTimer / IRIS_DURATION, 1)
+    const edgeR = Math.max(0, maxR * (1 - t * t))  // ease-in shrink
+
+    // Black mask outside the circle
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(0, 0, width, height)
+    ctx.arc(irisCx, irisCy, edgeR, 0, Math.PI * 2, true)
+    ctx.fillStyle = '#0D0A1A'
+    ctx.fill()
+
+    // Edge rings
+    if (edgeR > 5) {
+      ctx.beginPath()
+      ctx.arc(irisCx, irisCy, edgeR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(0, 255, 255, ${0.2 * (1 - t)})`
+      ctx.lineWidth = 8
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(irisCx, irisCy, edgeR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(0, 255, 255, ${0.7 * (1 - t)})`
+      ctx.lineWidth = 2
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(irisCx, irisCy, edgeR + 4, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 50, 200, ${0.3 * (1 - t)})`
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    }
+    ctx.restore()
+
+    // Particles flying inward
+    if (edgeR > 10 && t < 0.9) {
+      const count = Math.ceil(3 + t * 5)
+      for (let p = 0; p < count; p++) {
+        const a = Math.random() * Math.PI * 2
+        const px = irisCx + Math.cos(a) * edgeR
+        const py = irisCy + Math.sin(a) * edgeR
+        const inA = Math.atan2(irisCy - py, irisCx - px)
+        const speed = 80 + Math.random() * 120
+        const isWhite = Math.random() < 0.3
+        spawnParticle(px + camX, py + camY,
+          Math.cos(inA) * speed + (Math.random() - 0.5) * 40,
+          Math.sin(inA) * speed + (Math.random() - 0.5) * 40,
+          isWhite ? 255 : 0, isWhite ? 255 : 255, 255,
+          0.2 + Math.random() * 0.15, 3 + Math.random() * 3)
+      }
+    }
+
+    // Close complete — launch game, start opening
+    if (t >= 1) {
+      if (irisCallback) {
+        irisCallback()
+        irisCallback = null
+      }
+      irisPhase = 'opening'
+      irisTimer = 0
+      irisCx = width / 2
+      irisCy = height / 2
+    }
+  } else {
+    // Opening phase — circle expands from center to reveal the game
+    const openDur = 0.4
+    const t = Math.min(irisTimer / openDur, 1)
+    const edgeR = t * t * maxR  // ease-in expand
+
+    // Black mask outside the expanding circle
+    ctx.save()
+    ctx.beginPath()
+    ctx.rect(0, 0, width, height)
+    ctx.arc(irisCx, irisCy, edgeR, 0, Math.PI * 2, true)
+    ctx.fillStyle = '#0D0A1A'
+    ctx.fill()
+
+    // Edge rings
+    if (edgeR > 5 && edgeR < maxR) {
+      ctx.beginPath()
+      ctx.arc(irisCx, irisCy, edgeR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(0, 255, 255, ${0.15 * (1 - t)})`
+      ctx.lineWidth = 6
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(irisCx, irisCy, edgeR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(0, 255, 255, ${0.5 * (1 - t)})`
+      ctx.lineWidth = 2
+      ctx.stroke()
+    }
+    ctx.restore()
+
+    // Particles flying outward on open
+    if (edgeR > 10 && t < 0.7) {
+      const count = Math.ceil(2 + t * 4)
+      for (let p = 0; p < count; p++) {
+        const a = Math.random() * Math.PI * 2
+        const px = irisCx + Math.cos(a) * edgeR
+        const py = irisCy + Math.sin(a) * edgeR
+        const speed = 60 + Math.random() * 100
+        const isWhite = Math.random() < 0.3
+        spawnParticle(px + camX, py + camY,
+          Math.cos(a) * speed + (Math.random() - 0.5) * 30,
+          Math.sin(a) * speed + (Math.random() - 0.5) * 30,
+          isWhite ? 255 : 0, isWhite ? 255 : 255, 255,
+          0.15 + Math.random() * 0.1, 2.5 + Math.random() * 2.5)
+      }
+    }
+
+    if (t >= 1) {
+      irisActive = false
+    }
+  }
+  return true
+}
 let prevDashSlots: number[] = []  // track dash slot states for burst detection
 let frameDt = 0.016         // render dt stored for use in draw functions
 const wavePts: number[] = []  // reused per frame for all waveforms
@@ -1007,36 +1149,21 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   }
   perfEnd('e_occlusion')
 
+  // Capture enemy ring peak positions (needed for overlay pass later)
   perfStart('e_rings')
   for (const enemy of enemies) {
     if (!enemy.alive && !enemy.dying) continue
     if (!enemy.dying) {
-      const arcs = blockedArcsCache.get(enemy) ?? []
       for (const rs of enemy.rings) {
-        // Capture enemy position at ring peak
         const pastPeak = rs.attackTimer - rs.expandTime
         if (pastPeak >= 0 && !rs.peakCaptured) {
           rs.peakX = enemy.x
           rs.peakY = enemy.y
           rs.peakCaptured = true
         }
-        // Use peak position for post-peak, current position for pre-peak
-        const useX = rs.peakCaptured && pastPeak >= 0 ? rs.peakX : enemy.x
-        const useY = rs.peakCaptured && pastPeak >= 0 ? rs.peakY : enemy.y
-        const savedX = enemy.x
-        const savedY = enemy.y
-        enemy.x = useX
-        enemy.y = useY
-        const origins = getRingOrigins(enemy, rs)
-        enemy.x = savedX
-        enemy.y = savedY
-        for (const origin of origins) {
-          drawRing(origin.x, origin.y, rs.ring, rs.attackTimer, undefined, rs.expandTime, arcs)
-        }
       }
     }
   }
-  updateAndDrawRevengeRings(lastDt)
   perfEnd('e_rings')
 
   perfStart('e_bodies')
@@ -1211,6 +1338,32 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfStart('player')
   drawPlayer(player)
   perfEnd('player')
+
+  // Enemy rings + revenge rings — drawn on top of player so attacks overlay
+  perfStart('e_rings_overlay')
+  for (const enemy of enemies) {
+    if (!enemy.alive && !enemy.dying) continue
+    if (!enemy.dying) {
+      const arcs = blockedArcsCache.get(enemy) ?? []
+      for (const rs of enemy.rings) {
+        const pastPeak = rs.attackTimer - rs.expandTime
+        const useX = rs.peakCaptured && pastPeak >= 0 ? rs.peakX : enemy.x
+        const useY = rs.peakCaptured && pastPeak >= 0 ? rs.peakY : enemy.y
+        const savedX = enemy.x
+        const savedY = enemy.y
+        enemy.x = useX
+        enemy.y = useY
+        const origins = getRingOrigins(enemy, rs)
+        enemy.x = savedX
+        enemy.y = savedY
+        for (const origin of origins) {
+          drawRing(origin.x, origin.y, rs.ring, rs.attackTimer, undefined, rs.expandTime, arcs)
+        }
+      }
+    }
+  }
+  updateAndDrawRevengeRings(lastDt)
+  perfEnd('e_rings_overlay')
 
   // Beat dash shockwave — drawn on top of everything
   if (beatDashFlash > 0) {
@@ -2117,7 +2270,8 @@ function drawPlayer(player: Player): void {
   let strokeColor = isGhostDashing ? '#FFFFFF' : COLOR_PLAYER
   if (player.hitFlash > 0) {
     const t = player.hitFlash / HIT_FLASH_DURATION // 1 = just hit, 0 = recovered
-    drawRadius = baseRadius * (0.7 + 0.3 * (1 - t)) // shrinks to 70% then bounces back
+    const isDead = getPhase() === 'dead'
+    drawRadius = isDead ? baseRadius : baseRadius * (0.7 + 0.3 * (1 - t)) // no shrink on death
     fillColor = `rgba(255, ${Math.floor(30 + 225 * (1 - t))}, ${Math.floor(30 + 217 * (1 - t))}, ${0.2 + 0.5 * t})`
     strokeColor = `rgb(255, ${Math.floor(30 + 225 * (1 - t))}, ${Math.floor(30 + 217 * (1 - t))})`
   }
@@ -3599,6 +3753,43 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   ctx.arc(sx, sy, r, 0, Math.PI * 2)
   if (isTotem) {
     ctx.fillStyle = 'rgba(15, 15, 20, 0.75)'  // neutral dark, heavier
+    ctx.fill()
+
+    // Totem inner texture — concentric ring pattern
+    ctx.save()
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.clip()
+    const ringCount = Math.floor(r / 12)
+    for (let i = 1; i <= ringCount; i++) {
+      const baseR = (i / ringCount) * r
+      const ringR = baseR + globalBeatPulse * (r * 0.35) * (i / ringCount)
+      ctx.beginPath()
+      ctx.arc(sx, sy, Math.min(ringR, r), 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.06 + (i / ringCount) * 0.04 + globalBeatPulse * 0.03})`
+      ctx.lineWidth = 1
+      ctx.stroke()
+    }
+    // Subtle cross pattern
+    const crossAlpha = 0.05
+    ctx.beginPath()
+    ctx.moveTo(sx - r, sy)
+    ctx.lineTo(sx + r, sy)
+    ctx.moveTo(sx, sy - r)
+    ctx.lineTo(sx, sy + r)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${crossAlpha})`
+    ctx.lineWidth = 2
+    ctx.stroke()
+    // Diagonal cross
+    ctx.beginPath()
+    ctx.moveTo(sx - r * 0.7, sy - r * 0.7)
+    ctx.lineTo(sx + r * 0.7, sy + r * 0.7)
+    ctx.moveTo(sx + r * 0.7, sy - r * 0.7)
+    ctx.lineTo(sx - r * 0.7, sy + r * 0.7)
+    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${crossAlpha * 0.7})`
+    ctx.lineWidth = 1
+    ctx.stroke()
+    ctx.restore()
   } else {
     ctx.fillStyle = `rgba(${Math.floor(hr * 0.08)}, ${Math.floor(hg * 0.08)}, ${Math.floor(hb * 0.08)}, 0.55)`
   }
@@ -5680,76 +5871,80 @@ export function drawChallengeSelect(dt: number): void {
     return
   }
 
-  // Challenge cards
-  const cardW = 560
-  const cardH = 228
-  const cardGap = 22
-  const startY = 120
-  const cols = Math.max(1, Math.floor((width - 80) / (cardW + cardGap)))
-  const gridW = cols * cardW + (cols - 1) * cardGap
-  const gridX = (width - gridW) / 2
+  // Challenge cards — single column, full width
+  const cardW = Math.min(750, width - 80)
+  const cardH = 150
+  const cardGap = 14
+  const startY = 110
+  const cardX = (width - cardW) / 2
 
   for (let i = 0; i < challenges.length; i++) {
     const ch = challenges[i]!
-    const col = i % cols
-    const row = Math.floor(i / cols)
-    const cardX = gridX + col * (cardW + cardGap)
-    const cardY = startY + row * (cardH + cardGap) - challengeSelectScroll
+    const cardY = startY + i * (cardH + cardGap) - challengeSelectScroll
     if (cardY + cardH < 0 || cardY > height) continue
 
     const isHover = challengeSelectHover === i
     const pulse = isHover ? 0.5 + 0.5 * Math.sin(now * 4) : 0
 
-    // Card bg
+    // Card bg — slightly lighter than background
     ctx.beginPath()
-    ctx.roundRect(cardX, cardY, cardW, cardH, 8)
-    ctx.fillStyle = isHover ? 'rgba(0, 255, 255, 0.08)' : 'rgba(255, 255, 255, 0.04)'
+    ctx.roundRect(cardX, cardY, cardW, cardH, 10)
+    ctx.fillStyle = isHover ? 'rgba(0, 255, 255, 0.07)' : 'rgba(200, 130, 200, 0.12)'
     ctx.fill()
-    ctx.strokeStyle = isHover ? `rgba(0, 255, 255, ${0.4 + pulse * 0.3})` : 'rgba(255, 255, 255, 0.12)'
+    ctx.strokeStyle = isHover ? `rgba(0, 255, 255, ${0.5 + pulse * 0.3})` : 'rgba(200, 130, 200, 0.32)'
     ctx.lineWidth = isHover ? 2 : 1
     ctx.stroke()
 
-    // Challenge name
-    ctx.font = 'bold 30px monospace'
-    ctx.textAlign = 'left'
-    ctx.fillStyle = isHover ? 'rgba(0, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.85)'
-    ctx.fillText(ch.name, cardX + 24, cardY + 38)
+    // Left accent bar — cyan
+    ctx.beginPath()
+    ctx.roundRect(cardX, cardY, 5, cardH, [10, 0, 0, 10])
+    ctx.fillStyle = isHover ? 'rgba(0, 255, 255, 0.7)' : 'rgba(0, 255, 255, 0.3)'
+    ctx.fill()
 
-    // Play hint on hover
+    // Challenge name — BIG
+    ctx.font = 'bold 35px monospace'
+    ctx.textAlign = 'left'
+    ctx.fillStyle = isHover ? 'rgba(0, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.9)'
+    ctx.fillText(ch.name, cardX + 20, cardY + 38)
+
+    // Play hint on hover — under the name on left side
     if (isHover) {
-      ctx.font = 'bold 22px monospace'
-      ctx.textAlign = 'right'
-      ctx.fillStyle = `rgba(0, 255, 255, ${0.6 + pulse * 0.3})`
-      ctx.fillText('PLAY ▶', cardX + cardW - 24, cardY + 36)
+      const fastPulse = 0.5 + 0.5 * Math.sin(now * 8)
+      ctx.font = 'bold 34px monospace'
       ctx.textAlign = 'left'
+      ctx.fillStyle = `rgba(255, 50, 200, ${0.6 + fastPulse * 0.35})`
+      ctx.fillText('PLAY \u25B6', cardX + 20, cardY + 80)
     }
 
-    // Top scores header
-    ctx.font = 'bold 18px monospace'
-    ctx.fillStyle = 'rgba(0, 255, 255, 0.5)'
-    ctx.fillText('TOP SCORES', cardX + 24, cardY + 66)
+    // LEADERBOARD — top 5 scores, right side
+    const lbX = cardX + cardW * 0.5
+    ctx.font = 'bold 22px monospace'
+    ctx.textAlign = 'left'
+    ctx.fillStyle = 'rgba(0, 255, 255, 0.7)'
+    ctx.fillText('LEADERBOARD', lbX, cardY + 24)
 
-    // Top 5 scores
     const top5 = getScoresForChallenge(ch.name, 5)
     const medalColors = ['rgba(255, 215, 64, 0.75)', 'rgba(120, 220, 255, 0.65)', 'rgba(255, 160, 80, 0.6)']
     for (let s = 0; s < 5; s++) {
-      const scoreY = cardY + 94 + s * 24
+      const scoreY = cardY + 46 + s * 22
       if (s < top5.length) {
         const sc = top5[s]!
-        ctx.font = 'bold 16px monospace'
+        ctx.font = 'bold 14px monospace'
         ctx.textAlign = 'left'
         ctx.fillStyle = s < 3 ? medalColors[s]! : 'rgba(255, 255, 255, 0.45)'
-        ctx.fillText(`${s + 1}.`, cardX + 24, scoreY)
-        ctx.fillText(sc.playerName, cardX + 50, scoreY)
+        ctx.fillText(`${s + 1}.`, lbX, scoreY)
+        ctx.fillText(sc.playerName, lbX + 22, scoreY)
         ctx.textAlign = 'right'
-        ctx.fillText(formatTime(sc.time), cardX + cardW - 24, scoreY)
-        ctx.textAlign = 'left'
+        ctx.fillStyle = s < 3 ? medalColors[s]! : 'rgba(255, 255, 255, 0.45)'
+        ctx.fillText(formatTime(sc.time), cardX + cardW - 20, scoreY)
       } else {
-        ctx.font = '16px monospace'
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.12)'
-        ctx.fillText(`${s + 1}.  ---`, cardX + 24, scoreY)
+        ctx.font = '14px monospace'
+        ctx.textAlign = 'left'
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.1)'
+        ctx.fillText(`${s + 1}.  ---`, lbX, scoreY)
       }
     }
+    ctx.textAlign = 'left'
   }
 
   ctx.textAlign = 'left'
@@ -5757,16 +5952,11 @@ export function drawChallengeSelect(dt: number): void {
 
 export function handleChallengeSelectClick(mx: number, my: number): Challenge | null {
   const challenges = getChallenges()
-  const cardW = 560, cardH = 180, cardGap = 22, startY = 120
-  const cols = Math.max(1, Math.floor((width - 80) / (cardW + cardGap)))
-  const gridW = cols * cardW + (cols - 1) * cardGap
-  const gridX = (width - gridW) / 2
+  const cardW = Math.min(750, width - 80), cardH = 150, cardGap = 14, startY = 110
+  const cardX = (width - cardW) / 2
 
   for (let i = 0; i < challenges.length; i++) {
-    const col = i % cols
-    const row = Math.floor(i / cols)
-    const cardX = gridX + col * (cardW + cardGap)
-    const cardY = startY + row * (cardH + cardGap) - challengeSelectScroll
+    const cardY = startY + i * (cardH + cardGap) - challengeSelectScroll
     if (mx >= cardX && mx <= cardX + cardW && my >= cardY && my <= cardY + cardH) {
       return challenges[i]!
     }
@@ -5776,17 +5966,12 @@ export function handleChallengeSelectClick(mx: number, my: number): Challenge | 
 
 export function handleChallengeSelectHover(mx: number, my: number): void {
   const challenges = getChallenges()
-  const cardW = 560, cardH = 180, cardGap = 22, startY = 120
-  const cols = Math.max(1, Math.floor((width - 80) / (cardW + cardGap)))
-  const gridW = cols * cardW + (cols - 1) * cardGap
-  const gridX = (width - gridW) / 2
+  const cardW = Math.min(750, width - 80), cardH = 150, cardGap = 14, startY = 110
+  const cardX = (width - cardW) / 2
 
   challengeSelectHover = -1
   for (let i = 0; i < challenges.length; i++) {
-    const col = i % cols
-    const row = Math.floor(i / cols)
-    const cardX = gridX + col * (cardW + cardGap)
-    const cardY = startY + row * (cardH + cardGap) - challengeSelectScroll
+    const cardY = startY + i * (cardH + cardGap) - challengeSelectScroll
     if (mx >= cardX && mx <= cardX + cardW && my >= cardY && my <= cardY + cardH) {
       challengeSelectHover = i
       break

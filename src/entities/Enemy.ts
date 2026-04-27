@@ -314,7 +314,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
 
   // Smooth HP display — drain faster when dying so it completes before death anim ends
   if (enemy.displayHp > enemy.hp) {
-    const drainRate = enemy.dying ? HP_DRAIN_SPEED * 4 : HP_DRAIN_SPEED * 2
+    const drainRate = enemy.dying ? HP_DRAIN_SPEED * 3 : HP_DRAIN_SPEED * 1.0
     enemy.displayHp -= (enemy.displayHp - enemy.hp) * drainRate * dt
     if (enemy.displayHp - enemy.hp < 0.01) enemy.displayHp = enemy.hp
   } else if (enemy.displayHp < enemy.hp) {

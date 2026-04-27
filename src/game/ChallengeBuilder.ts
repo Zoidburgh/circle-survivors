@@ -16,6 +16,7 @@ export interface Challenge {
   name: string
   arenaShape: 'rect' | 'circle' | 'hex' | 'pill' | 'cross'
   enemies: ChallengeEnemy[]
+  order?: number  // lower = earlier in list, default 999
 }
 
 const SAVE_KEY = 'beatback_challenges'
@@ -37,7 +38,9 @@ export function getSelectedPlacement(): number { return selectedPlacementIdx }
 export function getPlaceTypeName(): string { return placeTypeName }
 export function getChallengeName(): string { return challengeName }
 export function getChallengeArena(): Challenge['arenaShape'] { return challengeArena }
-export function getChallenges(): Challenge[] { return challenges }
+export function getChallenges(): Challenge[] {
+  return [...challenges].sort((a, b) => (a.order ?? 999) - (b.order ?? 999))
+}
 export function getActiveChallenge(): Challenge | null { return activeChallenge }
 
 export function setPlaceMode(typeName: string): void {
