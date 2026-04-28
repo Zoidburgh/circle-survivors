@@ -18,7 +18,7 @@ import type { BlockedArc } from '../game/RingOcclusion.ts'
 import { getEnemies, getRunTimer, isRunTimerActive, isRunComplete, getRunFinalTime, getPhase, getRunBeatCount } from '../core/GameState.ts'
 import { hasBonus } from '../game/UpgradeManager.ts'
 import { getOrbs } from '../entities/XPOrb.ts'
-import { getBeatName, getVolume, playDashReady } from '../audio/AudioEngine.ts'
+import { getBeatName, getVolume, playDashReady, playIrisOpen, playUIHover, playUIClick } from '../audio/AudioEngine.ts'
 import { isTouchMode, getJoystickState } from '../game/InputManager.ts'
 import { BEAT_SEC } from '../utils/constants.ts'
 import {
@@ -34,6 +34,7 @@ import {
   SHIELD_BREAK_FLASH,
   MASTER_BPM,
   COLOR_BG,
+  HP_DRAIN_SPEED,
 } from '../utils/constants.ts'
 
 let canvas: HTMLCanvasElement
@@ -64,7 +65,41 @@ let titleLastBeat = -1    // last whole beat seen on title
 let nameEntryText = ''    // current name being typed
 let pauseMouseX = 0
 let pauseMouseY = 0
-export function updatePauseMouse(x: number, y: number): void { pauseMouseX = x; pauseMouseY = y }
+let lastHoveredBtn = ''  // tracks which button is hovered for hover SFX
+
+let hoverCheckedThisFrame = false
+let pauseAnimTimer = 0
+let wasPaused = false
+let anyHoverThisFrame = false
+
+function checkHover(id: string, hovered: boolean): boolean {
+  if (!hoverCheckedThisFrame) {
+    hoverCheckedThisFrame = true
+    anyHoverThisFrame = false
+  }
+  if (hovered) {
+    anyHoverThisFrame = true
+    if (lastHoveredBtn !== id) {
+      lastHoveredBtn = id
+      playUIHover()
+    }
+  }
+  return hovered
+}
+
+function finalizeHoverCheck(): void {
+  if (hoverCheckedThisFrame && !anyHoverThisFrame) {
+    lastHoveredBtn = ''  // nothing hovered — reset so re-entering plays sound
+  }
+  hoverCheckedThisFrame = false
+}
+
+export function updatePauseMouse(x: number, y: number): void {
+  pauseMouseX = x
+  pauseMouseY = y
+  // Reset hover if mouse moves but nothing is hovered (checked each frame in draw functions)
+}
+export function clearHoverState(): void { lastHoveredBtn = '' }
 let bgPulseSmooth = 0    // smoothed follower for background color
 let gameTimeMs = 0       // accumulated game time in ms (pauses when game pauses)
 export function getGameTimeMs(): number { return gameTimeMs }
@@ -105,14 +140,26 @@ let shieldDisplayProgress = 0  // smoothed recharge progress for retreat animati
 // Iris transition
 let irisActive = false
 let irisTimer = 0
-const IRIS_DURATION = 0.55
+const IRIS_DURATION = 0.7
 let irisCx = 0
 let irisCy = 0
 let irisCallback: (() => void) | null = null
 
 let irisPhase: 'closing' | 'opening' = 'closing'
+let irisCardBurst = false
+let irisBurstParticles: { x: number; y: number; vx: number; vy: number; r: number; g: number; b: number; life: number; maxLife: number; size: number }[] = []
+
+export function startIrisOpen(): void {
+  irisActive = true
+  irisTimer = 0
+  irisPhase = 'opening'
+  irisCx = width / 2
+  irisCy = height / 2
+  irisCallback = null
+}
 
 export function startIrisTransition(cx: number, cy: number, onComplete: () => void): void {
+  irisCardBurst = true
   irisActive = true
   irisTimer = 0
   irisPhase = 'closing'
@@ -142,41 +189,92 @@ export function drawIrisTransition(dt: number): boolean {
     ctx.fillStyle = '#0D0A1A'
     ctx.fill()
 
-    // Edge rings
-    if (edgeR > 5) {
-      ctx.beginPath()
-      ctx.arc(irisCx, irisCy, edgeR, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(0, 255, 255, ${0.2 * (1 - t)})`
-      ctx.lineWidth = 8
-      ctx.stroke()
-      ctx.beginPath()
-      ctx.arc(irisCx, irisCy, edgeR, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(0, 255, 255, ${0.7 * (1 - t)})`
-      ctx.lineWidth = 2
-      ctx.stroke()
-      ctx.beginPath()
-      ctx.arc(irisCx, irisCy, edgeR + 4, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(255, 50, 200, ${0.3 * (1 - t)})`
-      ctx.lineWidth = 1.5
-      ctx.stroke()
-    }
     ctx.restore()
 
-    // Particles flying inward
-    if (edgeR > 10 && t < 0.9) {
-      const count = Math.ceil(3 + t * 5)
-      for (let p = 0; p < count; p++) {
+    // Card explosion — spawn screen-space burst particles on first frame
+    if (irisCardBurst) {
+      irisCardBurst = false
+      irisBurstParticles.length = 0
+      // Cyan burst
+      for (let p = 0; p < 70; p++) {
+        const a = (p / 70) * Math.PI * 2
+        const speed = 750 + Math.random() * 900
+        irisBurstParticles.push({ x: irisCx, y: irisCy,
+          vx: Math.cos(a) * speed + (Math.random() - 0.5) * 120,
+          vy: Math.sin(a) * speed + (Math.random() - 0.5) * 120,
+          r: 0, g: 255, b: 255, life: 0, maxLife: 0.4 + Math.random() * 0.25, size: 5 + Math.random() * 6 })
+      }
+      // Pink burst
+      for (let p = 0; p < 50; p++) {
+        const a = (p / 50) * Math.PI * 2 + 0.1
+        const speed = 600 + Math.random() * 750
+        irisBurstParticles.push({ x: irisCx, y: irisCy,
+          vx: Math.cos(a) * speed + (Math.random() - 0.5) * 150,
+          vy: Math.sin(a) * speed + (Math.random() - 0.5) * 150,
+          r: 255, g: 50, b: 200, life: 0, maxLife: 0.35 + Math.random() * 0.25, size: 4 + Math.random() * 5 })
+      }
+      // White sparks
+      for (let p = 0; p < 40; p++) {
         const a = Math.random() * Math.PI * 2
-        const px = irisCx + Math.cos(a) * edgeR
-        const py = irisCy + Math.sin(a) * edgeR
-        const inA = Math.atan2(irisCy - py, irisCx - px)
-        const speed = 80 + Math.random() * 120
-        const isWhite = Math.random() < 0.3
-        spawnParticle(px + camX, py + camY,
-          Math.cos(inA) * speed + (Math.random() - 0.5) * 40,
-          Math.sin(inA) * speed + (Math.random() - 0.5) * 40,
-          isWhite ? 255 : 0, isWhite ? 255 : 255, 255,
-          0.2 + Math.random() * 0.15, 3 + Math.random() * 3)
+        const speed = 900 + Math.random() * 900
+        irisBurstParticles.push({ x: irisCx, y: irisCy,
+          vx: Math.cos(a) * speed, vy: Math.sin(a) * speed,
+          r: 255, g: 255, b: 255, life: 0, maxLife: 0.25 + Math.random() * 0.2, size: 3 + Math.random() * 4 })
+      }
+    }
+
+    // Draw + update burst particles in screen space
+    for (let i = irisBurstParticles.length - 1; i >= 0; i--) {
+      const bp = irisBurstParticles[i]!
+      bp.life += dt
+      if (bp.life >= bp.maxLife) { irisBurstParticles.splice(i, 1); continue }
+      bp.x += bp.vx * dt
+      bp.y += bp.vy * dt
+      bp.vx *= 0.99
+      bp.vy *= 0.99
+      const ft = 1 - bp.life / bp.maxLife
+      ctx.beginPath()
+      ctx.arc(bp.x, bp.y, bp.size * ft, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${bp.r}, ${bp.g}, ${bp.b}, ${ft * 0.8})`
+      ctx.fill()
+    }
+
+    // White flash at click point — first frame only
+    if (t < 0.05) {
+      ctx.beginPath()
+      ctx.arc(irisCx, irisCy, 80, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 255, 255, ${0.6 * (1 - t / 0.05)})`
+      ctx.fill()
+      ctx.beginPath()
+      ctx.arc(irisCx, irisCy, 40, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 255, 255, ${0.8 * (1 - t / 0.05)})`
+      ctx.fill()
+    }
+
+    // 4 symmetrical spiral arms along the closing edge
+    if (edgeR > 5) {
+      for (let arm = 0; arm < 4; arm++) {
+        const armDir = arm % 2 === 0 ? 1 : -1
+        const armOffset = (arm / 4) * Math.PI * 2
+        const trailCount = 50
+        for (let p = 0; p < trailCount; p++) {
+          const trailT = p / trailCount
+          const spiralAngle = armOffset + t * Math.PI * 5 * armDir + trailT * Math.PI * 3 * armDir
+          const spiralR = edgeR - trailT * edgeR * 0.7
+          if (spiralR < 3) continue
+          const px = irisCx + Math.cos(spiralAngle) * spiralR
+          const py = irisCy + Math.sin(spiralAngle) * spiralR
+          const size = (1.5 + (1 - trailT) * 3) * (0.6 + t * 0.4)
+          const alpha = (1 - trailT * trailT) * (0.4 + t * 0.4)
+          const colorIdx = arm % 3
+          const cr = colorIdx === 0 ? 0 : colorIdx === 1 ? 255 : 255
+          const cg = colorIdx === 0 ? 255 : colorIdx === 1 ? 50 : 255
+          const cb = colorIdx === 0 ? 255 : colorIdx === 1 ? 200 : 255
+          ctx.beginPath()
+          ctx.arc(px, py, size, 0, Math.PI * 2)
+          ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha})`
+          ctx.fill()
+        }
       }
     }
 
@@ -190,10 +288,11 @@ export function drawIrisTransition(dt: number): boolean {
       irisTimer = 0
       irisCx = width / 2
       irisCy = height / 2
+      playIrisOpen()
     }
   } else {
     // Opening phase — circle expands from center to reveal the game
-    const openDur = 0.4
+    const openDur = 0.5
     const t = Math.min(irisTimer / openDur, 1)
     const edgeR = t * t * maxR  // ease-in expand
 
@@ -205,35 +304,32 @@ export function drawIrisTransition(dt: number): boolean {
     ctx.fillStyle = '#0D0A1A'
     ctx.fill()
 
-    // Edge rings
-    if (edgeR > 5 && edgeR < maxR) {
-      ctx.beginPath()
-      ctx.arc(irisCx, irisCy, edgeR, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(0, 255, 255, ${0.15 * (1 - t)})`
-      ctx.lineWidth = 6
-      ctx.stroke()
-      ctx.beginPath()
-      ctx.arc(irisCx, irisCy, edgeR, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(0, 255, 255, ${0.5 * (1 - t)})`
-      ctx.lineWidth = 2
-      ctx.stroke()
-    }
     ctx.restore()
 
-    // Particles flying outward on open
-    if (edgeR > 10 && t < 0.7) {
-      const count = Math.ceil(2 + t * 4)
-      for (let p = 0; p < count; p++) {
-        const a = Math.random() * Math.PI * 2
-        const px = irisCx + Math.cos(a) * edgeR
-        const py = irisCy + Math.sin(a) * edgeR
-        const speed = 60 + Math.random() * 100
-        const isWhite = Math.random() < 0.3
-        spawnParticle(px + camX, py + camY,
-          Math.cos(a) * speed + (Math.random() - 0.5) * 30,
-          Math.sin(a) * speed + (Math.random() - 0.5) * 30,
-          isWhite ? 255 : 0, isWhite ? 255 : 255, 255,
-          0.15 + Math.random() * 0.1, 2.5 + Math.random() * 2.5)
+    // 4 symmetrical spiral arms along the opening edge
+    if (edgeR > 5 && edgeR < maxR - 10) {
+      for (let arm = 0; arm < 4; arm++) {
+        const armDir = arm % 2 === 0 ? 1 : -1
+        const armOffset = (arm / 4) * Math.PI * 2
+        const trailCount = 40
+        for (let p = 0; p < trailCount; p++) {
+          const trailT = p / trailCount
+          const spiralAngle = armOffset + t * Math.PI * 4 * armDir + trailT * Math.PI * 3 * armDir
+          const spiralR = edgeR + trailT * 60
+          const px = irisCx + Math.cos(spiralAngle) * spiralR
+          const py = irisCy + Math.sin(spiralAngle) * spiralR
+          const size = (1.5 + (1 - trailT) * 2.5) * (1 - t * 0.6)
+          const alpha = (1 - trailT * trailT) * (0.4 - t * 0.3)
+          if (alpha <= 0 || size <= 0) continue
+          const colorIdx = arm % 3
+          const cr = colorIdx === 0 ? 0 : colorIdx === 1 ? 255 : 255
+          const cg = colorIdx === 0 ? 255 : colorIdx === 1 ? 50 : 255
+          const cb = colorIdx === 0 ? 255 : colorIdx === 1 ? 200 : 255
+          ctx.beginPath()
+          ctx.arc(px, py, size, 0, Math.PI * 2)
+          ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha})`
+          ctx.fill()
+        }
       }
     }
 
@@ -685,8 +781,8 @@ function updateAndDrawSpawnEffects(dt: number): void {
     }
 
     // 2. Ejection chain — 5 orbs shooting from totem, fast with trail
-    const chainCount = 5
-    const spacing = 0.08
+    const chainCount = 8
+    const spacing = 0.07
     ctx.lineCap = 'round'
 
     for (let c = 0; c < chainCount; c++) {
@@ -3304,31 +3400,30 @@ function drawShrine(enemy: Enemy, player: Player): void {
 
   // Idle — inviting pulse when player is NOT inside
   if (alive && !playerInside) {
-    const slowSpin = gameTimeMs / 3000
+    const spin = gameTimeMs / 1500  // faster base spin
 
     // Rotating arc segments — 3 arcs at different radii, ripple outward on beat
     for (let ring = 0; ring < 3; ring++) {
-      // Ripple: each ring pulses with a staggered delay
       const rippleDelay = ring * 0.12
       const rippleBp = Math.max(0, bp - rippleDelay) / (1 - rippleDelay)
-      const ringR = r * (0.15 + ring * 0.15 + rippleBp * 0.3)
+      const ringR = r * (0.1 + ring * 0.15 + rippleBp * 0.45)
 
       // 2 arc segments per ring, rotating in alternating directions
-      const arcLen = Math.PI * 0.6  // 108° each
-      const rot = slowSpin * (ring % 2 === 0 ? 1 : -0.7) + ring * 1.2
+      const arcLen = Math.PI * 0.5
+      const rot = spin * (ring % 2 === 0 ? 1.5 : -1.2) + ring * 1.2
       for (let a = 0; a < 2; a++) {
-        const arcStart = rot + a * Math.PI + rippleBp * 0.6
-        const arcEnd = arcStart + arcLen
+        const arcStart = rot + a * Math.PI + rippleBp * 1.2
+        const arcEnd = arcStart + arcLen + rippleBp * 0.3  // arcs stretch on beat
         // Glow
         ctx.beginPath()
         ctx.arc(sx, sy, ringR, arcStart, arcEnd)
-        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.04 + rippleBp * 0.08})`
+        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.04 + rippleBp * 0.12})`
         ctx.lineWidth = 5 - ring * 0.8
         ctx.stroke()
         // Core
         ctx.beginPath()
         ctx.arc(sx, sy, ringR, arcStart, arcEnd)
-        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.1 + rippleBp * 0.2})`
+        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.1 + rippleBp * 0.25})`
         ctx.lineWidth = 1.8 - ring * 0.3
         ctx.stroke()
       }
@@ -3766,7 +3861,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const ringR = baseR + globalBeatPulse * (r * 0.35) * (i / ringCount)
       ctx.beginPath()
       ctx.arc(sx, sy, Math.min(ringR, r), 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.06 + (i / ringCount) * 0.04 + globalBeatPulse * 0.03})`
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.02 + (i / ringCount) * 0.03 + globalBeatPulse * 0.45})`
       ctx.lineWidth = 1
       ctx.stroke()
     }
@@ -3838,8 +3933,16 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     // Phase pie — shows remaining phases like HP, bites on each spawn
     const totalPhases = enemy.summonPhases.length
     if (totalPhases > 0) {
-      const phasesRemaining = totalPhases - enemy.summonCurrentPhase
+      // Smooth display phase — drains toward actual
+      if (enemy.summonDisplayPhase < enemy.summonCurrentPhase) {
+        enemy.summonDisplayPhase += (enemy.summonCurrentPhase - enemy.summonDisplayPhase) * HP_DRAIN_SPEED * 1.0 * frameDt
+        if (enemy.summonCurrentPhase - enemy.summonDisplayPhase < 0.01) enemy.summonDisplayPhase = enemy.summonCurrentPhase
+      }
+      const phasesRemaining = totalPhases - enemy.summonDisplayPhase
+      const actualRemaining = totalPhases - enemy.summonCurrentPhase
       const phaseFrac = phasesRemaining / totalPhases
+      const actualFrac = actualRemaining / totalPhases
+      const damageFrac = phaseFrac - actualFrac  // the red drain wedge
 
       // Dark background
       const sbgGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
@@ -3850,9 +3953,21 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       ctx.fillStyle = sbgGrad
       ctx.fill()
 
-      // Filled phase wedge
-      if (phaseFrac > 0) {
-        const phaseEnd = startAngle + phaseFrac * Math.PI * 2
+      // Red drain wedge — between actual and display
+      if (damageFrac > 0.001) {
+        const drainStart = startAngle + actualFrac * Math.PI * 2
+        const drainEnd = startAngle + phaseFrac * Math.PI * 2
+        ctx.beginPath()
+        ctx.moveTo(sx, sy)
+        ctx.arc(sx, sy, r, drainStart, drainEnd)
+        ctx.closePath()
+        ctx.fillStyle = `rgba(255, 60, 60, 0.5)`
+        ctx.fill()
+      }
+
+      // Filled phase wedge — actual remaining
+      if (actualFrac > 0) {
+        const phaseEnd = startAngle + actualFrac * Math.PI * 2
         const phaseGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
         phaseGrad.addColorStop(0, `rgba(${Math.min(255, hr + 80)}, ${Math.min(255, hg + 40)}, ${Math.min(255, hb + 40)}, 0.7)`)
         phaseGrad.addColorStop(0.7, `rgba(${hr}, ${hg}, ${hb}, 0.5)`)
@@ -3898,7 +4013,9 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     const outerFill = `rgba(${Math.floor(hr * 0.75)}, ${Math.floor(hg * 0.75)}, ${Math.floor(hb * 0.75)}, 0.5)`
     const edgeColor = `rgba(${Math.min(255, hr + 80)}, ${Math.min(255, hg + 60)}, ${Math.min(255, hb + 60)}, 0.3)`
 
-    // Helper: draw a two-tone filled segment
+    // Helper: draw a two-tone filled segment with grid texture
+    const gbp = globalBeatPulse
+
     const drawSegFill = (sStart: number, sEnd: number) => {
       // Outer dark portion (full wedge)
       ctx.beginPath()
@@ -3913,6 +4030,13 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       ctx.arc(sx, sy, midR, sStart, sEnd)
       ctx.closePath()
       ctx.fillStyle = innerFill
+      ctx.fill()
+      // Beat flash on inner area
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.arc(sx, sy, midR, sStart, sEnd)
+      ctx.closePath()
+      ctx.fillStyle = `rgba(${Math.min(255, hr + 120)}, ${Math.min(255, hg + 100)}, ${Math.min(255, hb + 100)}, ${gbp * 0.5})`
       ctx.fill()
       // Edge highlight arc
       ctx.beginPath()
@@ -5691,7 +5815,7 @@ export function drawTitleScreen(dt: number): void {
   const btnBeat = titleBeatPulse
 
   // Start button hover
-  const startHov = pauseMouseX >= cx - btnW / 2 && pauseMouseX <= cx + btnW / 2 && pauseMouseY >= btnY && pauseMouseY <= btnY + btnH
+  const startHov = checkHover('title_start', pauseMouseX >= cx - btnW / 2 && pauseMouseX <= cx + btnW / 2 && pauseMouseY >= btnY && pauseMouseY <= btnY + btnH)
   const hovB = startHov ? 0.15 : 0
 
   // Button glow
@@ -5721,7 +5845,7 @@ export function drawTitleScreen(dt: number): void {
   const fsY = btnY + btnH + 160
   const fsW = 240
   const fsH = 50
-  const fsHov = pauseMouseX >= cx - fsW / 2 && pauseMouseX <= cx + fsW / 2 && pauseMouseY >= fsY && pauseMouseY <= fsY + fsH
+  const fsHov = checkHover('title_fs', pauseMouseX >= cx - fsW / 2 && pauseMouseX <= cx + fsW / 2 && pauseMouseY >= fsY && pauseMouseY <= fsY + fsH)
   ctx.beginPath()
   ctx.roundRect(cx - fsW / 2, fsY, fsW, fsH, 5)
   ctx.strokeStyle = `rgba(255, 50, 200, ${fsHov ? 0.65 : 0.35})`
@@ -5743,6 +5867,7 @@ export function drawTitleScreen(dt: number): void {
   // Update + draw particles on title screen
   updateParticles(dt)
   drawParticles()
+  finalizeHoverCheck()
 }
 
 // ── Challenge Select Screen ──
@@ -5847,7 +5972,7 @@ export function drawChallengeSelect(dt: number): void {
   const backH = 56
   const backX = 20
   const backY = 18
-  const backHov = pauseMouseX >= backX && pauseMouseX <= backX + backW && pauseMouseY >= backY && pauseMouseY <= backY + backH
+  const backHov = checkHover('cs_back', pauseMouseX >= backX && pauseMouseX <= backX + backW && pauseMouseY >= backY && pauseMouseY <= backY + backH)
   ctx.beginPath()
   ctx.roundRect(backX, backY, backW, backH, 10)
   ctx.strokeStyle = `rgba(0, 255, 255, ${backHov ? 0.7 : 0.35})`
@@ -5948,6 +6073,7 @@ export function drawChallengeSelect(dt: number): void {
   }
 
   ctx.textAlign = 'left'
+  finalizeHoverCheck()
 }
 
 export function handleChallengeSelectClick(mx: number, my: number): Challenge | null {
@@ -5969,6 +6095,7 @@ export function handleChallengeSelectHover(mx: number, my: number): void {
   const cardW = Math.min(750, width - 80), cardH = 150, cardGap = 14, startY = 110
   const cardX = (width - cardW) / 2
 
+  const prevHover = challengeSelectHover
   challengeSelectHover = -1
   for (let i = 0; i < challenges.length; i++) {
     const cardY = startY + i * (cardH + cardGap) - challengeSelectScroll
@@ -5976,6 +6103,9 @@ export function handleChallengeSelectHover(mx: number, my: number): void {
       challengeSelectHover = i
       break
     }
+  }
+  if (challengeSelectHover >= 0 && challengeSelectHover !== prevHover) {
+    playUIHover()
   }
 }
 
@@ -6719,7 +6849,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     const menuX = vcx + vBtnGap / 2
 
     // Try Again
-    const vRetryHov = pauseMouseX >= retryX && pauseMouseX <= retryX + vBtnW && pauseMouseY >= vBtnY && pauseMouseY <= vBtnY + vBtnH
+    const vRetryHov = checkHover('v_retry', pauseMouseX >= retryX && pauseMouseX <= retryX + vBtnW && pauseMouseY >= vBtnY && pauseMouseY <= vBtnY + vBtnH)
     ctx.beginPath()
     ctx.roundRect(retryX, vBtnY, vBtnW, vBtnH, 6)
     ctx.strokeStyle = `rgba(0, 255, 255, ${vRetryHov ? 0.8 : 0.5})`
@@ -6733,7 +6863,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.fillText('TRY AGAIN', retryX + vBtnW / 2, vBtnY + vBtnH / 2 + 6)
 
     // Menu
-    const vMenuHov = pauseMouseX >= menuX && pauseMouseX <= menuX + vBtnW && pauseMouseY >= vBtnY && pauseMouseY <= vBtnY + vBtnH
+    const vMenuHov = checkHover('v_menu', pauseMouseX >= menuX && pauseMouseX <= menuX + vBtnW && pauseMouseY >= vBtnY && pauseMouseY <= vBtnY + vBtnH)
     ctx.beginPath()
     ctx.roundRect(menuX, vBtnY, vBtnW, vBtnH, 6)
     ctx.strokeStyle = `rgba(255, 255, 255, ${vMenuHov ? 0.6 : 0.3})`
@@ -6953,8 +7083,22 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
 
   // Pause screen
   if (getPhase() === 'paused') {
-    // Dim overlay
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.45)'
+    // Track pause entry for animation
+    if (!wasPaused) {
+      pauseAnimTimer = 0
+      wasPaused = true
+    }
+    pauseAnimTimer += frameDt
+    const animDur = 0.2
+    const animT = Math.min(pauseAnimTimer / animDur, 1)
+
+    // Scale pop — overshoot bounce
+    const scale = animT < 0.7
+      ? 0.8 + (animT / 0.7) * 0.25  // 0.8 → 1.05
+      : 1.05 - ((animT - 0.7) / 0.3) * 0.05  // 1.05 → 1.0
+
+    // Dim overlay — fades in
+    ctx.fillStyle = `rgba(0, 0, 0, ${0.45 * Math.min(animT * 3, 1)})`
     ctx.fillRect(0, 0, width, height)
 
     const pcx = width / 2
@@ -6970,6 +7114,14 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     const panelContentH = titleH + (btnH + btnGap) * 4 + volH + panelPad
     const panelX = pcx - panelW / 2
     const panelY = (height - panelContentH) / 2
+
+    // Apply scale transform from panel center
+    const panelCx = pcx
+    const panelCy = panelY + panelContentH / 2
+    ctx.save()
+    ctx.translate(panelCx, panelCy)
+    ctx.scale(scale, scale)
+    ctx.translate(-panelCx, -panelCy)
 
     // Dark panel background
     ctx.beginPath()
@@ -6998,10 +7150,16 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
       pauseMouseX >= pcx - btnW / 2 && pauseMouseX <= pcx + btnW / 2 &&
       pauseMouseY >= by && pauseMouseY <= by + btnH
 
-    // Draw button helper
+    // Draw button helper — cascading fade-in
+    let btnIdx = 0
     const drawPauseBtn = (y: number, label: string, r: number, g: number, b: number) => {
-      const hov = isHovered(y)
+      const btnDelay = 0.03 * btnIdx  // 30ms stagger per button
+      const btnT = Math.max(0, Math.min((pauseAnimTimer - 0.08 - btnDelay) / 0.12, 1))
+      btnIdx++
+      if (btnT <= 0) return
+      const hov = checkHover(`pause_${label}`, isHovered(y))
       const hovBoost = hov ? 0.15 : 0
+      ctx.globalAlpha = btnT
       ctx.beginPath()
       ctx.roundRect(pcx - btnW / 2, y, btnW, btnH, 10)
       ctx.strokeStyle = `rgba(${r}, ${g}, ${b}, ${0.4 + hovBoost * 2})`
@@ -7019,6 +7177,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     drawPauseBtn(menuBtnY, 'M E N U', 255, 255, 255)
     const isFS = !!document.fullscreenElement
     drawPauseBtn(fsBtnY, isFS ? 'W I N D O W E D' : 'F U L L S C R E E N', 180, 130, 255)
+    ctx.globalAlpha = 1
 
     // Volume slider
     const pauseVolW = 200
@@ -7026,6 +7185,9 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     volumeSliderRect = pauseVolRect
 
     ctx.textAlign = 'left'
+    ctx.restore()  // undo scale transform
+  } else {
+    wasPaused = false
   }
 
   // Death screen
@@ -7118,7 +7280,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     const retryX = dcx - btnW - btnGap / 2
     const menuX = dcx + btnGap / 2
 
-    const dRetryHov = pauseMouseX >= retryX && pauseMouseX <= retryX + btnW && pauseMouseY >= btnBaseY && pauseMouseY <= btnBaseY + btnH
+    const dRetryHov = checkHover('d_retry', pauseMouseX >= retryX && pauseMouseX <= retryX + btnW && pauseMouseY >= btnBaseY && pauseMouseY <= btnBaseY + btnH)
     ctx.beginPath()
     ctx.roundRect(retryX, btnBaseY, btnW, btnH, 8)
     ctx.strokeStyle = `rgba(0, 255, 255, ${dRetryHov ? 0.8 : 0.5})`
@@ -7131,7 +7293,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.fillStyle = `rgba(0, 255, 255, ${dRetryHov ? 1 : 0.8})`
     ctx.fillText('TRY AGAIN', retryX + btnW / 2, btnBaseY + btnH / 2 + 8)
 
-    const dMenuHov = pauseMouseX >= menuX && pauseMouseX <= menuX + btnW && pauseMouseY >= btnBaseY && pauseMouseY <= btnBaseY + btnH
+    const dMenuHov = checkHover('d_menu', pauseMouseX >= menuX && pauseMouseX <= menuX + btnW && pauseMouseY >= btnBaseY && pauseMouseY <= btnBaseY + btnH)
     ctx.beginPath()
     ctx.roundRect(menuX, btnBaseY, btnW, btnH, 8)
     ctx.strokeStyle = `rgba(255, 255, 255, ${dMenuHov ? 0.6 : 0.3})`
@@ -7197,6 +7359,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
 
     ctx.restore()
   }
+  finalizeHoverCheck()
 }
 
 // Volume slider — returns the track rect for click handling

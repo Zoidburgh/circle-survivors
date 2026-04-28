@@ -591,6 +591,270 @@ export function playBeatTick(): void {
   playKick()
 }
 
+/** UI hover — subtle soft tick */
+export function playUIHover(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  const tick = c.createOscillator()
+  const tickGain = c.createGain()
+  tick.type = 'sine'
+  tick.frequency.setValueAtTime(rPitch(1200), t)
+  tick.frequency.exponentialRampToValueAtTime(rPitch(800), t + 0.04)
+  tickGain.gain.setValueAtTime(rVol(0.08), t)
+  tickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.05)
+  tick.connect(tickGain)
+  tickGain.connect(master)
+  tick.start(t)
+  tick.stop(t + 0.05)
+}
+
+/** UI click — short satisfying snap */
+export function playUIClick(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  // Click pop
+  const pop = c.createOscillator()
+  const popGain = c.createGain()
+  pop.type = 'sine'
+  pop.frequency.setValueAtTime(rPitch(600), t)
+  pop.frequency.exponentialRampToValueAtTime(rPitch(300), t + 0.06)
+  popGain.gain.setValueAtTime(rVol(0.2), t)
+  popGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08)
+  pop.connect(popGain)
+  popGain.connect(master)
+  pop.start(t)
+  pop.stop(t + 0.08)
+  // Tiny noise snap
+  const nDur = 0.03
+  const nBuf = c.createBuffer(1, Math.floor(c.sampleRate * nDur), c.sampleRate)
+  const nData = nBuf.getChannelData(0)
+  for (let i = 0; i < nData.length; i++) nData[i] = (Math.random() * 2 - 1) * 0.3
+  const noise = c.createBufferSource()
+  noise.buffer = nBuf
+  const nFilter = c.createBiquadFilter()
+  nFilter.type = 'highpass'
+  nFilter.frequency.value = 3000
+  const nGain = c.createGain()
+  nGain.gain.setValueAtTime(rVol(0.12), t)
+  nGain.gain.exponentialRampToValueAtTime(0.001, t + nDur)
+  noise.connect(nFilter)
+  nFilter.connect(nGain)
+  nGain.connect(master)
+  noise.start(t)
+  noise.stop(t + nDur)
+}
+
+/** Challenge select click — explosive burst + descending spiral whoosh (0.7s to match iris) */
+export function playIrisClose(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  // Impact hit — loud punchy transient
+  const hit = c.createOscillator()
+  const hitGain = c.createGain()
+  hit.type = 'sine'
+  hit.frequency.setValueAtTime(rPitch(500), t)
+  hit.frequency.exponentialRampToValueAtTime(rPitch(60), t + 0.2)
+  hitGain.gain.setValueAtTime(rVol(0.7), t)
+  hitGain.gain.exponentialRampToValueAtTime(0.001, t + 0.25)
+  hit.connect(hitGain)
+  hitGain.connect(master)
+  hit.start(t)
+  hit.stop(t + 0.25)
+
+  // Heavy sub thump
+  const sub = c.createOscillator()
+  const subGain = c.createGain()
+  sub.type = 'sine'
+  sub.frequency.setValueAtTime(rPitch(90), t)
+  sub.frequency.exponentialRampToValueAtTime(rPitch(20), t + 0.35)
+  subGain.gain.setValueAtTime(rVol(0.6), t)
+  subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35)
+  sub.connect(subGain)
+  subGain.connect(master)
+  sub.start(t)
+  sub.stop(t + 0.35)
+
+  // Long descending whoosh — covers full 0.7s iris duration
+  const whooshDur = 0.7
+  const whooshBuf = c.createBuffer(1, Math.floor(c.sampleRate * whooshDur), c.sampleRate)
+  const whooshData = whooshBuf.getChannelData(0)
+  for (let i = 0; i < whooshData.length; i++) whooshData[i] = (Math.random() * 2 - 1) * 0.6
+  const whoosh = c.createBufferSource()
+  whoosh.buffer = whooshBuf
+  const whooshFilter = c.createBiquadFilter()
+  whooshFilter.type = 'bandpass'
+  whooshFilter.Q.value = 1.5
+  whooshFilter.frequency.setValueAtTime(4000, t)
+  whooshFilter.frequency.exponentialRampToValueAtTime(150, t + whooshDur)
+  const whooshGain = c.createGain()
+  whooshGain.gain.setValueAtTime(rVol(0.5), t)
+  whooshGain.gain.linearRampToValueAtTime(rVol(0.6), t + 0.2)
+  whooshGain.gain.exponentialRampToValueAtTime(0.001, t + whooshDur)
+  whoosh.connect(whooshFilter)
+  whooshFilter.connect(whooshGain)
+  whooshGain.connect(master)
+  whoosh.start(t)
+  whoosh.stop(t + whooshDur)
+
+  // Descending tone — spiral feel, covers full duration
+  const spiral = c.createOscillator()
+  const spiral2 = c.createOscillator()
+  const spiralGain = c.createGain()
+  spiral.type = 'sawtooth'
+  spiral2.type = 'sawtooth'
+  spiral.frequency.setValueAtTime(rPitch(600), t + 0.1)
+  spiral.frequency.exponentialRampToValueAtTime(rPitch(80), t + 0.65)
+  spiral2.frequency.setValueAtTime(rPitch(620), t + 0.1)
+  spiral2.frequency.exponentialRampToValueAtTime(rPitch(85), t + 0.65)
+  spiralGain.gain.setValueAtTime(0.001, t + 0.1)
+  spiralGain.gain.linearRampToValueAtTime(rVol(0.2), t + 0.2)
+  spiralGain.gain.exponentialRampToValueAtTime(0.001, t + 0.7)
+  const spiralFilter = c.createBiquadFilter()
+  spiralFilter.type = 'lowpass'
+  spiralFilter.frequency.setValueAtTime(2000, t + 0.1)
+  spiralFilter.frequency.exponentialRampToValueAtTime(300, t + 0.65)
+  spiral.connect(spiralFilter)
+  spiral2.connect(spiralFilter)
+  spiralFilter.connect(spiralGain)
+  spiralGain.connect(reverbInput)
+  spiral.start(t + 0.1)
+  spiral2.start(t + 0.1)
+  spiral.stop(t + 0.7)
+  spiral2.stop(t + 0.7)
+
+  // Noise crackle tail
+  const crackDur = 0.3
+  const crackBuf = c.createBuffer(1, Math.floor(c.sampleRate * crackDur), c.sampleRate)
+  const crackData = crackBuf.getChannelData(0)
+  for (let i = 0; i < crackData.length; i++) crackData[i] = (Math.random() * 2 - 1) * 0.4
+  const crack = c.createBufferSource()
+  crack.buffer = crackBuf
+  const crackFilter = c.createBiquadFilter()
+  crackFilter.type = 'highpass'
+  crackFilter.frequency.value = 2000
+  const crackGain = c.createGain()
+  crackGain.gain.setValueAtTime(rVol(0.3), t)
+  crackGain.gain.exponentialRampToValueAtTime(0.001, t + crackDur)
+  crack.connect(crackFilter)
+  crackFilter.connect(crackGain)
+  crackGain.connect(master)
+  crack.start(t)
+  crack.stop(t + crackDur)
+}
+
+/** Challenge opening / restart — dramatic rising reveal (0.5s to match iris) */
+export function playIrisOpen(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  // Big rising whoosh — covers full open duration
+  const whooshDur = 0.5
+  const whooshBuf = c.createBuffer(1, Math.floor(c.sampleRate * whooshDur), c.sampleRate)
+  const whooshData = whooshBuf.getChannelData(0)
+  for (let i = 0; i < whooshData.length; i++) whooshData[i] = (Math.random() * 2 - 1) * 0.6
+  const whoosh = c.createBufferSource()
+  whoosh.buffer = whooshBuf
+  const whooshFilter = c.createBiquadFilter()
+  whooshFilter.type = 'bandpass'
+  whooshFilter.Q.value = 1.5
+  whooshFilter.frequency.setValueAtTime(150, t)
+  whooshFilter.frequency.exponentialRampToValueAtTime(4000, t + whooshDur)
+  const whooshGain = c.createGain()
+  whooshGain.gain.setValueAtTime(0.001, t)
+  whooshGain.gain.linearRampToValueAtTime(rVol(0.5), t + whooshDur * 0.7)
+  whooshGain.gain.exponentialRampToValueAtTime(0.001, t + whooshDur)
+  whoosh.connect(whooshFilter)
+  whooshFilter.connect(whooshGain)
+  whooshGain.connect(master)
+  whoosh.start(t)
+  whoosh.stop(t + whooshDur)
+
+  // Rising spiral tone — opposite of close
+  const spiral = c.createOscillator()
+  const spiral2 = c.createOscillator()
+  const spiralGain = c.createGain()
+  spiral.type = 'sawtooth'
+  spiral2.type = 'sawtooth'
+  spiral.frequency.setValueAtTime(rPitch(80), t)
+  spiral.frequency.exponentialRampToValueAtTime(rPitch(500), t + 0.4)
+  spiral2.frequency.setValueAtTime(rPitch(85), t)
+  spiral2.frequency.exponentialRampToValueAtTime(rPitch(520), t + 0.4)
+  spiralGain.gain.setValueAtTime(0.001, t)
+  spiralGain.gain.linearRampToValueAtTime(rVol(0.18), t + 0.15)
+  spiralGain.gain.exponentialRampToValueAtTime(0.001, t + 0.45)
+  const spiralFilter = c.createBiquadFilter()
+  spiralFilter.type = 'lowpass'
+  spiralFilter.frequency.setValueAtTime(300, t)
+  spiralFilter.frequency.exponentialRampToValueAtTime(2500, t + 0.4)
+  spiral.connect(spiralFilter)
+  spiral2.connect(spiralFilter)
+  spiralFilter.connect(spiralGain)
+  spiralGain.connect(reverbInput)
+  spiral.start(t)
+  spiral2.start(t)
+  spiral.stop(t + 0.45)
+  spiral2.stop(t + 0.45)
+
+  // Rising chime — bright arrival, fifth interval
+  const chime = c.createOscillator()
+  const chime2 = c.createOscillator()
+  const chimeGain = c.createGain()
+  chime.type = 'sine'
+  chime2.type = 'sine'
+  chime.frequency.setValueAtTime(rPitch(500), t + 0.1)
+  chime.frequency.exponentialRampToValueAtTime(rPitch(1000), t + 0.3)
+  chime2.frequency.setValueAtTime(rPitch(750), t + 0.1)
+  chime2.frequency.exponentialRampToValueAtTime(rPitch(1500), t + 0.3)
+  chimeGain.gain.setValueAtTime(0.001, t + 0.1)
+  chimeGain.gain.linearRampToValueAtTime(rVol(0.3), t + 0.2)
+  chimeGain.gain.exponentialRampToValueAtTime(0.001, t + 0.4)
+  chime.connect(chimeGain)
+  chime2.connect(chimeGain)
+  chimeGain.connect(reverbInput)
+  chime.start(t + 0.1)
+  chime2.start(t + 0.1)
+  chime.stop(t + 0.4)
+  chime2.stop(t + 0.4)
+
+  // Sub lift — heavy
+  const sub = c.createOscillator()
+  const subGain = c.createGain()
+  sub.type = 'sine'
+  sub.frequency.setValueAtTime(rPitch(30), t)
+  sub.frequency.exponentialRampToValueAtTime(rPitch(90), t + 0.35)
+  subGain.gain.setValueAtTime(0.001, t)
+  subGain.gain.linearRampToValueAtTime(rVol(0.45), t + 0.2)
+  subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.4)
+  sub.connect(subGain)
+  subGain.connect(master)
+  sub.start(t)
+  sub.stop(t + 0.4)
+
+  // Bright crack at the end — "arrival" snap
+  const crackDur = 0.08
+  const crackBuf = c.createBuffer(1, Math.floor(c.sampleRate * crackDur), c.sampleRate)
+  const crackData = crackBuf.getChannelData(0)
+  for (let i = 0; i < crackData.length; i++) crackData[i] = (Math.random() * 2 - 1) * 0.5
+  const crack = c.createBufferSource()
+  crack.buffer = crackBuf
+  const crackFilter = c.createBiquadFilter()
+  crackFilter.type = 'highpass'
+  crackFilter.frequency.value = 3000
+  const crackGain = c.createGain()
+  crackGain.gain.setValueAtTime(rVol(0.35), t + 0.25)
+  crackGain.gain.exponentialRampToValueAtTime(0.001, t + 0.25 + crackDur)
+  crack.connect(crackFilter)
+  crackFilter.connect(crackGain)
+  crackGain.connect(master)
+  crack.start(t + 0.25)
+  crack.stop(t + 0.25 + crackDur)
+}
+
 export function playShrineSummon(): void {
   ensureContext()
   const c = ctx!
@@ -747,7 +1011,7 @@ export function playDash(): void {
   osc2.frequency.setValueAtTime(rPitch(650), t)
   osc2.frequency.exponentialRampToValueAtTime(rPitch(160), t + 0.3)
   gain.gain.setValueAtTime(0.001, t)
-  gain.gain.linearRampToValueAtTime(rVol(0.15), t + 0.04)
+  gain.gain.linearRampToValueAtTime(rVol(0.35), t + 0.04)
   gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3)
   osc1.connect(gain)
   osc2.connect(gain)

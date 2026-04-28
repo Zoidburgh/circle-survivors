@@ -97,6 +97,7 @@ export interface Enemy {
   summonProgress: number          // nodes locked in current sequence
   summonStartOffset: number       // which node player started at
   summonCurrentPhase: number      // which phase we're on
+  summonDisplayPhase: number      // smooth display for drain animation
   summonNodeStates: ('idle' | 'locked')[]
   summonLockFlash: number[]       // per-node flash timer
   summonBeatCount: number         // monotonic beat counter
@@ -216,6 +217,7 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     summonProgress: 0,
     summonStartOffset: 0,
     summonCurrentPhase: 0,
+    summonDisplayPhase: 0,
     summonNodeStates: Array(type.summonNodes ?? 3).fill('idle'),
     summonLockFlash: Array(type.summonNodes ?? 3).fill(0),
     summonBeatCount: 0,

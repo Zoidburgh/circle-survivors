@@ -9,7 +9,7 @@ import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameStat
 import { update, render } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
 import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, onStartChallenge } from './game/EnemyDesigner.ts'
-import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd, startIrisTransition } from './render/Renderer.ts'
+import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd, startIrisTransition, startIrisOpen } from './render/Renderer.ts'
 import { setVolume } from './audio/AudioEngine.ts'
 import { submitScore, isNameClean, fetchOnlineScores } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
@@ -27,6 +27,7 @@ let debugNodeType = 0  // 0 = triangle shop, 1 = pentagon star
 
 // ── Fullscreen helper — works on desktop, shows guidance on iOS ──
 function toggleFullscreen(): void {
+  Audio.playUIClick()
   if (document.fullscreenElement) {
     document.exitFullscreen()
   } else if (document.documentElement.requestFullscreen) {
@@ -117,6 +118,8 @@ function restartChallenge(): void {
   }
   setPhase('playing')
   showControlsHint()
+  startIrisOpen()
+  Audio.playIrisOpen()
   Audio.startShieldFuseBurn(getPlayer().shieldRechargeTime)
 }
 
@@ -162,6 +165,7 @@ function ensureAudio(): void {
 function startGame(): void {
   if (getPhase() !== 'title') return
   ensureAudio()
+  Audio.playUIClick()
   Audio.switchBeat(0)
   setPhase('challenge_select')
   // Fetch global scores for all challenges
@@ -424,8 +428,10 @@ canvas.addEventListener('click', e => {
     const menuX = canvas.width / 2 + vBtnGap / 2
     if (c.y >= vBtnY && c.y <= vBtnY + vBtnH) {
       if (c.x >= retryX && c.x <= retryX + vBtnW) {
+        Audio.playUIClick()
         restartChallenge()
       } else if (c.x >= menuX && c.x <= menuX + vBtnW) {
+        Audio.playUIClick()
         resetGameState()
         setPhase('challenge_select')
       }
@@ -445,10 +451,13 @@ canvas.addEventListener('click', e => {
     const fsBtnY = menuBtnY + btnH + btnGap
     if (c.x >= pcx - btnW / 2 && c.x <= pcx + btnW / 2) {
       if (c.y >= resumeY && c.y <= resumeY + btnH) {
+        Audio.playUIClick()
         setPhase('playing')
       } else if (c.y >= restartBtnY && c.y <= restartBtnY + btnH) {
+        Audio.playUIClick()
         restartChallenge()
       } else if (c.y >= menuBtnY && c.y <= menuBtnY + btnH) {
+        Audio.playUIClick()
         resetGameState()
         setPhase('challenge_select')
       } else if (c.y >= fsBtnY && c.y <= fsBtnY + btnH) {
@@ -460,11 +469,13 @@ canvas.addEventListener('click', e => {
   if (getPhase() === 'challenge_select') {
     // Back button — top-left
     if (c.x <= 180 && c.y <= 74) {
+      Audio.playUIClick()
       setPhase('title')
       return
     }
     const ch = handleChallengeSelectClick(c.x, c.y)
     if (ch) {
+      Audio.playIrisClose()
       startIrisTransition(c.x, c.y, () => launchChallenge(ch))
     }
     return
@@ -477,8 +488,10 @@ canvas.addEventListener('click', e => {
     const menuX = dcx + btnGap / 2
     if (c.y >= btnBaseY && c.y <= btnBaseY + btnH) {
       if (c.x >= retryX && c.x <= retryX + btnW) {
+        Audio.playUIClick()
         restartChallenge()
       } else if (c.x >= menuX && c.x <= menuX + btnW) {
+        Audio.playUIClick()
         resetGameState()
         setPhase('challenge_select')
       }
