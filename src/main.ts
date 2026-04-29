@@ -250,6 +250,10 @@ window.addEventListener('keydown', e => {
     return
   }
   if (!__DEV__) return  // no debug keys in release
+  if (e.key === '`' || e.key === '~') {
+    Renderer.toggleSpawnPanel()
+    return
+  }
   // F1-F5: switch beat presets
   if (e.key.startsWith('F') && e.key.length <= 3) {
     const num = parseInt(e.key.slice(1))

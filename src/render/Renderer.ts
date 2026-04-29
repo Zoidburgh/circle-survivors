@@ -858,7 +858,7 @@ function spawnDeathRipples(x: number, y: number, radius: number, color: string):
     deathRipples.push({
       x, y, r, g, b,
       startRadius: radius,
-      maxRadius: radius + 150 + i * 80,
+      maxRadius: radius + 225 + i * 120,
       timer: 0,
       delay: i * 0.06,
       duration: 0.3 + i * 0.075,
@@ -970,13 +970,31 @@ function drawParticles(): void {
     const alpha = Math.min(1, t * 1.6)  // bright early, smooth fade
     const sx = p.x - camX
     const sy = p.y - camY
-    const spin = p.life * 2.7 + (p.x * 0.01)  // spin based on lifetime + unique offset
+    const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy)
     const hs = p.size / 2
     ctx.fillStyle = `rgba(${p.r}, ${p.g}, ${p.b}, ${alpha})`
     ctx.save()
     ctx.translate(sx, sy)
-    ctx.rotate(spin)
-    ctx.fillRect(-hs, -hs, p.size, p.size)
+    if (speed > 60) {
+      // Fast particles → pointed diamond streaks in velocity direction
+      const angle = Math.atan2(p.vy, p.vx)
+      ctx.rotate(angle)
+      const stretch = Math.min(speed / 80, 3)
+      const hw = hs * stretch * 2.25  // half width (long axis)
+      const hh = hs * 1.05            // half height (short axis, thicker)
+      ctx.beginPath()
+      ctx.moveTo(-hw, 0)       // back point
+      ctx.lineTo(0, -hh)       // top
+      ctx.lineTo(hw, 0)        // front point
+      ctx.lineTo(0, hh)        // bottom
+      ctx.closePath()
+      ctx.fill()
+    } else {
+      // Slow particles → normal spinning squares
+      const spin = p.life * 2.7 + (p.x * 0.01)
+      ctx.rotate(spin)
+      ctx.fillRect(-hs, -hs, p.size, p.size)
+    }
     ctx.restore()
   }
 }
@@ -2036,7 +2054,7 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   // Explosion at peak — white-hot sparks racing along the ring circumference
   if (showRedRing && pastPeak < lastDt * 2 && particles.length < MAX_PARTICLES - 20) {
     const ringScale = Math.max(1, currentRadius / 140)
-    const totalCount = Math.round(30 * ringScale)
+    const totalCount = Math.round(21 * ringScale)
     const angleOffset = Math.random() * Math.PI * 2
     for (let i = 0; i < totalCount; i++) {
       const angle = angleOffset + (i / totalCount) * Math.PI * 2 + (Math.random() - 0.5) * (Math.PI * 2 / totalCount) * 0.3
@@ -2055,15 +2073,15 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
       // Tangential velocity — races along the ring
       const dir = i % 2 === 0 ? 1 : -1  // alternating CW/CCW
       const tangentAngle = angle + (Math.PI / 2) * dir
-      const tangentSpeed = 120 + Math.random() * 180
+      const tangentSpeed = 240 + Math.random() * 360
       // Slight inward pull
-      const inwardSpeed = -(10 + Math.random() * 15)
+      const inwardSpeed = -(40 + Math.random() * 40)
       const vx = Math.cos(tangentAngle) * tangentSpeed + Math.cos(angle) * inwardSpeed
       const vy = Math.sin(tangentAngle) * tangentSpeed + Math.sin(angle) * inwardSpeed
       const isRed = i % 10 === 0
       const isWhite = !isRed && i % 4 === 0
       const lt = 0.16 + Math.random() * 0.12  // short life — punchy
-      const sz = (isWhite ? 10.3 : 8.6) * (0.9 + Math.random() * 0.3)
+      const sz = (isWhite ? 7.7 : 6.5) * (0.9 + Math.random() * 0.3)
       const pr = isRed ? 255 : isWhite ? 255 : Math.min(255, ri + 100)
       const pg = isRed ? 60 + Math.floor(Math.random() * 40) : isWhite ? 255 : Math.min(255, gi + 60)
       const pb = isRed ? 50 + Math.floor(Math.random() * 30) : isWhite ? 255 : Math.min(255, bi + 60)
@@ -2089,16 +2107,20 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   ctx.lineWidth = lineW
   drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
 
-  // White-gold flash at exact peak — 1-2 frames
-  if (showRedRing && pastPeak < 0.03) {
-    const peakFlash = 1 - (pastPeak / 0.03)
-    // Bright white ring
-    ctx.strokeStyle = `rgba(255, 255, 255, ${peakFlash * 0.8})`
+  // White-gold flash at exact peak — bright, unmissable
+  if (showRedRing && pastPeak < 0.05) {
+    const peakFlash = 1 - (pastPeak / 0.05)
+    // Wide hot glow
+    ctx.strokeStyle = `rgba(255, 220, 100, ${peakFlash * 0.5})`
+    ctx.lineWidth = lineW * 4
+    drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
+    // Bright white core ring
+    ctx.strokeStyle = `rgba(255, 255, 255, ${peakFlash * 0.95})`
     ctx.lineWidth = lineW * 2
     drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
-    // Sharp 1px edge
+    // Sharp edge
     ctx.strokeStyle = `rgba(255, 255, 255, ${peakFlash})`
-    ctx.lineWidth = 1
+    ctx.lineWidth = 1.5
     drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
   }
 
@@ -2412,35 +2434,39 @@ function drawPlayer(player: Player): void {
 
   // Hit particles — burst from inside the damage wedge
   if (player.hitFlash > HIT_FLASH_DURATION - 0.02 && player.shieldBreakFlash <= 0) {
+    // Player velocity estimate for blood momentum
+    const pvx = (player.x - player.prevX) / Math.max(frameDt, 0.001)
+    const pvy = (player.y - player.prevY) / Math.max(frameDt, 0.001)
+    const bloodOffPX = pvx * 0.08
+    const bloodOffPY = pvy * 0.08
     const dmgFraction = 1 / player.maxHp
     const intensity = Math.min(Math.max(dmgFraction / 0.05, 1), 3)
     const count = Math.floor(16 * intensity)
-    // Damage arc: from current HP to where displayHp was (the fresh bite)
     const dmgArcStart = hpStart + actualPlayerHp * Math.PI * 2
     const dmgArcEnd = dmgArcStart + dmgFraction * Math.PI * 2
     const arcSpan = dmgArcEnd - dmgArcStart
     for (let i = 0; i < count; i++) {
       const angle = dmgArcStart + Math.random() * arcSpan
       const dist = Math.random() * drawRadius
-      const px = player.x + Math.cos(angle) * dist
-      const py = player.y + Math.sin(angle) * dist
-      const speed = (228 + Math.random() * 325) * (0.8 + intensity * 0.2)
+      const px = player.x + bloodOffPX + Math.cos(angle) * dist
+      const py = player.y + bloodOffPY + Math.sin(angle) * dist
+      const speed = (274 + Math.random() * 430) * (0.8 + intensity * 0.2)
       const outAngle = Math.atan2(py - player.y, px - player.x)
-      const spread = (Math.random() - 0.5) * speed * 0.25
-      const size = (3 + Math.random() * 3) * (0.8 + intensity * 0.2)
+      const spread = (Math.random() - 0.5) * speed * 0.2
+      const size = (2.4 + Math.random() * 2.4) * (0.8 + intensity * 0.2)
       const isBlue = Math.random() < 0.2
       spawnParticle(px, py,
-        Math.cos(outAngle) * speed + spread, Math.sin(outAngle) * speed + spread,
+        Math.cos(outAngle) * speed + spread + pvx, Math.sin(outAngle) * speed + spread + pvy,
         isBlue ? 79 : 255, isBlue ? 195 : 80 + Math.floor(Math.random() * 50), isBlue ? 247 : 70,
-        0.55 + Math.random() * 0.35, size)
+        0.31 + Math.random() * 0.22, size)
     }
     // Extra center spray — white-hot core burst
     for (let i = 0; i < 6; i++) {
       const angle = dmgArcStart + Math.random() * arcSpan
-      const speed = 98 + Math.random() * 195
-      spawnParticle(player.x, player.y,
-        Math.cos(angle) * speed, Math.sin(angle) * speed,
-        255, 200 + Math.floor(Math.random() * 55), 180, 0.3 + Math.random() * 0.2, 3 + Math.random() * 2)
+      const speed = 147 + Math.random() * 317
+      spawnParticle(player.x + bloodOffPX, player.y + bloodOffPY,
+        Math.cos(angle) * speed + pvx, Math.sin(angle) * speed + pvy,
+        255, 200 + Math.floor(Math.random() * 55), 180, 0.31 + Math.random() * 0.22, 3 + Math.random() * 2)
     }
   }
 
@@ -3755,9 +3781,9 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         const dist = r * Math.random() * 0.5
         const px = enemy.x + Math.cos(angle) * dist
         const py = enemy.y + Math.sin(angle) * dist
-        const speed = 300 + Math.random() * 350
+        const speed = 450 + Math.random() * 525
         spawnParticle(px, py, Math.cos(angle) * speed, Math.sin(angle) * speed,
-          255, 80 + Math.floor(Math.random() * 50), 70, 0.25 + Math.random() * 0.15, 5 + Math.random() * 3)
+          255, 80 + Math.floor(Math.random() * 50), 70, 0.38 + Math.random() * 0.22, 7.5 + Math.random() * 4.5)
       }
     }
 
@@ -3901,29 +3927,32 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     const damageArcStart = startAngle + (enemy.hp / enemy.maxHp) * Math.PI * 2
     const damageArcEnd = damageArcStart + damageFraction * Math.PI * 2
     const arcSpan = damageArcEnd - damageArcStart
+    // Spawn blood offset in movement direction so it stays with moving enemies
+    const bloodOffX = enemy.vx * 0.08  // ~5 frames ahead
+    const bloodOffY = enemy.vy * 0.08
     for (let i = 0; i < count; i++) {
       const angle = damageArcStart + Math.random() * arcSpan
       const dist = Math.random() * r
-      const px = enemy.x + Math.cos(angle) * dist
-      const py = enemy.y + Math.sin(angle) * dist
-      const speed = (228 + Math.random() * 358) * (0.8 + intensity * 0.2)
+      const px = enemy.x + bloodOffX + Math.cos(angle) * dist
+      const py = enemy.y + bloodOffY + Math.sin(angle) * dist
+      const speed = (274 + Math.random() * 430) * (0.8 + intensity * 0.2)
       const outAngle = Math.atan2(py - enemy.y, px - enemy.x)
-      const vx = Math.cos(outAngle) * speed + (Math.random() - 0.5) * speed * 0.2
-      const vy = Math.sin(outAngle) * speed + (Math.random() - 0.5) * speed * 0.2
+      const vx = Math.cos(outAngle) * speed + (Math.random() - 0.5) * speed * 0.2 + enemy.vx
+      const vy = Math.sin(outAngle) * speed + (Math.random() - 0.5) * speed * 0.2 + enemy.vy
       const sizeScale = Math.min(r / 44, 1)
-      const size = (4 + Math.random() * 4) * (0.8 + intensity * 0.2) * sizeScale * sizeScale
-      spawnParticle(px, py, vx, vy, 255, 80 + Math.floor(Math.random() * 50), 70, 0.5 + Math.random() * 0.35, size)
+      const size = (3.2 + Math.random() * 3.2) * (0.8 + intensity * 0.2) * sizeScale * sizeScale
+      spawnParticle(px, py, vx, vy, 255, 80 + Math.floor(Math.random() * 50), 70, 0.31 + Math.random() * 0.22, size)
     }
     // Blood spray from center — enemy colored
-    const sprayCount = Math.floor(6 * intensity)
+    const sprayCount = Math.floor(3 * intensity)
     for (let i = 0; i < sprayCount; i++) {
       const angle = Math.random() * Math.PI * 2
-      const speed = 98 + Math.random() * 211 * intensity
+      const speed = 118 + Math.random() * 254 * intensity
       const sizeScale2 = Math.min(r / 44, 1)
-      const size = (3.5 + Math.random() * 4) * (0.8 + intensity * 0.2) * sizeScale2 * sizeScale2
-      spawnParticle(enemy.x, enemy.y,
-        Math.cos(angle) * speed, Math.sin(angle) * speed,
-        230 + Math.floor(Math.random() * 25), 40 + Math.floor(Math.random() * 40), 40, 0.5 + Math.random() * 0.35, size)
+      const size = (2.8 + Math.random() * 3.2) * (0.8 + intensity * 0.2) * sizeScale2 * sizeScale2
+      spawnParticle(enemy.x + bloodOffX, enemy.y + bloodOffY,
+        Math.cos(angle) * speed + enemy.vx, Math.sin(angle) * speed + enemy.vy,
+        230 + Math.floor(Math.random() * 25), 40 + Math.floor(Math.random() * 40), 40, 0.31 + Math.random() * 0.22, size)
     }
   }
 
@@ -6121,7 +6150,12 @@ export function getSpawnPanelClick(mx: number, my: number): number {
   return -1
 }
 
+let spawnPanelVisible = false
+export function toggleSpawnPanel(): void { spawnPanelVisible = !spawnPanelVisible }
+export function isSpawnPanelVisible(): boolean { return spawnPanelVisible }
+
 function drawSpawnPanel(): void {
+  if (!spawnPanelVisible) { spawnPanelRects.length = 0; return }
   const panelX = 10
   const panelY = 10
   const boxW = 140
