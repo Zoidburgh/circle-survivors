@@ -15,7 +15,8 @@ import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat } from '../audio/PatternClock.ts'
-import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon } from '../audio/AudioEngine.ts'
+import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare } from '../audio/AudioEngine.ts'
+import { resetProTip, showToast } from '../render/Renderer.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
 import { getScoresForChallenge, fetchOnlineScores } from '../game/HighScores.ts'
 import { getActiveChallenge } from '../game/ChallengeBuilder.ts'
@@ -182,6 +183,11 @@ on('enemy:revenge', (enemy: Enemy) => {
 })
 
 // Queue volatile explosion on death
+on('enemy:killed', () => {
+  recentKills++
+  recentKillTimer = 0.5  // 0.5s window to count as "same time"
+})
+
 on('enemy:killed', (enemy: Enemy) => {
   if (!enemy.volatile) return
   pendingExplosions.push({
@@ -333,6 +339,10 @@ on('player:beatDash', (player: Player) => {
         if (enemy.summonProgress >= N && enemy.summonActivationTimer <= 0) {
           enemy.summonActivationTimer = BEAT_SEC * 0.5
         }
+        // Start run timer on first node hit
+        if (!isRunTimerActive() && !isRunComplete()) {
+          startRunTimer()
+        }
       }
       continue
     }
@@ -342,6 +352,10 @@ on('player:beatDash', (player: Player) => {
     if (dx * dx + dy * dy <= hitRange * hitRange) {
       const wasDying = enemy.dying
       damageEnemy(enemy, damage)
+      // Start run timer on first damage dealt
+      if (!isRunTimerActive() && !isRunComplete()) {
+        startRunTimer()
+      }
       // Totem spawn on hit
       if (enemy.totemSpawn) {
         emit('totem:spawn', enemy)
@@ -381,10 +395,18 @@ on('player:shieldBreak', () => {
   playShieldBreak()
   const player = getPlayer()
   startShieldFuseBurn(player.shieldRechargeTime)
+  shieldBreakCount++
+  if (shieldBreakCount <= 2 && getActiveChallenge()?.name === 'Beginner Challenge') {
+    showToast('Shield Down :(', { y: 0.14, duration: 1.5, fadeOut: 0.3, id: 'shield_down', color: [255, 50, 200], style: 'sad' })
+  }
 })
 on('player:shieldRestore', () => {
   stopShieldFuseBurn()
   playShieldRestore()
+  shieldRechargeCount++
+  if (shieldRechargeCount <= 2 && getActiveChallenge()?.name === 'Beginner Challenge') {
+    showToast('Shield UP!', { y: 0.14, duration: 2, id: 'shield_up', color: [255, 50, 200], style: 'glow', glowWords: ['UP!'], glowColor: [255, 50, 200] })
+  }
 })
 on('player:shieldRechargeReset', (player: Player) => {
   startShieldFuseBurn(player.shieldRechargeTime)
@@ -481,10 +503,55 @@ on('summon:phase', (enemy: Enemy) => {
   }
 })
 
+let lowHpToastFired = false
+let boomToastFired = false
+let shieldRechargeCount = 0
+let shieldBreakCount = 0
+let challengeElapsed = 0
+let aliveToastFired = false
+let finishHimFired = false
+let lastMoveTime = 0
+let afkFired = false
+let recentKills = 0
+let recentKillTimer = 0
+let comboFired = false
+let consecutiveAttackKills = 0
+let killSpreeFired = false
+let attacksSinceLastKill = 0
+let prevAttackTimer = -1
+let recentHpCollected = 0
+let recentHpTimer = 0
+let prevPlayerHp = 0
+let lastDashTime = 0
+let doubleDashFired = false
+let prevDashSlotSum = 0
+
 export function resetPendingEffects(): void {
   pendingExplosions.length = 0
   pendingRevenges.length = 0
   pendingShrineSpawns.length = 0
+  lowHpToastFired = false
+  boomToastFired = false
+  shieldRechargeCount = 0
+  shieldBreakCount = 0
+  challengeElapsed = 0
+  aliveToastFired = false
+  finishHimFired = false
+  lastMoveTime = 0
+  afkFired = false
+  recentKills = 0
+  recentKillTimer = 0
+  comboFired = false
+  consecutiveAttackKills = 0
+  killSpreeFired = false
+  attacksSinceLastKill = 0
+  prevAttackTimer = -1
+  recentHpCollected = 0
+  recentHpTimer = 0
+  prevPlayerHp = -1  // -1 = uninitialized, will sync on first frame
+  lastDashTime = 0
+  doubleDashFired = false
+  prevDashSlotSum = 0
 }
 
 export function update(dt: number): void {
@@ -652,9 +719,107 @@ export function update(dt: number): void {
   updatePlayer(player, dt)
   perfEnd('u_player')
 
+  // Danger music — dark layer when low HP
+  updateDangerMusic(player.hp / player.maxHp)
+
+  // Challenge elapsed timer
+  challengeElapsed += dt
+
+  // AFK detection — no movement for 10s
+  const isMoving = Math.abs(player.x - player.prevX) > 0.5 || Math.abs(player.y - player.prevY) > 0.5
+  if (isMoving) lastMoveTime = challengeElapsed
+  if (!afkFired && challengeElapsed - lastMoveTime >= 10 && challengeElapsed > 3) {
+    afkFired = true
+    showToast('AFK...?', { y: 0.14, duration: 3, size: 42, id: 'afk', color: [255, 255, 255], style: 'sad' })
+  }
+
+  // Detect dash — count charging slots, if more than last frame a dash was used
+  const chargingSlots = player.dashSlots.filter(t => t > 0).length
+  if (chargingSlots > prevDashSlotSum) {
+    const now = challengeElapsed
+    if (!doubleDashFired && now - lastDashTime < 0.7 && lastDashTime > 0 && getActiveChallenge()?.name === 'Beginner Challenge') {
+      doubleDashFired = true
+      showToast('WOW! Look at you GO!', { y: 0.14, duration: 2.5, id: 'double_dash', style: 'glow', glowWords: ['WOW!', 'GO!'], glowColor: [100, 255, 120] })
+    }
+    lastDashTime = now
+  }
+  prevDashSlotSum = chargingSlots
+
+  // HP nom tracking — detect healing each frame, accumulate over 0.5s window
+  if (prevPlayerHp < 0) prevPlayerHp = player.hp  // sync on first frame
+  const hpGain = player.hp - prevPlayerHp
+  if (hpGain > 0.5) {
+    recentHpCollected += Math.round(hpGain)
+    recentHpTimer = 0.5
+  }
+  prevPlayerHp = player.hp
+  if (recentHpTimer > 0) {
+    recentHpTimer -= dt
+    if (recentHpTimer <= 0) {
+      if (recentHpCollected >= 4) {
+        showToast('NOM NOM NOM NOM', { y: 0.14, duration: 2, size: 42, id: `nom_${challengeElapsed}`, color: [100, 255, 160], style: 'combo' })
+      }
+      recentHpCollected = 0
+    }
+  }
+
+  // Detect attack beat — attackTimer resets to 0+ when ring fires
+  if (player.attackTimer >= 0 && prevAttackTimer < 0) {
+    // New attack just fired — did the last attack have kills?
+    if (attacksSinceLastKill > 0) {
+      // An attack happened with no kill since last kill — break streak
+      consecutiveAttackKills = 0
+    }
+    attacksSinceLastKill++
+  }
+  prevAttackTimer = player.attackTimer
+
+  // Combo tracking — kills within 0.5s window
+  if (recentKillTimer > 0) {
+    recentKillTimer -= dt
+    if (recentKillTimer <= 0) {
+      if (recentKills >= 3) {
+        showToast('C-C-C-COMBO!', { y: 0.14, duration: 2, size: 48, id: `combo_${challengeElapsed}`, color: [255, 215, 64], style: 'combo' })
+      }
+      if (recentKills > 0) {
+        consecutiveAttackKills += recentKills
+        attacksSinceLastKill = 0  // reset — this attack had kills
+      }
+      if (consecutiveAttackKills >= 7) {
+        consecutiveAttackKills = 0
+        showToast('KILLING SPREE!', { y: 0.14, duration: 2.5, size: 48, id: `spree_${challengeElapsed}`, color: [255, 50, 50], style: 'combo' })
+      }
+      recentKills = 0
+    }
+  }
+
+  // "FINISH HIM" — 1 enemy left (all challenges)
+  if (!finishHimFired && isRunTimerActive()) {
+    const alive = enemies.filter(e => e.alive && !e.dying && !e.summon && !e.totemSpawn && !e.isShrine).length
+    const anySpawners = enemies.some(e => e.alive && !e.dying && (e.summon || e.totemSpawn || e.isShrine))
+    if (alive === 1 && !anySpawners) {
+      finishHimFired = true
+      showToast('FINISH HIM!', { y: 0.14, duration: 2.5, size: 52, id: 'finish_him', color: [255, 50, 50], style: 'combo' })
+    }
+  }
+
+  // "Still alive" toast — Challenge 1 at 45s
+  if (!aliveToastFired && challengeElapsed >= 45 && getActiveChallenge()?.name === 'Beginner Challenge') {
+    aliveToastFired = true
+    showToast('Still alive. The cake is not a lie.', { y: 0.14, duration: 4, id: 'still_alive' })
+  }
+
+  // Low HP toast — Beginner Challenge (once per attempt)
+  if (player.hp === 2 && !lowHpToastFired && getActiveChallenge()?.name === 'Beginner Challenge') {
+    lowHpToastFired = true
+    showToast('AHHH 2-HP maybe dash away?', { y: 0.14, id: 'low_hp', style: 'glow', glowWords: ['AHHH', '2-HP'], glowColor: [255, 50, 50] })
+  }
+
   // Death check
   if (player.hp <= 0 && getPhase() === 'playing') {
     // hitFlash stays for jitter/color but shrink is skipped when dead (checked in renderer)
+    playDeathRoll()
+    resetProTip()
     setPhase('dead')
     const ch = getActiveChallenge()
     if (ch) fetchOnlineScores(ch.name)
@@ -717,6 +882,10 @@ export function update(dt: number): void {
       playVolatileExplosion()
     }
     // Detonate after exactly 1 second
+    if (exp.timer >= BEAT_SEC && !boomToastFired && getActiveChallenge()?.name === 'Beginner Challenge') {
+      boomToastFired = true
+      showToast('BOOM!', { y: 0.14, duration: 1.5, size: 56, id: 'boom', color: [255, 120, 30], style: 'combo' })
+    }
     if (exp.timer >= BEAT_SEC) {
       // Damage all enemies in range (check current pos + blink destination)
       for (const enemy of enemies) {
@@ -735,6 +904,10 @@ export function update(dt: number): void {
         if (inRange || destInRange) {
           const wasDying = enemy.dying
           damageEnemy(enemy, 1)
+          // Start run timer on first damage dealt
+          if (!isRunTimerActive() && !isRunComplete()) {
+            startRunTimer()
+          }
           // Trigger revenge ring if hit enemy has revenge tag (including killing blow)
           if (enemy.revenge) {
             emit('enemy:revenge', enemy)
@@ -1020,6 +1193,7 @@ export function update(dt: number): void {
   if (isRunTimerActive()) {
     const anyAlive = enemies.some(e => e.alive)
     if (!anyAlive) {
+      playVictoryFanfare()
       completeRun()
       const ch = getActiveChallenge()
       if (ch) {

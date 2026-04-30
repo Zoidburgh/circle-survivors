@@ -234,7 +234,17 @@ export function initHitDetection(): void {
     const rs = enemy.rings[ringIndex]
     if (!rs) return
 
-    playEnemyBeatTick(rs.patternName, rs.sound)
+    // Count same-type enemies alive for harmony
+    let sameTypeCount = 0
+    const enemies = getEnemies()
+    const tn = enemy.typeName
+    for (let ei = 0; ei < enemies.length; ei++) {
+      if (enemies[ei]!.alive && enemies[ei]!.typeName === tn) {
+        sameTypeCount++
+        if (sameTypeCount >= 3) break  // cap at 3 for chord
+      }
+    }
+    playEnemyBeatTick(rs.patternName, rs.sound, sameTypeCount)
 
     const ringRadius = rs.ring.radius * getRingExpansion(rs.attackTimer)
     const origins = getRingOrigins(enemy, rs)

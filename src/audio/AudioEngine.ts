@@ -1780,9 +1780,466 @@ const SOUND_MAP: Record<string, () => void> = {
   pulse: playPulseSound,
 }
 
+// ── Danger music — descending warning melody synced to beat when low HP ──
+
+let dangerStep = 0
+let dangerLastBeat = -1
+let dangerHpFraction = 1
+
+// Descending minor pattern — plays on the beat
+const DANGER_PATTERN = [0, -1, -3, -5]
+
+/** Call each frame with player HP fraction (0-1) */
+export function updateDangerMusic(hpFraction: number): void {
+  dangerHpFraction = hpFraction
+}
+
+/** Called from beat system — plays danger note on beat when HP is low */
+export function tickDangerBeat(beatPosition: number): void {
+  if (!ctx || !master) return
+  const threshold = 0.35
+  if (dangerHpFraction >= threshold || dangerHpFraction <= 0) {
+    dangerStep = 0
+    dangerLastBeat = -1
+    return
+  }
+
+  const intensity = 1 - (dangerHpFraction / threshold)
+
+  // Double time normally, quadruple time when critical
+  const mult = intensity > 0.6 ? 4 : 2
+  const beatRes = Math.floor(beatPosition * mult)
+  if (beatRes === dangerLastBeat) return
+  dangerLastBeat = beatRes
+
+  playDangerNote(intensity, dangerStep)
+  dangerStep = (dangerStep + 1) % DANGER_PATTERN.length
+}
+
+function playDangerNote(intensity: number, step: number): void {
+  const c = ctx!
+  const t = c.currentTime + 0.37  // sync with BeatLoop's schedule offset
+
+  const semitone = Math.pow(2, 1 / 12)
+  const baseFreq = currentMusic ? currentMusic.droneRoot * 2 : 220  // one octave above drone root
+  const degree = DANGER_PATTERN[step]!
+  const freq = baseFreq * Math.pow(semitone, degree)
+
+  const vol = 0.2 + intensity * 0.2
+
+  // Melody note — sine
+  const osc1 = c.createOscillator()
+  const g1 = c.createGain()
+  osc1.type = 'sine'
+  osc1.frequency.setValueAtTime(freq, t)
+  g1.gain.setValueAtTime(vol, t)
+  g1.gain.exponentialRampToValueAtTime(0.001, t + 0.45)
+  osc1.connect(g1)
+  g1.connect(master)
+  osc1.start(t)
+  osc1.stop(t + 0.45)
+
+  // Dark minor third — triangle
+  const osc2 = c.createOscillator()
+  const g2 = c.createGain()
+  osc2.type = 'triangle'
+  osc2.frequency.setValueAtTime(freq * 1.189, t)  // minor 3rd
+  g2.gain.setValueAtTime(vol * 0.5, t)
+  g2.gain.exponentialRampToValueAtTime(0.001, t + 0.35)
+  osc2.connect(g2)
+  g2.connect(master)
+  osc2.start(t)
+  osc2.stop(t + 0.35)
+
+  // Low octave — weight
+  const osc3 = c.createOscillator()
+  const g3 = c.createGain()
+  osc3.type = 'sine'
+  osc3.frequency.setValueAtTime(freq * 0.5, t)
+  g3.gain.setValueAtTime(vol * 0.35, t)
+  g3.gain.exponentialRampToValueAtTime(0.001, t + 0.5)
+  osc3.connect(g3)
+  g3.connect(master)
+  osc3.start(t)
+  osc3.stop(t + 0.5)
+}
+
+/** Death roll — dramatic drum roll + sad trombone, you're dead bro */
+export function playDeathRoll(): void {
+  if (!ctx || !master) return
+  const c = ctx
+  const t = c.currentTime
+
+  // ── Part 1: Accelerating drum roll — builds tension ──
+  const rollCount = 22
+  for (let i = 0; i < rollCount; i++) {
+    // Accelerating: starts slow, gets frantic
+    const spacing = 0.08 - (i / rollCount) * 0.05  // 80ms → 30ms
+    let noteTime = t
+    for (let j = 0; j <= i; j++) noteTime = t + j * (0.08 - (j / rollCount) * 0.05)
+    // Recompute properly
+    noteTime = t
+    for (let j = 0; j < i; j++) noteTime += 0.08 - (j / rollCount) * 0.05
+
+    const vol = 0.2 + (i / rollCount) * 0.35  // gets louder
+
+    // Snare-like hit — noise burst + tone
+    const noise = c.createOscillator()
+    const nGain = c.createGain()
+    noise.type = 'square'
+    noise.frequency.setValueAtTime(200 + Math.random() * 800, noteTime)
+    noise.frequency.setValueAtTime(100 + Math.random() * 400, noteTime + 0.02)
+    nGain.gain.setValueAtTime(vol * 0.6, noteTime)
+    nGain.gain.exponentialRampToValueAtTime(0.001, noteTime + 0.04)
+    noise.connect(nGain)
+    nGain.connect(master)
+    noise.start(noteTime)
+    noise.stop(noteTime + 0.04)
+
+    // Tonal hit underneath
+    const tom = c.createOscillator()
+    const tGain = c.createGain()
+    tom.type = 'sine'
+    tom.frequency.setValueAtTime(180 - (i / rollCount) * 60, noteTime)
+    tom.frequency.exponentialRampToValueAtTime(60, noteTime + 0.08)
+    tGain.gain.setValueAtTime(vol * 0.5, noteTime)
+    tGain.gain.exponentialRampToValueAtTime(0.001, noteTime + 0.08)
+    tom.connect(tGain)
+    tGain.connect(master)
+    tom.start(noteTime)
+    tom.stop(noteTime + 0.08)
+  }
+
+  // Time when roll ends
+  let rollEnd = t
+  for (let j = 0; j < rollCount; j++) rollEnd += 0.08 - (j / rollCount) * 0.05
+
+  // ── Part 2: Crash cymbal at the peak ──
+  for (let i = 0; i < 6; i++) {
+    const crash = c.createOscillator()
+    const cGain = c.createGain()
+    crash.type = 'square'
+    crash.frequency.value = 3000 + Math.random() * 5000
+    cGain.gain.setValueAtTime(0.18, rollEnd)
+    cGain.gain.exponentialRampToValueAtTime(0.001, rollEnd + 0.3)
+    crash.connect(cGain)
+    cGain.connect(master)
+    crash.start(rollEnd)
+    crash.stop(rollEnd + 0.3)
+  }
+  // Big double kick at crash
+  for (let k = 0; k < 2; k++) {
+    const kick = c.createOscillator()
+    const kGain = c.createGain()
+    kick.type = 'sine'
+    kick.frequency.setValueAtTime(180, rollEnd + k * 0.08)
+    kick.frequency.exponentialRampToValueAtTime(25, rollEnd + k * 0.08 + 0.25)
+    kGain.gain.setValueAtTime(0.65, rollEnd + k * 0.08)
+    kGain.gain.exponentialRampToValueAtTime(0.001, rollEnd + k * 0.08 + 0.3)
+    kick.connect(kGain)
+    kGain.connect(master)
+    kick.start(rollEnd + k * 0.08)
+    kick.stop(rollEnd + k * 0.08 + 0.3)
+  }
+
+  // ── Part 3: Sad trombone — bwah bwah bwah bwaaahhh ──
+  const tStart = rollEnd + 0.2
+  const root = currentMusic ? currentMusic.droneRoot : 110
+
+  // Classic descending 4-note sad melody — in key with the music
+  // Root → major 7th → 5th → drops to minor 3rd below (the sad resolution)
+  const sadNotes = [root * 2, root * 2 * 0.944, root * 1.5, root * 0.6]
+  const durations = [0.35, 0.35, 0.35, 1.4]
+
+  let noteStart = tStart
+  for (let i = 0; i < sadNotes.length; i++) {
+    const freq = sadNotes[i]!
+    const dur = durations[i]!
+    const isLast = i === sadNotes.length - 1
+
+    // Main voice — warm triangle trombone
+    const osc = c.createOscillator()
+    const g = c.createGain()
+    osc.type = 'triangle'
+    osc.frequency.setValueAtTime(freq, noteStart)
+    if (isLast) {
+      // Last note bends down slowly — the "bwaaahhh"
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.75, noteStart + dur)
+    }
+    const nVol = isLast ? 0.45 : 0.38
+    g.gain.setValueAtTime(nVol, noteStart)
+    g.gain.setValueAtTime(nVol * 0.85, noteStart + 0.04)
+    g.gain.exponentialRampToValueAtTime(0.001, noteStart + dur)
+    osc.connect(g)
+    g.connect(master)
+    osc.start(noteStart)
+    osc.stop(noteStart + dur)
+
+    // Trombone vibrato
+    const vib = c.createOscillator()
+    const vibG = c.createGain()
+    vib.type = 'sine'
+    vib.frequency.value = isLast ? 4 : 5.5
+    vibG.gain.value = freq * (isLast ? 0.025 : 0.012)
+    vib.connect(vibG)
+    vibG.connect(osc.frequency)
+    vib.start(noteStart)
+    vib.stop(noteStart + dur)
+
+    // Fifth below — gives it that brass section thickness
+    const fifth = c.createOscillator()
+    const fG = c.createGain()
+    fifth.type = 'triangle'
+    fifth.frequency.setValueAtTime(freq * 0.667, noteStart)  // perfect 4th below
+    if (isLast) fifth.frequency.exponentialRampToValueAtTime(freq * 0.667 * 0.75, noteStart + dur)
+    fG.gain.setValueAtTime(nVol * 0.35, noteStart)
+    fG.gain.exponentialRampToValueAtTime(0.001, noteStart + dur)
+    fifth.connect(fG)
+    fG.connect(master)
+    fifth.start(noteStart)
+    fifth.stop(noteStart + dur)
+
+    // Octave below — weight
+    const sub = c.createOscillator()
+    const sG = c.createGain()
+    sub.type = 'sine'
+    sub.frequency.setValueAtTime(freq * 0.5, noteStart)
+    if (isLast) sub.frequency.exponentialRampToValueAtTime(freq * 0.5 * 0.75, noteStart + dur)
+    sG.gain.setValueAtTime(nVol * 0.2, noteStart)
+    sG.gain.exponentialRampToValueAtTime(0.001, noteStart + dur)
+    sub.connect(sG)
+    sG.connect(master)
+    sub.start(noteStart)
+    sub.stop(noteStart + dur)
+
+    noteStart += dur + 0.04
+  }
+}
+
+/** Victory fanfare — ascending drum roll + triumphant major melody */
+export function playVictoryFanfare(): void {
+  if (!ctx || !master) return
+  const c = ctx
+  const t = c.currentTime
+  const root = currentMusic ? currentMusic.droneRoot : 110
+
+  // ── Part 1: Ascending drum roll — excitement builds ──
+  const rollCount = 18
+  for (let i = 0; i < rollCount; i++) {
+    let noteTime = t
+    for (let j = 0; j < i; j++) noteTime += 0.07 - (j / rollCount) * 0.04
+
+    const vol = 0.2 + (i / rollCount) * 0.3
+
+    // Bright snare hit — higher pitched than death roll
+    const hit = c.createOscillator()
+    const hG = c.createGain()
+    hit.type = 'triangle'
+    hit.frequency.setValueAtTime(400 + (i / rollCount) * 300, noteTime)
+    hit.frequency.exponentialRampToValueAtTime(200, noteTime + 0.03)
+    hG.gain.setValueAtTime(vol * 0.5, noteTime)
+    hG.gain.exponentialRampToValueAtTime(0.001, noteTime + 0.04)
+    hit.connect(hG)
+    hG.connect(master)
+    hit.start(noteTime)
+    hit.stop(noteTime + 0.04)
+
+    // Rising tom underneath
+    const tom = c.createOscillator()
+    const tG = c.createGain()
+    tom.type = 'sine'
+    tom.frequency.setValueAtTime(100 + (i / rollCount) * 120, noteTime)
+    tom.frequency.exponentialRampToValueAtTime(80, noteTime + 0.06)
+    tG.gain.setValueAtTime(vol * 0.4, noteTime)
+    tG.gain.exponentialRampToValueAtTime(0.001, noteTime + 0.06)
+    tom.connect(tG)
+    tG.connect(master)
+    tom.start(noteTime)
+    tom.stop(noteTime + 0.06)
+  }
+
+  // Roll end time
+  let rollEnd = t
+  for (let j = 0; j < rollCount; j++) rollEnd += 0.07 - (j / rollCount) * 0.04
+
+  // ── Part 2: Crash + big kick ──
+  for (let i = 0; i < 5; i++) {
+    const crash = c.createOscillator()
+    const cG = c.createGain()
+    crash.type = 'square'
+    crash.frequency.value = 4000 + Math.random() * 4000
+    cG.gain.setValueAtTime(0.14, rollEnd)
+    cG.gain.exponentialRampToValueAtTime(0.001, rollEnd + 0.4)
+    crash.connect(cG)
+    cG.connect(master)
+    crash.start(rollEnd)
+    crash.stop(rollEnd + 0.4)
+  }
+  const kick = c.createOscillator()
+  const kG = c.createGain()
+  kick.type = 'sine'
+  kick.frequency.setValueAtTime(180, rollEnd)
+  kick.frequency.exponentialRampToValueAtTime(30, rollEnd + 0.2)
+  kG.gain.setValueAtTime(0.55, rollEnd)
+  kG.gain.exponentialRampToValueAtTime(0.001, rollEnd + 0.25)
+  kick.connect(kG)
+  kG.connect(master)
+  kick.start(rollEnd)
+  kick.stop(rollEnd + 0.25)
+
+  // ── Part 3: Triumphant ascending melody — major arpeggio ──
+  const melStart = rollEnd + 0.15
+
+  // Ascending: root → major 3rd → 5th → octave → high major 3rd (the victory!)
+  const melNotes = [root * 2, root * 2.5, root * 3, root * 4, root * 5]
+  const melDurs = [0.2, 0.2, 0.2, 0.25, 1.0]
+
+  let mStart = melStart
+  for (let i = 0; i < melNotes.length; i++) {
+    const freq = melNotes[i]!
+    const dur = melDurs[i]!
+    const isLast = i === melNotes.length - 1
+
+    // Bright brass — triangle
+    const osc = c.createOscillator()
+    const g = c.createGain()
+    osc.type = 'triangle'
+    osc.frequency.setValueAtTime(freq, mStart)
+    if (isLast) {
+      // Last note shimmers slightly up — triumphant lift
+      osc.frequency.linearRampToValueAtTime(freq * 1.02, mStart + dur)
+    }
+    const nVol = isLast ? 0.45 : 0.35
+    g.gain.setValueAtTime(nVol, mStart)
+    g.gain.setValueAtTime(nVol * 0.9, mStart + 0.03)
+    g.gain.exponentialRampToValueAtTime(0.001, mStart + dur)
+    osc.connect(g)
+    g.connect(master)
+    osc.start(mStart)
+    osc.stop(mStart + dur)
+
+    // Vibrato on last note
+    if (isLast) {
+      const vib = c.createOscillator()
+      const vibG = c.createGain()
+      vib.type = 'sine'
+      vib.frequency.value = 5.5
+      vibG.gain.value = freq * 0.012
+      vib.connect(vibG)
+      vibG.connect(osc.frequency)
+      vib.start(mStart)
+      vib.stop(mStart + dur)
+    }
+
+    // Perfect fifth above — bright harmony
+    const harm = c.createOscillator()
+    const hG2 = c.createGain()
+    harm.type = 'sine'
+    harm.frequency.setValueAtTime(freq * 1.5, mStart)
+    if (isLast) harm.frequency.linearRampToValueAtTime(freq * 1.5 * 1.02, mStart + dur)
+    hG2.gain.setValueAtTime(nVol * 0.3, mStart)
+    hG2.gain.exponentialRampToValueAtTime(0.001, mStart + dur)
+    harm.connect(hG2)
+    hG2.connect(master)
+    harm.start(mStart)
+    harm.stop(mStart + dur)
+
+    // Octave below — fullness
+    const sub = c.createOscillator()
+    const sG = c.createGain()
+    sub.type = 'sine'
+    sub.frequency.setValueAtTime(freq * 0.5, mStart)
+    sG.gain.setValueAtTime(nVol * 0.2, mStart)
+    sG.gain.exponentialRampToValueAtTime(0.001, mStart + dur)
+    sub.connect(sG)
+    sG.connect(master)
+    sub.start(mStart)
+    sub.stop(mStart + dur)
+
+    mStart += dur + 0.02
+  }
+
+  // ── Part 4: Final sustained major chord — the glow ──
+  const chordTime = mStart + 0.05
+  const chordDur = 2.0
+  const chordNotes = [root * 2, root * 2.5, root * 3, root * 4]  // root, 3rd, 5th, octave
+  for (const freq of chordNotes) {
+    const osc = c.createOscillator()
+    const g = c.createGain()
+    osc.type = 'sine'
+    osc.frequency.value = freq
+    g.gain.setValueAtTime(0.12, chordTime)
+    g.gain.exponentialRampToValueAtTime(0.001, chordTime + chordDur)
+    osc.connect(g)
+    g.connect(master)
+    osc.start(chordTime)
+    osc.stop(chordTime + chordDur)
+  }
+
+  // Sparkle — high sine chimes scattered over the chord
+  for (let i = 0; i < 8; i++) {
+    const sparkTime = chordTime + i * 0.15 + Math.random() * 0.08
+    const sparkFreq = root * (8 + Math.random() * 8)  // high octaves
+    const sp = c.createOscillator()
+    const spG = c.createGain()
+    sp.type = 'sine'
+    sp.frequency.value = sparkFreq
+    spG.gain.setValueAtTime(0.08, sparkTime)
+    spG.gain.exponentialRampToValueAtTime(0.001, sparkTime + 0.2)
+    sp.connect(spG)
+    spG.connect(master)
+    sp.start(sparkTime)
+    sp.stop(sparkTime + 0.2)
+  }
+}
+
 // ── Enemy beat dispatch ──
 
-export function playEnemyBeatTick(enemyType: string, sound?: string): void {
+// Base frequencies + wave types for harmony generation (avoids duplicating sound functions)
+const HARMONY_BASE: Record<string, { freq: number; type: OscillatorType; dur: number }> = {
+  pop:     { freq: 500,  type: 'triangle', dur: 0.1 },
+  click:   { freq: 800,  type: 'square',   dur: 0.05 },
+  snap:    { freq: 300,  type: 'sawtooth', dur: 0.07 },
+  bell:    { freq: 880,  type: 'sine',     dur: 0.25 },
+  buzz:    { freq: 220,  type: 'sawtooth', dur: 0.08 },
+  thump:   { freq: 120,  type: 'sine',     dur: 0.12 },
+  chirp:   { freq: 900,  type: 'sine',     dur: 0.08 },
+  zap:     { freq: 600,  type: 'sawtooth', dur: 0.08 },
+  bloop:   { freq: 400,  type: 'sine',     dur: 0.12 },
+  clap:    { freq: 1500, type: 'square',   dur: 0.06 },
+  rim:     { freq: 700,  type: 'triangle', dur: 0.04 },
+  tom:     { freq: 175,  type: 'sine',     dur: 0.15 },
+  whistle: { freq: 1000, type: 'sine',     dur: 0.2 },
+  purr:    { freq: 55,   type: 'sine',     dur: 0.2 },
+  ping:    { freq: 1200, type: 'sine',     dur: 0.15 },
+  growl:   { freq: 80,   type: 'sawtooth', dur: 0.15 },
+  chime:   { freq: 1100, type: 'sine',     dur: 0.25 },
+  knock:   { freq: 400,  type: 'triangle', dur: 0.05 },
+  sweep:   { freq: 300,  type: 'sine',     dur: 0.2 },
+  drop:    { freq: 600,  type: 'sine',     dur: 0.15 },
+  pulse:   { freq: 200,  type: 'square',   dur: 0.1 },
+}
+
+function addHarmonyNote(sound: string, freqMult: number, volMult: number, delay: number): void {
+  const c = ctx!
+  const t = c.currentTime + delay
+  const base = HARMONY_BASE[sound]
+  if (!base) return
+  const dur = base.dur * 1.5  // harmony notes ring longer
+  const osc = c.createOscillator()
+  const gain = c.createGain()
+  osc.type = 'sine'  // always sine for clean harmony
+  osc.frequency.setValueAtTime(base.freq * freqMult, t)
+  osc.frequency.exponentialRampToValueAtTime(Math.max(20, base.freq * freqMult * 0.7), t + dur)
+  gain.gain.setValueAtTime(eVol('sine') * volMult, t)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  osc.connect(gain)
+  gain.connect(reverbInput)
+  osc.start(t)
+  osc.stop(t + dur)
+}
+
+export function playEnemyBeatTick(enemyType: string, sound?: string, harmony = 1): void {
   ensureContext()
   const c = ctx!
   const lastTime = lastTickByType.get(enemyType) ?? 0
@@ -1791,4 +2248,8 @@ export function playEnemyBeatTick(enemyType: string, sound?: string): void {
 
   const soundFn = SOUND_MAP[sound ?? 'pop']
   if (soundFn) soundFn()
+
+  // Harmony — add chord notes when multiple same-type enemies exist
+  if (harmony >= 2) addHarmonyNote(sound ?? 'pop', 1.25, 1.0, 0.01)   // major third, slight delay
+  if (harmony >= 3) addHarmonyNote(sound ?? 'pop', 1.5, 0.8, 0.02)    // perfect fifth, more delay
 }

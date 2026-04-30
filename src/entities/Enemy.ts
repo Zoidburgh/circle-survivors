@@ -3,6 +3,7 @@ import { createRing } from './Ring.ts'
 import { ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { shouldFire, getBeatInterval, getLoopPosition } from '../audio/PatternClock.ts'
 import { playWindup } from '../audio/AudioEngine.ts'
+import { isRunTimerActive, isRunComplete, startRunTimer } from '../core/GameState.ts'
 import { clampToArena, getArenaShape, ARENA_CX, ARENA_CY } from '../game/Arena.ts'
 import { emit } from '../core/EventBus.ts'
 import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC } from '../utils/constants.ts'
@@ -671,6 +672,7 @@ export function rollDrop(enemy: Enemy): 'xp' | 'hp' | null {
 
 export function damageEnemy(enemy: Enemy, amount: number): void {
   if (enemy.dying || enemy.isShrine) return
+  if (!isRunTimerActive() && !isRunComplete()) startRunTimer()
   enemy.hp -= amount
   enemy.hitFlash = HIT_FLASH_DURATION
   if (enemy.hp <= 0) {

@@ -52,6 +52,7 @@ interface Particle {
   life: number
   lifetime: number
   size: number
+  spinRate: number  // radians per second, 0 = default behavior
 }
 
 const particles: Particle[] = []
@@ -63,6 +64,8 @@ let titleTime = 0         // time since title screen started
 let titleBeatPulse = 0    // beat pulse for title screen
 let titleLastBeat = -1    // last whole beat seen on title
 let nameEntryText = ''    // current name being typed
+let nameEntryStarted = false
+const nameFireworks: { x: number; y: number; vx: number; vy: number; r: number; g: number; b: number; life: number; maxLife: number; size: number }[] = []
 let pauseMouseX = 0
 let pauseMouseY = 0
 let lastHoveredBtn = ''  // tracks which button is hovered for hover SFX
@@ -149,6 +152,8 @@ let irisPhase: 'closing' | 'opening' = 'closing'
 let irisCardBurst = false
 let irisBurstParticles: { x: number; y: number; vx: number; vy: number; r: number; g: number; b: number; life: number; maxLife: number; size: number }[] = []
 
+export function isIrisActive(): boolean { return irisActive }
+
 export function startIrisOpen(): void {
   irisActive = true
   irisTimer = 0
@@ -202,7 +207,7 @@ export function drawIrisTransition(dt: number): boolean {
         irisBurstParticles.push({ x: irisCx, y: irisCy,
           vx: Math.cos(a) * speed + (Math.random() - 0.5) * 120,
           vy: Math.sin(a) * speed + (Math.random() - 0.5) * 120,
-          r: 0, g: 255, b: 255, life: 0, maxLife: 0.4 + Math.random() * 0.25, size: 5 + Math.random() * 6 })
+          r: 0, g: 255, b: 255, life: 0, maxLife: 0.4 + Math.random() * 0.25, size: 7.5 + Math.random() * 9 })
       }
       // Pink burst
       for (let p = 0; p < 50; p++) {
@@ -211,7 +216,7 @@ export function drawIrisTransition(dt: number): boolean {
         irisBurstParticles.push({ x: irisCx, y: irisCy,
           vx: Math.cos(a) * speed + (Math.random() - 0.5) * 150,
           vy: Math.sin(a) * speed + (Math.random() - 0.5) * 150,
-          r: 255, g: 50, b: 200, life: 0, maxLife: 0.35 + Math.random() * 0.25, size: 4 + Math.random() * 5 })
+          r: 255, g: 50, b: 200, life: 0, maxLife: 0.35 + Math.random() * 0.25, size: 6 + Math.random() * 7.5 })
       }
       // White sparks
       for (let p = 0; p < 40; p++) {
@@ -219,11 +224,11 @@ export function drawIrisTransition(dt: number): boolean {
         const speed = 900 + Math.random() * 900
         irisBurstParticles.push({ x: irisCx, y: irisCy,
           vx: Math.cos(a) * speed, vy: Math.sin(a) * speed,
-          r: 255, g: 255, b: 255, life: 0, maxLife: 0.25 + Math.random() * 0.2, size: 3 + Math.random() * 4 })
+          r: 255, g: 255, b: 255, life: 0, maxLife: 0.25 + Math.random() * 0.2, size: 4.5 + Math.random() * 6 })
       }
     }
 
-    // Draw + update burst particles in screen space
+    // Draw + update burst particles in screen space — diamond streaks like main particles
     for (let i = irisBurstParticles.length - 1; i >= 0; i--) {
       const bp = irisBurstParticles[i]!
       bp.life += dt
@@ -233,10 +238,28 @@ export function drawIrisTransition(dt: number): boolean {
       bp.vx *= 0.99
       bp.vy *= 0.99
       const ft = 1 - bp.life / bp.maxLife
-      ctx.beginPath()
-      ctx.arc(bp.x, bp.y, bp.size * ft, 0, Math.PI * 2)
+      const shrink = 0.65 + ft * 0.35
+      const hs = bp.size * shrink / 2
+      const spd = Math.sqrt(bp.vx * bp.vx + bp.vy * bp.vy)
       ctx.fillStyle = `rgba(${bp.r}, ${bp.g}, ${bp.b}, ${ft * 0.8})`
-      ctx.fill()
+      if (spd > 60) {
+        const nx = bp.vx / spd, ny = bp.vy / spd
+        const stretch = Math.min(spd / 150, 3.5)
+        const frontLen = hs * (1 + stretch * 1.2)
+        const backLen = hs * 0.6
+        const sideW = hs * (0.5 + stretch * 0.15)
+        ctx.beginPath()
+        ctx.moveTo(bp.x + nx * frontLen, bp.y + ny * frontLen)
+        ctx.lineTo(bp.x - ny * sideW, bp.y + nx * sideW)
+        ctx.lineTo(bp.x - nx * backLen, bp.y - ny * backLen)
+        ctx.lineTo(bp.x + ny * sideW, bp.y - nx * sideW)
+        ctx.closePath()
+        ctx.fill()
+      } else {
+        ctx.beginPath()
+        ctx.arc(bp.x, bp.y, hs, 0, Math.PI * 2)
+        ctx.fill()
+      }
     }
 
     // White flash at click point — first frame only
@@ -315,10 +338,10 @@ export function drawIrisTransition(dt: number): boolean {
         for (let p = 0; p < trailCount; p++) {
           const trailT = p / trailCount
           const spiralAngle = armOffset + t * Math.PI * 4 * armDir + trailT * Math.PI * 3 * armDir
-          const spiralR = edgeR + trailT * 60
+          const spiralR = edgeR + trailT * 120
           const px = irisCx + Math.cos(spiralAngle) * spiralR
           const py = irisCy + Math.sin(spiralAngle) * spiralR
-          const size = (1.5 + (1 - trailT) * 2.5) * (1 - t * 0.6)
+          const size = (2.25 + (1 - trailT) * 3.75) * (1 - t * 0.6)
           const alpha = (1 - trailT * trailT) * (0.4 - t * 0.3)
           if (alpha <= 0 || size <= 0) continue
           const colorIdx = arm % 3
@@ -466,19 +489,19 @@ function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
       const perpX = -ddy, perpY = ddx
       const perpLen = Math.sqrt(perpX * perpX + perpY * perpY)
       const wave = perpLen > 1
-        ? Math.sin(orbT * 12 + c * 1.5) * 15 * orbLife * orbLife  // wave fades faster near target
+        ? Math.sin(orbT * 12 + c * 1.5) * 22 * orbLife * orbLife  // wave fades faster near target
         : 0
       const wnx = perpLen > 1 ? perpX / perpLen : 0
       const wny = perpLen > 1 ? perpY / perpLen : 0
 
       const orbX = sx1 + ddx * orbEase + wnx * wave
       const orbY = sy1 + ddy * orbEase + wny * wave
-      const orbSize = (16 - c * 1.6) * Math.max(orbLife, 0.15)
+      const orbSize = (23 - c * 2.3) * Math.max(orbLife, 0.15)
 
       // Glow
       ctx.beginPath()
-      ctx.arc(orbX, orbY, orbSize + 13, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.1})`
+      ctx.arc(orbX, orbY, orbSize + 19, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.14})`
       ctx.fill()
 
       // Core
@@ -493,14 +516,14 @@ function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
         if (nextT >= 0) {
           const nextEase = nextT * nextT * (3 - 2 * nextT)
           const nextLife = 1 - nextT
-          const nextWave = Math.sin(nextT * 12 + (c + 1) * 1.5) * 15 * nextLife * nextLife
+          const nextWave = Math.sin(nextT * 12 + (c + 1) * 1.5) * 22 * nextLife * nextLife
           const nextX = sx1 + ddx * nextEase + wnx * nextWave
           const nextY = sy1 + ddy * nextEase + wny * nextWave
           ctx.beginPath()
           ctx.moveTo(orbX, orbY)
           ctx.lineTo(nextX, nextY)
-          ctx.strokeStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.25})`
-          ctx.lineWidth = 3.5 * orbLife
+          ctx.strokeStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.36})`
+          ctx.lineWidth = 5 * orbLife
           ctx.stroke()
         }
       }
@@ -513,7 +536,7 @@ function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
           fx.originX + (tx - fx.originX) * orbEase + wnx * wave,
           fx.originY + (ty - fx.originY) * orbEase + wny * wave,
           Math.cos(sa) * sparkSpeed, Math.sin(sa) * sparkSpeed,
-          fx.r, fx.g, fx.b, 0.1 + Math.random() * 0.08, 2 + Math.random() * 1.5)
+          fx.r, fx.g, fx.b, 0.1 + Math.random() * 0.08, 2.9 + Math.random() * 2.2)
       }
     }
     ctx.lineCap = 'butt'
@@ -542,27 +565,51 @@ export function setPendingExplosions(pending: PendingExplosionVisual[]): void {
 }
 
 export function addVolatileExplosion(x: number, y: number, range: number, r: number, g: number, b: number): void {
-  volatileExplosions.push({ x, y, range, r, g, b, timer: 0, duration: 0.3 })
+  volatileExplosions.push({ x, y, range, r, g, b, timer: 0, duration: 0.21 })
 }
 
 export function spawnVolatileParticles(cx: number, cy: number, range: number, r: number, g: number, b: number): void {
-  const count = Math.min(30, Math.round(range / 6))
+  const count = Math.min(56, Math.round(Math.sqrt(range) * 3.5))
   for (let i = 0; i < count; i++) {
     const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
-    const dist = Math.random() * range  // spread across entire circle
+    const dist = range * (0.3 + Math.random() * 0.7)
     const px = cx + Math.cos(angle) * dist
     const py = cy + Math.sin(angle) * dist
-    const speed = 40 + Math.random() * 80
+    const speed = 140 + Math.random() * 200
     const outAngle = Math.atan2(py - cy, px - cx)
-    // Enemy color tinted toward red-white
     const tint = Math.random()
     const pr = Math.min(255, r + Math.floor(tint * 120))
     const pg = Math.min(255, g + Math.floor(tint * 40))
     const pb = Math.min(255, b + Math.floor(tint * 40))
+    const spin = (8 + Math.random() * 10) * (Math.random() < 0.5 ? 1 : -1)
     spawnParticle(px, py,
       Math.cos(outAngle) * speed, Math.sin(outAngle) * speed,
       pr, pg, pb,
-      0.45 + Math.random() * 0.25, 9 + Math.random() * 7)
+      0.33 + Math.random() * 0.2, 9 + Math.random() * 7, spin)
+  }
+  // White-hot core flash particles — fast outward burst from center
+  const hotCount = Math.min(16, Math.round(range / 10))
+  for (let i = 0; i < hotCount; i++) {
+    const angle = Math.random() * Math.PI * 2
+    const speed = 200 + Math.random() * 300
+    spawnParticle(cx, cy,
+      Math.cos(angle) * speed, Math.sin(angle) * speed,
+      255, 240, 220,
+      0.15 + Math.random() * 0.1, 4 + Math.random() * 3)
+  }
+  // Edge ring sparks — fast particles tracing the blast circumference
+  const edgeCount = Math.min(20, Math.round(range / 8))
+  for (let i = 0; i < edgeCount; i++) {
+    const angle = (i / edgeCount) * Math.PI * 2
+    const tangent = angle + Math.PI / 2 * (Math.random() < 0.5 ? 1 : -1)
+    const speed = 120 + Math.random() * 180
+    const px = cx + Math.cos(angle) * range
+    const py = cy + Math.sin(angle) * range
+    spawnParticle(px, py,
+      Math.cos(tangent) * speed + Math.cos(angle) * 30,
+      Math.sin(tangent) * speed + Math.sin(angle) * 30,
+      Math.min(255, r + 100), Math.min(255, g + 60), Math.min(255, b + 60),
+      0.18 + Math.random() * 0.12, 3 + Math.random() * 2.5)
   }
 }
 
@@ -792,7 +839,7 @@ function updateAndDrawSpawnEffects(dt: number): void {
       const orbEase = 1 - (1 - orbT) * (1 - orbT) * (1 - orbT)
       const orbLife = 1 - orbT
       const isLead = c === 0
-      const orbSize = isLead ? 28 : (20 - c * 2.5)
+      const orbSize = isLead ? 41 : (29 - c * 3.6)
       if (orbSize <= 0) continue
 
       const orbX = sx1 + ddx * orbEase
@@ -806,8 +853,8 @@ function updateAndDrawSpawnEffects(dt: number): void {
 
       // Glow halo — enemy color
       ctx.beginPath()
-      ctx.arc(orbX, orbY, orbSize + 16, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${Math.min(255, fx.r + 80)}, ${Math.min(255, fx.g + 60)}, ${Math.min(255, fx.b + 60)}, ${orbLife * 0.15})`
+      ctx.arc(orbX, orbY, orbSize + 23, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${Math.min(255, fx.r + 80)}, ${Math.min(255, fx.g + 60)}, ${Math.min(255, fx.b + 60)}, ${orbLife * 0.22})`
       ctx.fill()
 
       // Core orb — white to light
@@ -826,8 +873,8 @@ function updateAndDrawSpawnEffects(dt: number): void {
           ctx.beginPath()
           ctx.moveTo(orbX, orbY)
           ctx.lineTo(nextX, nextY)
-          ctx.strokeStyle = `rgba(255, 255, 255, ${orbLife * 0.2})`
-          ctx.lineWidth = 10 * orbLife
+          ctx.strokeStyle = `rgba(255, 255, 255, ${orbLife * 0.29})`
+          ctx.lineWidth = 14.4 * orbLife
           ctx.stroke()
         }
       }
@@ -854,14 +901,15 @@ function spawnDeathRipples(x: number, y: number, radius: number, color: string):
   const r = parseInt(color.slice(1, 3), 16)
   const g = parseInt(color.slice(3, 5), 16)
   const b = parseInt(color.slice(5, 7), 16)
+  const sizeScale = 1 + Math.max(0, (radius - 60) / 60) * 0.5  // floor at 1x, gentle scale above radius 60
   for (let i = 0; i < 3; i++) {
     deathRipples.push({
       x, y, r, g, b,
       startRadius: radius,
-      maxRadius: radius + 225 + i * 120,
+      maxRadius: radius + (290 + i * 155) * sizeScale,
       timer: 0,
-      delay: i * 0.06,
-      duration: 0.3 + i * 0.075,
+      delay: i * 0.042,
+      duration: 0.21 + i * 0.053,
     })
   }
 }
@@ -900,10 +948,12 @@ function spawnParticle(
   x: number, y: number,
   vx: number, vy: number,
   r: number, g: number, b: number,
-  lifetime: number, size: number
+  lifetime: number, size: number,
+  spinRate = 0
 ): void {
   if (particles.length >= MAX_PARTICLES) return
-  particles.push({ x, y, vx, vy, r, g, b, life: 0, lifetime, size })
+  if (getPhase() === 'entering_name') return  // block game particles on name entry screen
+  particles.push({ x, y, vx, vy, r, g, b, life: 0, lifetime, size, spinRate })
 }
 
 export function triggerBeatDashFlash(x: number, y: number, radius: number): void {
@@ -957,6 +1007,22 @@ function updateParticles(dt: number): void {
     p.y += p.vy * dt
     p.vx *= 0.98
     p.vy *= 0.98
+    // Spinning particles spiral + rise like embers
+    if (p.spinRate) {
+      const fade = p.life  // 0→1 over lifetime
+      const pull = fade * 15.0  // spiral tightens as particle fades
+      // Rotate velocity inward
+      const cos = Math.cos(pull * dt)
+      const sin = Math.sin(pull * dt) * (p.spinRate > 0 ? 1 : -1)
+      const nvx = p.vx * cos - p.vy * sin
+      const nvy = p.vx * sin + p.vy * cos
+      p.vx = nvx
+      p.vy = nvy
+      // Ember rise — gentle upward drift that increases as they fade
+      p.vy -= 60 * fade * dt
+      // Flicker drift — slight horizontal wobble
+      p.vx += Math.sin(p.life * 20 + p.x * 0.1) * 15 * dt
+    }
     if (p.life >= 1) {
       particles[i] = particles[particles.length - 1]!
       particles.pop()
@@ -971,8 +1037,18 @@ function drawParticles(): void {
     const sx = p.x - camX
     const sy = p.y - camY
     const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy)
-    const hs = p.size / 2
-    ctx.fillStyle = `rgba(${p.r}, ${p.g}, ${p.b}, ${alpha})`
+    const baseShrink = 0.65 + t * 0.35  // starts full, shrinks to 65% as it fades
+    const shrink = p.spinRate ? t * t : baseShrink  // spinning particles shrink to nothing
+    const hs = p.size * shrink / 2
+    // Ember tint — spinning particles shift toward warm orange/red as they fade
+    let dr = p.r, dg = p.g, db = p.b
+    if (p.spinRate) {
+      const emberT = p.life * p.life  // accelerating warmth
+      dr = Math.min(255, p.r + Math.floor(emberT * (255 - p.r) * 0.6))
+      dg = Math.floor(p.g * (1 - emberT * 0.5) + emberT * 80)
+      db = Math.floor(p.b * (1 - emberT * 0.8))
+    }
+    ctx.fillStyle = `rgba(${dr}, ${dg}, ${db}, ${alpha})`
     ctx.save()
     ctx.translate(sx, sy)
     if (speed > 60) {
@@ -991,7 +1067,7 @@ function drawParticles(): void {
       ctx.fill()
     } else {
       // Slow particles → normal spinning squares
-      const spin = p.life * 2.7 + (p.x * 0.01)
+      const spin = p.spinRate ? p.life * p.spinRate : p.life * 2.7 + (p.x * 0.01)
       ctx.rotate(spin)
       ctx.fillRect(-hs, -hs, p.size, p.size)
     }
@@ -1106,6 +1182,7 @@ export function resetRenderer(): void {
   volatileExplosions.length = 0
   pendingExplosionVisuals = []
   revengeRings.length = 0
+  toasts.length = 0
   borderWaveIntensity = 0
   globalBeatPulse = 0
   outerPulseIntensity = 0
@@ -1120,6 +1197,7 @@ export function resetRenderer(): void {
 }
 
 export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0, dt = 0.016, cam?: Camera): void {
+  csWasDrawn = false
   // Portrait orientation check — mobile phones only (not desktop touchscreens)
   const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
   if (isMobileDevice && window.innerWidth < window.innerHeight) {
@@ -2093,18 +2171,18 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   const resolvedArcs = blockedArcs.length > 0 ? resolveArcs(blockedArcs) : []
 
   // Soft outer glow
-  ctx.strokeStyle = `rgba(${ri}, ${gi}, ${bi}, ${alpha * 0.1})`
-  ctx.lineWidth = lineW + 6
+  ctx.strokeStyle = `rgba(${ri}, ${gi}, ${bi}, ${alpha * 0.15})`
+  ctx.lineWidth = lineW + 8
   drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
 
   // Mid glow
-  ctx.strokeStyle = `rgba(${ri}, ${gi}, ${bi}, ${alpha * 0.2})`
-  ctx.lineWidth = lineW + 2
+  ctx.strokeStyle = `rgba(${ri}, ${gi}, ${bi}, ${alpha * 0.3})`
+  ctx.lineWidth = lineW + 3
   drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
 
   // Main ring — sharp crisp stroke
-  ctx.strokeStyle = `rgba(${ri}, ${gi}, ${bi}, ${alpha})`
-  ctx.lineWidth = lineW
+  ctx.strokeStyle = `rgba(${ri}, ${gi}, ${bi}, ${Math.min(1, alpha * 1.2)})`
+  ctx.lineWidth = lineW + 0.5
   drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
 
   // White-gold flash at exact peak — bright, unmissable
@@ -2457,7 +2535,7 @@ function drawPlayer(player: Player): void {
       const isBlue = Math.random() < 0.2
       spawnParticle(px, py,
         Math.cos(outAngle) * speed + spread + pvx, Math.sin(outAngle) * speed + spread + pvy,
-        isBlue ? 79 : 255, isBlue ? 195 : 80 + Math.floor(Math.random() * 50), isBlue ? 247 : 70,
+        isBlue ? 79 : 255, isBlue ? 195 : 60 + Math.floor(Math.random() * 45), isBlue ? 247 : 55,
         0.31 + Math.random() * 0.22, size)
     }
     // Extra center spray — white-hot core burst
@@ -2816,52 +2894,52 @@ function drawPlayer(player: Player): void {
   // Shield break particles — explosive burst from body edge
   if (player.shieldBreakFlash > SHIELD_BREAK_FLASH - 0.02 && player.shieldBreakFlash <= SHIELD_BREAK_FLASH) {
     // Main pink shard burst — wide spread
-    for (let i = 0; i < 50; i++) {
-      const angle = (i / 50) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
+    for (let i = 0; i < 28; i++) {
+      const angle = (i / 28) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
       const px = player.x + Math.cos(angle) * drawRadius
       const py = player.y + Math.sin(angle) * drawRadius
-      const speed = 500 + Math.random() * 400
+      const speed = 950 + Math.random() * 700
       spawnParticle(px, py,
         Math.cos(angle) * speed + (Math.random() - 0.5) * 120,
         Math.sin(angle) * speed + (Math.random() - 0.5) * 120,
         255, 50 + Math.floor(Math.random() * 60), 200,
-        0.4 + Math.random() * 0.25, 6 + Math.random() * 7)
+        0.26 + Math.random() * 0.17, 7.5 + Math.random() * 8.75)
     }
     // Hot white core sparks — fast, far
-    for (let i = 0; i < 20; i++) {
+    for (let i = 0; i < 10; i++) {
       const angle = Math.random() * Math.PI * 2
       const px = player.x + Math.cos(angle) * drawRadius * 0.5
       const py = player.y + Math.sin(angle) * drawRadius * 0.5
-      const speed = 600 + Math.random() * 400
+      const speed = 1050 + Math.random() * 700
       spawnParticle(px, py,
         Math.cos(angle) * speed, Math.sin(angle) * speed,
-        255, 220, 255, 0.35 + Math.random() * 0.2, 4 + Math.random() * 3)
+        255, 220, 255, 0.24 + Math.random() * 0.14, 5 + Math.random() * 3.75)
     }
     // Slow drifting embers — linger after the burst
-    for (let i = 0; i < 15; i++) {
+    for (let i = 0; i < 8; i++) {
       const angle = Math.random() * Math.PI * 2
       const dist = drawRadius * (0.5 + Math.random() * 0.5)
-      const speed = 30 + Math.random() * 60
+      const speed = 40 + Math.random() * 80
       spawnParticle(
         player.x + Math.cos(angle) * dist,
         player.y + Math.sin(angle) * dist,
         Math.cos(angle) * speed + (Math.random() - 0.5) * 20,
         Math.sin(angle) * speed - 20 - Math.random() * 30,
-        255, 100, 220, 0.5 + Math.random() * 0.3, 3 + Math.random() * 3)
+        255, 100, 220, 0.34 + Math.random() * 0.2, 3.75 + Math.random() * 3.75)
     }
   }
 
   // Shield break shockwave — expanding ring over the flash duration
   if (player.shieldBreakFlash > 0) {
     const bt = player.shieldBreakFlash / SHIELD_BREAK_FLASH  // 1→0
-    const shockR = drawRadius + (1 - bt) * 120
+    const shockR = drawRadius + (1 - bt) * 240
     ctx.beginPath()
     ctx.arc(sx, sy, shockR, 0, Math.PI * 2)
     ctx.strokeStyle = `rgba(255, 80, 220, ${bt * bt * 0.6})`
     ctx.lineWidth = 5 * bt + 1
     ctx.stroke()
     // Second inner ring
-    const innerR = drawRadius + (1 - bt) * 50
+    const innerR = drawRadius + (1 - bt) * 110
     ctx.beginPath()
     ctx.arc(sx, sy, innerR, 0, Math.PI * 2)
     ctx.strokeStyle = `rgba(255, 200, 255, ${bt * 0.4})`
@@ -3112,20 +3190,20 @@ function drawPlayer(player: Player): void {
       const dashAngle = Math.atan2(player.dashDirY, player.dashDirX)
       const backAngle = dashAngle + Math.PI
       for (let p = 0; p < 50; p++) {
-        const a = backAngle + (Math.random() - 0.5) * 2.5
-        const speed = 300 + Math.random() * 350
+        const a = backAngle + (Math.random() - 0.5) * 1.3
+        const speed = 350 + Math.random() * 400
         spawnParticle(worldX, worldY,
           Math.cos(a) * speed + (Math.random() - 0.5) * 60,
           Math.sin(a) * speed + (Math.random() - 0.5) * 60,
-          100, 255, 120, 0.3 + Math.random() * 0.2, 3 + Math.random() * 3)
+          100, 255, 120, 0.3 + Math.random() * 0.2, 3.75 + Math.random() * 3.75)
       }
       // White-hot core sparks — also trail back
       for (let p = 0; p < 12; p++) {
-        const a = backAngle + (Math.random() - 0.5) * 1.5
-        const speed = 450 + Math.random() * 300
+        const a = backAngle + (Math.random() - 0.5) * 0.8
+        const speed = 500 + Math.random() * 350
         spawnParticle(worldX, worldY,
           Math.cos(a) * speed, Math.sin(a) * speed,
-          220, 255, 230, 0.2 + Math.random() * 0.15, 2 + Math.random() * 2)
+          220, 255, 230, 0.2 + Math.random() * 0.15, 2.5 + Math.random() * 2.5)
       }
     }
 
@@ -3766,7 +3844,8 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   // Death animation
   if (enemy.dying) {
     const dt = enemy.deathTimer
-    const deathDur = 0.3
+    const sizeScale = 1 + Math.max(0, (r - 60) / 60) * 0.5  // floor at 1x, gentle scale above radius 60
+    const deathDur = 0.21
     const t = Math.min(dt / deathDur, 1)
 
     const hr = enemy.cr, hg = enemy.cg, hb = enemy.cb
@@ -3776,31 +3855,35 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       spawnDeathRipples(enemy.x, enemy.y, r, enemy.color)
     }
     if (dt < 0.02) {
-      for (let i = 0; i < 10; i++) {
+      const redCount = Math.max(4, Math.floor(10 * sizeScale))
+      for (let i = 0; i < redCount; i++) {
         const angle = Math.random() * Math.PI * 2
         const dist = r * Math.random() * 0.5
         const px = enemy.x + Math.cos(angle) * dist
         const py = enemy.y + Math.sin(angle) * dist
-        const speed = 450 + Math.random() * 525
+        const speed = (300 + Math.random() * 350) * sizeScale
+        const pSize = (5 + Math.random() * 4) * sizeScale
         spawnParticle(px, py, Math.cos(angle) * speed, Math.sin(angle) * speed,
-          255, 80 + Math.floor(Math.random() * 50), 70, 0.38 + Math.random() * 0.22, 7.5 + Math.random() * 4.5)
+          255, 60 + Math.floor(Math.random() * 45), 55, 0.21 + Math.random() * 0.14, pSize)
       }
     }
 
     if (dt < deathDur) {
-      const count = t < 0.1 ? 15 : 4
+      const burstBase = t < 0.1 ? 15 : 4
+      const count = Math.max(2, Math.floor(burstBase * sizeScale))
       for (let i = 0; i < count; i++) {
         const angle = Math.random() * Math.PI * 2
         const dist = Math.random() * r
         const px = enemy.x + Math.cos(angle) * dist
         const py = enemy.y + Math.sin(angle) * dist
-        const speed = 200 + Math.random() * 300
-        const vx = Math.cos(angle) * speed + (Math.random() - 0.5) * 60
-        const vy = Math.sin(angle) * speed + (Math.random() - 0.5) * 60 - 20
+        const speed = (400 + Math.random() * 500) * sizeScale
+        const vx = Math.cos(angle) * speed + (Math.random() - 0.5) * 80
+        const vy = Math.sin(angle) * speed + (Math.random() - 0.5) * 80 - 20
         const isWhite = Math.random() < 0.3
+        const pSize = (3 + Math.random() * 3) * sizeScale
         spawnParticle(px, py, vx, vy,
           isWhite ? 255 : hr, isWhite ? 255 : hg, isWhite ? 255 : hb,
-          0.3 + Math.random() * 0.3, 3 + Math.random() * 3)
+          0.21 + Math.random() * 0.21, pSize)
       }
     }
 
@@ -3876,40 +3959,81 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     ctx.fillStyle = 'rgba(15, 15, 20, 0.75)'  // neutral dark, heavier
     ctx.fill()
 
-    // Totem inner texture — concentric ring pattern
+    // Totem inner texture — rotating rune segments
     ctx.save()
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
     ctx.clip()
-    const ringCount = Math.floor(r / 12)
-    for (let i = 1; i <= ringCount; i++) {
-      const baseR = (i / ringCount) * r
-      const ringR = baseR + globalBeatPulse * (r * 0.35) * (i / ringCount)
+
+    const gt = gameTimeMs / 1000  // seconds
+    const gbp = globalBeatPulse
+
+    // 4 layers of arc segments at different radii, rotating in alternating directions
+    const layers = [
+      { radius: 0.85, segments: 8, width: 1.5, speed: 0.4, gap: 0.25 },
+      { radius: 0.62, segments: 6, width: 2.0, speed: -0.7, gap: 0.3 },
+      { radius: 0.40, segments: 5, width: 1.8, speed: 1.1, gap: 0.35 },
+      { radius: 0.22, segments: 3, width: 2.5, speed: -1.6, gap: 0.2 },
+    ]
+
+    // Beat alignment — on beat, segments briefly snap toward aligned positions
+    const beatSnap = gbp * gbp * 0.4  // sharp snap, fast decay
+
+    for (const layer of layers) {
+      const lr = layer.radius * r
+      const baseAngle = gt * layer.speed
+      // On beat, lerp toward nearest aligned angle
+      const alignedAngle = Math.round(baseAngle / (Math.PI / 4)) * (Math.PI / 4)
+      const angle = baseAngle + (alignedAngle - baseAngle) * beatSnap
+      const segArc = (Math.PI * 2 / layer.segments) * (1 - layer.gap)
+      const alpha = 0.04 + gbp * 0.3
+
+      for (let s = 0; s < layer.segments; s++) {
+        const segStart = angle + (s / layer.segments) * Math.PI * 2
+        ctx.beginPath()
+        ctx.arc(sx, sy, lr + gbp * r * 0.08, segStart, segStart + segArc)
+        ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${alpha})`
+        ctx.lineWidth = layer.width + gbp * 1.2
+        ctx.stroke()
+      }
+    }
+
+    // Center flash — pulses dramatically with beat
+    const dotR = r * (0.1 + gbp * 0.15)
+    // Outer glow bloom on beat
+    if (gbp > 0.1) {
       ctx.beginPath()
-      ctx.arc(sx, sy, Math.min(ringR, r), 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.02 + (i / ringCount) * 0.03 + globalBeatPulse * 0.45})`
+      ctx.arc(sx, sy, dotR + r * gbp * 0.2, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, ${gbp * 0.15})`
+      ctx.fill()
+    }
+    // Core dot
+    ctx.beginPath()
+    ctx.arc(sx, sy, dotR, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.1 + gbp * 0.55})`
+    ctx.fill()
+    // White-hot center on beat
+    if (gbp > 0.3) {
+      ctx.beginPath()
+      ctx.arc(sx, sy, dotR * 0.5, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 255, 255, ${(gbp - 0.3) * 0.7})`
+      ctx.fill()
+    }
+
+    // Radial lines — 8 spokes, very subtle, rotate slowly
+    const spokeAngle = gt * 0.2
+    for (let s = 0; s < 8; s++) {
+      const a = spokeAngle + (s / 8) * Math.PI * 2
+      const innerR = r * 0.1
+      const outerR = r * (0.9 + gbp * 0.08)
+      ctx.beginPath()
+      ctx.moveTo(sx + Math.cos(a) * innerR, sy + Math.sin(a) * innerR)
+      ctx.lineTo(sx + Math.cos(a) * outerR, sy + Math.sin(a) * outerR)
+      ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${0.02 + gbp * 0.06})`
       ctx.lineWidth = 1
       ctx.stroke()
     }
-    // Subtle cross pattern
-    const crossAlpha = 0.05
-    ctx.beginPath()
-    ctx.moveTo(sx - r, sy)
-    ctx.lineTo(sx + r, sy)
-    ctx.moveTo(sx, sy - r)
-    ctx.lineTo(sx, sy + r)
-    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${crossAlpha})`
-    ctx.lineWidth = 2
-    ctx.stroke()
-    // Diagonal cross
-    ctx.beginPath()
-    ctx.moveTo(sx - r * 0.7, sy - r * 0.7)
-    ctx.lineTo(sx + r * 0.7, sy + r * 0.7)
-    ctx.moveTo(sx + r * 0.7, sy - r * 0.7)
-    ctx.lineTo(sx - r * 0.7, sy + r * 0.7)
-    ctx.strokeStyle = `rgba(${hr}, ${hg}, ${hb}, ${crossAlpha * 0.7})`
-    ctx.lineWidth = 1
-    ctx.stroke()
+
     ctx.restore()
   } else {
     ctx.fillStyle = `rgba(${Math.floor(hr * 0.08)}, ${Math.floor(hg * 0.08)}, ${Math.floor(hb * 0.08)}, 0.55)`
@@ -3930,21 +4054,23 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     // Spawn blood offset in movement direction so it stays with moving enemies
     const bloodOffX = enemy.vx * 0.08  // ~5 frames ahead
     const bloodOffY = enemy.vy * 0.08
+    const bloodCx = enemy.x + bloodOffX
+    const bloodCy = enemy.y + bloodOffY
     for (let i = 0; i < count; i++) {
       const angle = damageArcStart + Math.random() * arcSpan
       const dist = Math.random() * r
-      const px = enemy.x + bloodOffX + Math.cos(angle) * dist
-      const py = enemy.y + bloodOffY + Math.sin(angle) * dist
+      const px = bloodCx + Math.cos(angle) * dist
+      const py = bloodCy + Math.sin(angle) * dist
       const speed = (274 + Math.random() * 430) * (0.8 + intensity * 0.2)
-      const outAngle = Math.atan2(py - enemy.y, px - enemy.x)
+      const outAngle = Math.atan2(py - bloodCy, px - bloodCx)
       const vx = Math.cos(outAngle) * speed + (Math.random() - 0.5) * speed * 0.2 + enemy.vx
       const vy = Math.sin(outAngle) * speed + (Math.random() - 0.5) * speed * 0.2 + enemy.vy
       const sizeScale = Math.min(r / 44, 1)
       const size = (3.2 + Math.random() * 3.2) * (0.8 + intensity * 0.2) * sizeScale * sizeScale
-      spawnParticle(px, py, vx, vy, 255, 80 + Math.floor(Math.random() * 50), 70, 0.31 + Math.random() * 0.22, size)
+      spawnParticle(px, py, vx, vy, 255, 60 + Math.floor(Math.random() * 45), 55, 0.31 + Math.random() * 0.22, size)
     }
     // Blood spray from center — enemy colored
-    const sprayCount = Math.floor(3 * intensity)
+    const sprayCount = Math.floor(1.5 * intensity)
     for (let i = 0; i < sprayCount; i++) {
       const angle = Math.random() * Math.PI * 2
       const speed = 118 + Math.random() * 254 * intensity
@@ -3952,7 +4078,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const size = (2.8 + Math.random() * 3.2) * (0.8 + intensity * 0.2) * sizeScale2 * sizeScale2
       spawnParticle(enemy.x + bloodOffX, enemy.y + bloodOffY,
         Math.cos(angle) * speed + enemy.vx, Math.sin(angle) * speed + enemy.vy,
-        230 + Math.floor(Math.random() * 25), 40 + Math.floor(Math.random() * 40), 40, 0.31 + Math.random() * 0.22, size)
+        235 + Math.floor(Math.random() * 20), 30 + Math.floor(Math.random() * 35), 30, 0.31 + Math.random() * 0.22, size)
     }
   }
 
@@ -4430,16 +4556,6 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     ctx.fillStyle = `rgba(255, 100, 0, ${0.12 + vPulse * 0.15})`
     ctx.fill()
 
-    // Faint blast range circle
-    ctx.save()
-    ctx.setLineDash([6, 6])
-    ctx.beginPath()
-    ctx.arc(sx, sy, enemy.volatileRange, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(255, 120, 0, 0.08)`
-    ctx.lineWidth = 1
-    ctx.stroke()
-    ctx.restore()
-
     // Ambient fire embers — rising from body edge, scales with enemy size
     const fireScale = Math.min(r / 44, 1.4)
     if (Math.random() < 0.2 + fireScale * 0.1) {
@@ -4547,7 +4663,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     const baseCr = 255
     const baseCg = 215
     const baseCb = 64
-    const lockCr = 0, lockCg = 255, lockCb = isShopPhase ? 200 : 255  // cyan/teal when locked
+    const lockCr = 255, lockCg = 50, lockCb = isShopPhase ? 200 : 200  // bright pink when locked
 
     const prevActiveIdx = ((enemy.summonBeatCount - 1 + N * 100) % N)
 
@@ -4617,35 +4733,35 @@ function drawEnemy(enemy: Enemy, player: Player): void {
                 const pa = (p / 12) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
                 const speed = 400 + Math.random() * 350
                 spawnParticle(worldNx, worldNy, Math.cos(pa) * speed, Math.sin(pa) * speed,
-                  cr, cg, cb, 0.25 + Math.random() * 0.15, 4 + Math.random() * 3)
+                  255, 215, 64, 0.25 + Math.random() * 0.15, 4 + Math.random() * 3)
               }
             }
           }
         } else if (isActive) {
           // Active — bright pulsing plus with clear hitbox ring
           const flash = Math.max(0, 1 - beatFrac * 2.5)
-          // Glow halo
+          // Glow halo — bigger and brighter
           ctx.beginPath()
-          ctx.arc(nx, ny, nodeR + 4 + flash * 5, 0, Math.PI * 2)
-          ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.06 + flash * 0.12})`
+          ctx.arc(nx, ny, nodeR + 6 + flash * 8, 0, Math.PI * 2)
+          ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.12 + flash * 0.2})`
           ctx.fill()
           // BG circle
           ctx.beginPath()
           ctx.arc(nx, ny, nodeR, 0, Math.PI * 2)
-          ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.1 + flash * 0.15})`
+          ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.2 + flash * 0.25})`
           ctx.fill()
           // Hitbox ring
           ctx.beginPath()
           ctx.arc(nx, ny, nodeR, 0, Math.PI * 2)
-          ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.4 + flash * 0.4})`
-          ctx.lineWidth = 2 + flash
+          ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.6 + flash * 0.35})`
+          ctx.lineWidth = 2.5 + flash * 1.5
           ctx.stroke()
           // Plus — pulses
           const activeSize = plusSize + flash * 3
           const activeW = plusW + flash * 2
           ctx.lineCap = 'round'
           ctx.lineWidth = activeW
-          ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.6 + flash * 0.35})`
+          ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.8 + flash * 0.2})`
           ctx.beginPath()
           ctx.moveTo(nx, ny - activeSize)
           ctx.lineTo(nx, ny + activeSize)
@@ -4761,7 +4877,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
               const speed = 500 + Math.random() * 400
               spawnParticle(worldNx, worldNy,
                 Math.cos(pa) * speed, Math.sin(pa) * speed,
-                cr, cg, cb, 0.25 + Math.random() * 0.15, 5 + Math.random() * 3.5)
+                255, 215, 64, 0.25 + Math.random() * 0.15, 5 + Math.random() * 3.5)
             }
             for (let p = 0; p < 6; p++) {
               const pa = Math.random() * Math.PI * 2
@@ -4974,53 +5090,96 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const at = enemy.summonActivationTimer / (BEAT_SEC * 0.5)  // 1→0
       const explodeT = 1 - at  // 0→1
 
-      // Nodes dissolve outward — expand and fade
+      // Coalescing core — grows from nothing during activation, then ruptures
+      // Phase 1 (0→0.5): core forms from node energy converging to center
+      // Phase 2 (0.5→1): core ruptures outward
+      const formPhase = Math.min(explodeT / 0.5, 1)  // 0→1 over first half
+      const burstPhase = Math.max(0, (explodeT - 0.5) / 0.5)  // 0→1 over second half
+
+      const coreR = r * 0.35 * formPhase * Math.max(0, 1 - burstPhase * burstPhase)  // grows then shrinks fast on burst
+      const corePulse = 0.5 + 0.5 * Math.sin(now / 150)
+
+      // Nodes get sucked toward center
       for (let i = 0; i < N; i++) {
         const a = baseRot + (i / N) * Math.PI * 2
-        const dissolveR = orbitR + explodeT * r * 0.2
-        const anx = sx + Math.cos(a) * dissolveR
-        const any = sy + Math.sin(a) * dissolveR
-        const dissolveSize = nodeR * (1 + explodeT * 0.8)
-        ctx.beginPath()
-        ctx.arc(anx, any, dissolveSize, 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(${lockCr}, ${lockCg}, ${lockCb}, ${at * at * 0.4})`
-        ctx.fill()
+        const pullR = orbitR * (1 - formPhase * 0.8)  // pull inward as core forms
+        const anx = sx + Math.cos(a) * pullR
+        const any = sy + Math.sin(a) * pullR
+        const dissolveSize = nodeR * (1 - formPhase)  // shrink to nothing
+        if (dissolveSize > 0.5) {
+          ctx.beginPath()
+          ctx.arc(anx, any, dissolveSize, 0, Math.PI * 2)
+          ctx.fillStyle = `rgba(${lockCr}, ${lockCg}, ${lockCb}, ${(1 - formPhase) * 0.5})`
+          ctx.fill()
+        }
+        // Energy stream from node to center during form phase
+        if (formPhase < 1) {
+          ctx.beginPath()
+          ctx.moveTo(anx, any)
+          ctx.lineTo(sx, sy)
+          ctx.strokeStyle = `rgba(${lockCr}, ${lockCg}, ${lockCb}, ${formPhase * 0.3})`
+          ctx.lineWidth = 2 + formPhase * 3
+          ctx.lineCap = 'round'
+          ctx.stroke()
+          ctx.lineCap = 'butt'
+        }
       }
 
-      // Double expanding shockwave
-      const shock1R = r + explodeT * r * 0.4
-      ctx.beginPath()
-      ctx.arc(sx, sy, shock1R, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(${lockCr}, ${lockCg}, ${lockCb}, ${at * 0.6})`
-      ctx.lineWidth = 4 * at
-      ctx.stroke()
-
-      const shock2R = r + explodeT * r * 0.2
-      ctx.beginPath()
-      ctx.arc(sx, sy, shock2R, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(255, 255, 255, ${at * 0.4})`
-      ctx.lineWidth = 2 * at
-      ctx.stroke()
-
-      // Center energy flash — bright then fades
-      const flashAlpha = at > 0.5 ? (1 - at) * 2 : at * 2
-      ctx.beginPath()
-      ctx.arc(sx, sy, r * (0.3 + explodeT * 0.4), 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(255, 255, 255, ${flashAlpha * 0.3})`
-      ctx.fill()
-
-      // Radial energy lines shooting outward
-      const lineCount = 8
-      for (let i = 0; i < lineCount; i++) {
-        const la = (i / lineCount) * Math.PI * 2 + explodeT * 0.5
-        const innerR = r * 0.3 + explodeT * r * 0.2
-        const outerR = r + explodeT * r * 0.5
+      // Core glow halo
+      if (coreR > 1) {
         ctx.beginPath()
-        ctx.moveTo(sx + Math.cos(la) * innerR, sy + Math.sin(la) * innerR)
-        ctx.lineTo(sx + Math.cos(la) * outerR, sy + Math.sin(la) * outerR)
-        ctx.strokeStyle = `rgba(${lockCr}, ${lockCg}, ${lockCb}, ${at * 0.3})`
-        ctx.lineWidth = 2 * at
+        ctx.arc(sx, sy, coreR + 10 + corePulse * 4, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${lockCr}, ${lockCg}, ${lockCb}, ${formPhase * 0.15 * (1 - burstPhase * 0.5)})`
+        ctx.fill()
+
+        // Core body
+        ctx.beginPath()
+        ctx.arc(sx, sy, coreR + corePulse * 2, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${lockCr}, ${lockCg}, ${lockCb}, ${0.3 + formPhase * 0.4 - burstPhase * 0.4})`
+        ctx.fill()
+
+        // White-hot center
+        const hotR = coreR * 0.5 * (1 - burstPhase * 0.6)
+        ctx.beginPath()
+        ctx.arc(sx, sy, hotR + corePulse, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(255, 255, 255, ${formPhase * 0.5 - burstPhase * 0.3})`
+        ctx.fill()
+
+        // Spinning arcs around core
+        const coreSpin = now / 300
+        const arcCount = 4
+        const arcLen = (Math.PI * 2 / arcCount) * 0.6
+        for (let a = 0; a < arcCount; a++) {
+          const aStart = coreSpin + (a / arcCount) * Math.PI * 2
+          ctx.beginPath()
+          ctx.arc(sx, sy, coreR + 3, aStart, aStart + arcLen)
+          ctx.strokeStyle = `rgba(255, 255, 255, ${formPhase * 0.3 * (1 - burstPhase)})`
+          ctx.lineWidth = 2
+          ctx.stroke()
+        }
+      }
+
+      // Burst phase — shockwave + radial lines
+      if (burstPhase > 0) {
+        const shock1R = coreR + burstPhase * r * 0.4
+        ctx.beginPath()
+        ctx.arc(sx, sy, shock1R, 0, Math.PI * 2)
+        ctx.strokeStyle = `rgba(${lockCr}, ${lockCg}, ${lockCb}, ${(1 - burstPhase) * 0.6})`
+        ctx.lineWidth = 4 * (1 - burstPhase)
         ctx.stroke()
+
+        const lineCount = 10
+        for (let i = 0; i < lineCount; i++) {
+          const la = (i / lineCount) * Math.PI * 2 + burstPhase * 0.8
+          const innerR = coreR * 0.3
+          const outerR = coreR + burstPhase * r * 0.5
+          ctx.beginPath()
+          ctx.moveTo(sx + Math.cos(la) * innerR, sy + Math.sin(la) * innerR)
+          ctx.lineTo(sx + Math.cos(la) * outerR, sy + Math.sin(la) * outerR)
+          ctx.strokeStyle = `rgba(${lockCr}, ${lockCg}, ${lockCb}, ${(1 - burstPhase) * 0.35})`
+          ctx.lineWidth = 2.5 * (1 - burstPhase)
+          ctx.stroke()
+        }
       }
 
       // Burst particles on first frame
@@ -5032,20 +5191,28 @@ function drawEnemy(enemy: Enemy, player: Player): void {
           const pny = enemy.y + Math.sin(a) * orbitR
           for (let p = 0; p < 8; p++) {
             const toAngle = Math.atan2(enemy.y - pny, enemy.x - pnx)
-            const speed = 120 + Math.random() * 100
+            const speed = 150 + Math.random() * 120
             spawnParticle(pnx, pny,
               Math.cos(toAngle) * speed + (Math.random() - 0.5) * 40,
               Math.sin(toAngle) * speed + (Math.random() - 0.5) * 40,
-              lockCr, lockCg, lockCb, 0.3 + Math.random() * 0.2, 5 + Math.random() * 4)
+              lockCr, lockCg, lockCb, 0.25 + Math.random() * 0.15, 5 + Math.random() * 4)
           }
         }
-        // Outward explosion from center
-        for (let p = 0; p < 20; p++) {
-          const a = (p / 20) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
-          const speed = 200 + Math.random() * 250
+        // Core rupture burst outward
+        for (let p = 0; p < 24; p++) {
+          const a = (p / 24) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
+          const speed = 250 + Math.random() * 300
           spawnParticle(enemy.x, enemy.y,
             Math.cos(a) * speed, Math.sin(a) * speed,
-            255, 255, 255, 0.2 + Math.random() * 0.15, 4 + Math.random() * 3)
+            255, 255, 255, 0.2 + Math.random() * 0.15, 4.5 + Math.random() * 3.5)
+        }
+        // Pink energy burst
+        for (let p = 0; p < 14; p++) {
+          const a = Math.random() * Math.PI * 2
+          const speed = 180 + Math.random() * 250
+          spawnParticle(enemy.x, enemy.y,
+            Math.cos(a) * speed, Math.sin(a) * speed,
+            lockCr, lockCg, lockCb, 0.3 + Math.random() * 0.2, 5 + Math.random() * 4)
         }
       }
     }
@@ -5166,16 +5333,30 @@ function drawDesignerPreview(player: Player): void {
     }
   }
 
-  // Volatile range
+  // Volatile range — clear blast radius indicator in builder
   if (preview.volatile) {
-    ctx.save()
-    ctx.setLineDash([6, 6])
+    // Filled danger zone
     ctx.beginPath()
     ctx.arc(sx, sy, preview.volatileRange, 0, Math.PI * 2)
-    ctx.strokeStyle = 'rgba(255, 120, 0, 0.12)'
-    ctx.lineWidth = 1
+    ctx.fillStyle = 'rgba(255, 80, 0, 0.06)'
+    ctx.fill()
+
+    // Dashed outer ring — bright and visible
+    ctx.save()
+    ctx.setLineDash([8, 5])
+    ctx.beginPath()
+    ctx.arc(sx, sy, preview.volatileRange, 0, Math.PI * 2)
+    ctx.strokeStyle = 'rgba(255, 120, 0, 0.4)'
+    ctx.lineWidth = 2
     ctx.stroke()
     ctx.restore()
+
+    // "BLAST RADIUS" label
+    ctx.font = 'bold 11px monospace'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    ctx.fillStyle = 'rgba(255, 120, 0, 0.5)'
+    ctx.fillText('BLAST RADIUS', sx, sy - preview.volatileRange - 10)
   }
 
   // Consume arcs
@@ -5629,6 +5810,7 @@ function drawRitualNodeOverlays(): void {
 
 // ── Title Screen ──
 export function drawTitleScreen(dt: number): void {
+  csWasDrawn = false
   titleTime += dt
 
   // Beat pulse — fires at ring peak (0.45 into each beat), not beat start
@@ -5668,7 +5850,7 @@ export function drawTitleScreen(dt: number): void {
   }
 
   // Ring attack animation — matches gameplay ring expand + red flash + particles
-  const rcx = width / 2, rcy = height / 2 - 20
+  const rcx = width / 2, rcy = height / 2 - 70
   const beatCycle = beatPhase
   const ringMaxR = 220
   const expandTime = 0.45  // matches ATTACK_EXPAND_TIME
@@ -5800,7 +5982,7 @@ export function drawTitleScreen(dt: number): void {
   ctx.fillRect(0, 0, width, height)
 
   const cx = width / 2
-  const titleY = height * 0.44
+  const titleY = height * 0.44 - 50
 
   // Title — "BEATBACK"
   const letters = 'BEATBACK'
@@ -5837,9 +6019,9 @@ export function drawTitleScreen(dt: number): void {
   }
 
   // Start button
-  const btnY = height * 0.52
-  const btnW = 200
-  const btnH = 50
+  const btnY = height * 0.52 - 60
+  const btnW = 230
+  const btnH = 58
   const btnPulse = 0.5 + 0.5 * Math.sin(now * 3)
   const btnBeat = titleBeatPulse
 
@@ -5847,28 +6029,30 @@ export function drawTitleScreen(dt: number): void {
   const startHov = checkHover('title_start', pauseMouseX >= cx - btnW / 2 && pauseMouseX <= cx + btnW / 2 && pauseMouseY >= btnY && pauseMouseY <= btnY + btnH)
   const hovB = startHov ? 0.15 : 0
 
+  const sr = startHov ? 255 : 0, sg = startHov ? 50 : 255, sb = startHov ? 200 : 255
+
   // Button glow
   ctx.beginPath()
   ctx.roundRect(cx - btnW / 2 - 4, btnY - 4, btnW + 8, btnH + 8, 8)
-  ctx.fillStyle = `rgba(0, 255, 255, ${0.03 + btnBeat * 0.06 + hovB})`
+  ctx.fillStyle = `rgba(${sr}, ${sg}, ${sb}, ${0.03 + btnBeat * 0.06 + hovB})`
   ctx.fill()
 
   // Button border
   ctx.beginPath()
   ctx.roundRect(cx - btnW / 2, btnY, btnW, btnH, 6)
-  ctx.strokeStyle = `rgba(0, 255, 255, ${0.4 + btnPulse * 0.2 + btnBeat * 0.3 + hovB * 2})`
+  ctx.strokeStyle = `rgba(${sr}, ${sg}, ${sb}, ${0.4 + btnPulse * 0.2 + btnBeat * 0.3 + hovB * 2})`
   ctx.lineWidth = 2 + btnBeat + (startHov ? 1 : 0)
   ctx.stroke()
 
   // Button fill
-  ctx.fillStyle = `rgba(0, 255, 255, ${0.06 + btnBeat * 0.08 + hovB})`
+  ctx.fillStyle = `rgba(${sr}, ${sg}, ${sb}, ${0.06 + btnBeat * 0.08 + hovB})`
   ctx.fill()
 
   // Button text
-  ctx.font = 'bold 26px monospace'
+  ctx.font = 'bold 30px monospace'
   ctx.textAlign = 'center'
-  ctx.fillStyle = `rgba(0, 255, 255, ${0.7 + btnPulse * 0.15 + btnBeat * 0.15 + hovB})`
-  ctx.fillText('S T A R T', cx, btnY + btnH / 2 + 7)
+  ctx.fillStyle = `rgba(${sr}, ${sg}, ${sb}, ${0.7 + btnPulse * 0.15 + btnBeat * 0.15 + hovB})`
+  ctx.fillText('S T A R T', cx, btnY + btnH / 2 + 9)
 
   // Fullscreen button
   const fsY = btnY + btnH + 160
@@ -5900,7 +6084,22 @@ export function drawTitleScreen(dt: number): void {
 }
 
 // ── Challenge Select Screen ──
-let challengeSelectScroll = 0
+let csSelectedIndex = 0
+export function getCsSelectedIndex(): number { return csSelectedIndex }
+export function navigateChallenge(dir: number): boolean {
+  const challenges = getChallenges()
+  const newIdx = csSelectedIndex + dir
+  if (newIdx < 0 || newIdx >= challenges.length || csSlideDir !== 0) return false
+  csSlideDir = dir
+  csSlideTimer = 0
+  return true
+}
+let csAnimTimer = 0
+let csWasDrawn = false
+let csSlideDir = 0    // -1 left, 1 right, 0 none
+let csSlideTimer = 0
+let csSlideFrom = 0
+const CS_SLIDE_DUR = 0.18
 let victoryScroll = 0
 let victoryScrollbarRect: { x: number; y: number; w: number; h: number; thumbH: number; maxScroll: number } | null = null
 let victoryScrollDragging = false
@@ -5911,20 +6110,343 @@ let lastProjectedRank = 0
 let lastDisplayedBeatCount = -1
 let timerFlash = 0
 
+// ── Toast System — popup text messages ──
+interface Toast {
+  text: string
+  timer: number
+  duration: number
+  fadeIn: number
+  fadeOut: number
+  y: number         // 0-1 screen fraction
+  size: number
+  color: [number, number, number]
+  id: string
+  style: 'normal' | 'combo' | 'glow' | 'sad'
+  glowWords: string[] | undefined
+  glowColor: [number, number, number] | undefined
+}
+
+const toasts: Toast[] = []
+const MAX_TOASTS = 2
+
+export interface ToastOptions {
+  duration: number
+  fadeIn: number
+  fadeOut: number
+  y: number
+  size: number
+  color: [number, number, number]
+  id: string
+  style: 'normal' | 'combo' | 'glow' | 'sad'
+  glowWords: string[]
+  glowColor: [number, number, number]
+}
+
+export function showToast(text: string, opts?: Partial<ToastOptions>): void {
+  const id = opts?.id ?? text
+  // Skip if already showing
+  if (toasts.some(t => t.id === id)) return
+  // Push out old ones if at max
+  while (toasts.length >= MAX_TOASTS) {
+    const oldest = toasts[0]!
+    oldest.timer = Math.min(oldest.timer, oldest.fadeOut)  // force into fade-out
+    toasts.shift()
+  }
+  toasts.push({
+    text,
+    timer: 0,
+    duration: opts?.duration ?? 3,
+    fadeIn: opts?.fadeIn ?? 0.3,
+    fadeOut: opts?.fadeOut ?? 0.5,
+    y: opts?.y ?? 0.35,
+    size: opts?.size ?? 34,
+    color: opts?.color ?? [255, 255, 255],
+    id,
+    style: opts?.style ?? 'normal',
+    glowWords: opts?.glowWords,
+    glowColor: opts?.glowColor,
+  })
+}
+
+export function clearToasts(): void {
+  toasts.length = 0
+}
+
+function updateAndDrawToasts(dt: number): void {
+  let stackOffset = 0
+  for (let i = 0; i < toasts.length; i++) {
+    const t = toasts[i]!
+    t.timer += dt
+
+    // Typewriter: chars per second, fast
+    const typeSpeed = 60  // characters per second
+    const totalChars = t.text.length
+    const typeTime = totalChars / typeSpeed
+    const visibleChars = Math.min(totalChars, Math.floor(t.timer * typeSpeed))
+
+    // Duration starts counting after typewriter finishes
+    const holdStart = typeTime
+    const totalDur = holdStart + t.duration + t.fadeOut
+    if (t.timer >= totalDur) {
+      toasts.splice(i, 1)
+      i--
+      continue
+    }
+
+    // Alpha: type phase = 1, hold = 1, fade out
+    let alpha: number
+    if (t.timer < holdStart + t.duration) {
+      alpha = 1
+    } else {
+      alpha = 1 - (t.timer - holdStart - t.duration) / t.fadeOut
+    }
+
+    // Slide up during first 0.3s
+    const slideY = t.timer < 0.3 ? (1 - t.timer / 0.3) * 12 : 0
+
+    const tx = width / 2
+    const ty = height * t.y + slideY + stackOffset
+    const displayText = t.text.slice(0, visibleChars)
+
+    const cr = t.color[0], cg = t.color[1], cb = t.color[2]
+
+    if (t.style === 'combo') {
+      // ── Combo style: scale bounce + per-letter shake ──
+      const now = performance.now() / 1000
+      // Scale bounce: starts 2x, slams to 1x over 0.2s, slight overshoot
+      const bounceT = Math.min(t.timer / 0.2, 1)
+      const bounce = bounceT < 1 ? 2 - bounceT * 1.15 : 1 + (1 - Math.min((t.timer - 0.2) / 0.1, 1)) * 0.15
+      const scale = Math.max(0.8, bounce)
+
+      ctx.save()
+      ctx.translate(tx, ty)
+      ctx.scale(scale * alpha, scale * alpha)
+      ctx.translate(-tx, -ty)
+
+      ctx.font = `bold ${t.size}px monospace`
+      const fullW = ctx.measureText(displayText).width
+      const letterW = fullW / Math.max(displayText.length, 1)
+      const startX = tx - fullW / 2
+
+      // Shake intensity — strong for first 0.8s, then dies
+      const shakeAmt = Math.max(0, 1 - t.timer / 0.8) * 6
+
+      for (let li = 0; li < displayText.length; li++) {
+        const lx = startX + li * letterW
+        const sx = Math.sin(now * 50 + li * 2.3) * shakeAmt
+        const sy = Math.cos(now * 45 + li * 1.7) * shakeAmt
+
+        // Glow
+        ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.1 * alpha})`
+        ctx.textAlign = 'left'
+        ctx.fillText(displayText[li]!, lx + sx + 1, ty + t.size * 0.35 + sy)
+        ctx.fillText(displayText[li]!, lx + sx - 1, ty + t.size * 0.35 + sy)
+
+        // Shadow
+        ctx.fillStyle = `rgba(0, 0, 0, ${0.5 * alpha})`
+        ctx.fillText(displayText[li]!, lx + sx + 1, ty + t.size * 0.35 + sy + 2)
+
+        // Letter
+        ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.95 * alpha})`
+        ctx.fillText(displayText[li]!, lx + sx, ty + t.size * 0.35 + sy)
+      }
+
+      ctx.restore()
+    } else if (t.style === 'glow' && t.glowWords && t.glowColor) {
+      // ── Glow style: certain words pulse with highlight color ──
+      ctx.font = `bold ${t.size}px monospace`
+      const fullW = ctx.measureText(t.text).width
+      const leftX = tx - fullW / 2
+      ctx.textAlign = 'left'
+      const textY = ty + t.size * 0.35
+      const now = performance.now() / 1000
+      const glowPulse = 0.4 + 0.3 * Math.sin(now * 10)
+      const gr = t.glowColor[0], gg = t.glowColor[1], gb = t.glowColor[2]
+
+      // Split text into words and draw each
+      const words = displayText.split(' ')
+      let curX = leftX
+      for (let wi = 0; wi < words.length; wi++) {
+        const word = words[wi]!
+        const wordW = ctx.measureText(word).width
+        const spaceW = ctx.measureText(' ').width
+        const isGlow = t.glowWords.some(gw => word.toLowerCase().includes(gw.toLowerCase()))
+
+        if (isGlow) {
+          // Scale bounce on glow words
+          const wordCx = curX + wordW / 2
+          const glowScale = 1 + glowPulse * 0.06
+          ctx.save()
+          ctx.translate(wordCx, textY)
+          ctx.scale(glowScale, glowScale)
+          ctx.translate(-wordCx, -textY)
+
+          // Big glow halo
+          ctx.fillStyle = `rgba(${gr}, ${gg}, ${gb}, ${0.12 * glowPulse * alpha})`
+          for (let g = 0; g < 4; g++) {
+            const angle = (g / 4) * Math.PI * 2
+            ctx.fillText(word, curX + Math.cos(angle) * 2, textY + Math.sin(angle) * 2)
+          }
+          // Shadow
+          ctx.fillStyle = `rgba(0, 0, 0, ${0.5 * alpha})`
+          ctx.fillText(word, curX + 1, textY + 2)
+          // Glowing word — bright
+          ctx.fillStyle = `rgba(${gr}, ${gg}, ${gb}, ${(0.85 + glowPulse * 0.15) * alpha})`
+          ctx.fillText(word, curX, textY)
+
+          ctx.restore()
+        } else {
+          // Shadow
+          ctx.fillStyle = `rgba(0, 0, 0, ${0.5 * alpha})`
+          ctx.fillText(word, curX + 1, textY + 2)
+          // Normal word
+          ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.95 * alpha})`
+          ctx.fillText(word, curX, textY)
+        }
+        curX += wordW + spaceW
+      }
+
+      // Typing cursor
+      if (visibleChars < totalChars) {
+        const cursorBlink = Math.floor(t.timer * 8) % 2 === 0
+        if (cursorBlink) {
+          const partialW = ctx.measureText(displayText).width
+          const cursorX = leftX + partialW + 4
+          ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.8 * alpha})`
+          ctx.fillRect(cursorX, ty - t.size * 0.3, 3, t.size * 0.8)
+        }
+      }
+    } else if (t.style === 'sad') {
+      // ── Sad style: sinks down + drains to grey ──
+      ctx.font = `bold ${t.size}px monospace`
+      const fullW = ctx.measureText(t.text).width
+      const leftX = tx - fullW / 2
+      ctx.textAlign = 'left'
+
+      // Progress through display (0→1)
+      const sadProgress = Math.min(t.timer / (typeTime + t.duration), 1)
+
+      // Sink down over time
+      const sinkY = sadProgress * 10
+      const textY = ty + t.size * 0.35 + sinkY
+
+      // Shrink slightly
+      const sadScale = 1 - sadProgress * 0.15
+      ctx.save()
+      ctx.translate(tx, textY)
+      ctx.scale(sadScale, sadScale)
+      ctx.translate(-tx, -textY)
+
+      // Drain from pink to grey
+      const drainR = Math.floor(cr + (140 - cr) * sadProgress)
+      const drainG = Math.floor(cg + (140 - cg) * sadProgress)
+      const drainB = Math.floor(cb + (140 - cb) * sadProgress)
+
+      // Dim alpha over time
+      const sadAlpha = alpha * (1 - sadProgress * 0.4)
+
+      // Shadow
+      ctx.fillStyle = `rgba(0, 0, 0, ${0.5 * sadAlpha})`
+      ctx.fillText(displayText, leftX + 1, textY + 2)
+
+      // Main text — draining color
+      ctx.fillStyle = `rgba(${drainR}, ${drainG}, ${drainB}, ${0.95 * sadAlpha})`
+      ctx.fillText(displayText, leftX, textY)
+
+      ctx.restore()
+
+      // Typing cursor
+      if (visibleChars < totalChars) {
+        const cursorBlink = Math.floor(t.timer * 8) % 2 === 0
+        if (cursorBlink) {
+          const partialW = ctx.measureText(displayText).width
+          const cursorX = leftX + partialW + 4
+          ctx.fillStyle = `rgba(${drainR}, ${drainG}, ${drainB}, ${0.8 * sadAlpha})`
+          ctx.fillRect(cursorX, ty - t.size * 0.3, 3, t.size * 0.8)
+        }
+      }
+    } else {
+      // ── Normal style: typewriter + glow ──
+      ctx.font = `bold ${t.size}px monospace`
+      const fullW = ctx.measureText(t.text).width
+      const leftX = tx - fullW / 2
+      ctx.textAlign = 'left'
+      const textY = ty + t.size * 0.35
+
+      // Glow
+      ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.08 * alpha})`
+      for (let g = 0; g < 4; g++) {
+        const gx = (g % 2 === 0 ? 1 : -1) * (g < 2 ? 1 : 0)
+        const gy = (g < 2 ? 0 : 1) * (g % 2 === 0 ? 1 : -1)
+        ctx.fillText(displayText, leftX + gx, textY + gy)
+      }
+
+      // Shadow
+      ctx.fillStyle = `rgba(0, 0, 0, ${0.5 * alpha})`
+      ctx.fillText(displayText, leftX + 1, textY + 2)
+
+      // Main text
+      ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.95 * alpha})`
+      ctx.fillText(displayText, leftX, textY)
+
+      // Typing cursor
+      if (visibleChars < totalChars) {
+        const cursorBlink = Math.floor(t.timer * 8) % 2 === 0
+        if (cursorBlink) {
+          const partialW = ctx.measureText(displayText).width
+          const cursorX = leftX + partialW + 4
+          ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.8 * alpha})`
+          ctx.fillRect(cursorX, ty - t.size * 0.3, 3, t.size * 0.8)
+        }
+      }
+    }
+
+    stackOffset += t.size + 16
+  }
+}
+
 // Controls hint — shows at challenge start, fades out
 let controlsHintTimer = 0
-const CONTROLS_HINT_DURATION = 3.5  // seconds visible
+const CONTROLS_HINT_DURATION = 5.25  // seconds visible
 const CONTROLS_HINT_FADE = 1.0      // seconds to fade out
+// Pro tips on death screen
+const PRO_TIPS = [
+  'Dash on the beat to trigger a close-range AOE attack',
+  'Dash before the beat to spread out your next attack',
+  'Your pink shield absorbs 1 hit - let it activate by not getting hit',
+  "Don't summon more enemies than you can handle",
+  'Exploding enemies damage other enemies',
+  'If you\'re afraid to take damage, your time will suck',
+  'A rotating red band means they can eat your hearts',
+  'Some enemies can be used for protection',
+]
+let proTipIndex = 0
 
-export function showControlsHint(): void {
-  controlsHintTimer = CONTROLS_HINT_DURATION + CONTROLS_HINT_FADE
+export function cycleProTip(dir: number): void {
+  proTipIndex = ((proTipIndex + dir) % PRO_TIPS.length + PRO_TIPS.length) % PRO_TIPS.length
 }
-let challengeSelectHover = -1
+export function resetProTip(): void {
+  proTipIndex = 0
+}
 
-export function getChallengeSelectHover(): number { return challengeSelectHover }
+let tutorialBeginner = false
+let tutorialDashUsed = [false, false]
+let tutorialPrevSlots = [0, 0]
+let tutorialDashFade = 0  // fade timer for dash section after both used
+
+export function showControlsHint(beginner = false): void {
+  controlsHintTimer = CONTROLS_HINT_DURATION + CONTROLS_HINT_FADE
+  tutorialBeginner = beginner
+  tutorialDashUsed = [false, false]
+  tutorialPrevSlots = [0, 0]
+  tutorialDashFade = 0
+}
+let csPlayHover = false
+
+export function getChallengeSelectHover(): number { return csPlayHover ? 0 : -1 }
 export function getNameEntryText(): string { return nameEntryText }
 export function setNameEntryText(t: string): void { nameEntryText = t }
-export function resetNameEntry(): void { nameEntryText = '' }
+export function resetNameEntry(): void { nameEntryText = ''; nameEntryStarted = false; nameFireworks.length = 0 }
 export function scrollVictoryLeaderboard(delta: number): void { victoryScroll += delta }
 let touchScrollActive = false
 let touchScrollLastY = 0
@@ -5967,6 +6489,39 @@ export function drawChallengeSelect(dt: number): void {
   const now = performance.now() / 1000
   const challenges = getChallenges()
 
+  // Animation timer — reset when first entering
+  if (!csWasDrawn) { csAnimTimer = 0; csSlideDir = 0; titleLastBeat = -1 }
+  csWasDrawn = true
+  csAnimTimer += dt
+
+  // Beat pulse — same as title screen
+  const loopPos = getLoopPosition()
+  const beatPhase = loopPos % 1
+  const peakPoint = 0.45
+  const currentBeat = Math.floor(loopPos)
+  const pastPeakThisBeat = beatPhase >= peakPoint
+  const beatId = currentBeat * 2 + (pastPeakThisBeat ? 1 : 0)
+  if (beatId !== titleLastBeat && titleLastBeat >= 0 && pastPeakThisBeat) {
+    titleBeatPulse = 1
+  }
+  titleLastBeat = beatId
+  titleBeatPulse = Math.max(0, titleBeatPulse - dt * 3)
+  const csBeat = titleBeatPulse
+
+  // Slide animation update
+  if (csSlideDir !== 0) {
+    csSlideTimer += dt
+    if (csSlideTimer >= CS_SLIDE_DUR) {
+      csSelectedIndex = csSelectedIndex + csSlideDir
+      csSlideDir = 0
+      csSlideTimer = 0
+    }
+  }
+
+  // Clamp index
+  if (csSelectedIndex < 0) csSelectedIndex = 0
+  if (csSelectedIndex >= challenges.length) csSelectedIndex = challenges.length - 1
+
   // Background
   ctx.fillStyle = COLOR_BG
   ctx.fillRect(0, 0, width, height)
@@ -5990,152 +6545,372 @@ export function drawChallengeSelect(dt: number): void {
 
   const cx = width / 2
 
-  // Title
-  ctx.font = 'bold 48px monospace'
-  ctx.textAlign = 'center'
-  ctx.fillStyle = 'rgba(0, 255, 255, 0.9)'
-  ctx.fillText('SELECT CHALLENGE', cx, 70)
+  // Intro animation helpers
+  const introAlpha = (delay: number, dur: number) => {
+    const t = Math.max(0, csAnimTimer - delay)
+    return Math.min(t / dur, 1)
+  }
+  const introEase = (delay: number, dur: number) => {
+    const t = Math.min(Math.max(0, csAnimTimer - delay) / dur, 1)
+    return 1 - (1 - t) * (1 - t)
+  }
 
-  // Back button — top-left
-  const backW = 160
-  const backH = 56
-  const backX = 20
-  const backY = 18
+  // Back button — fade in
+  const backA = introAlpha(0.12, 0.12)
+  ctx.globalAlpha = backA
+  const backW = 260, backH = 72, backX = 20, backY = 18
   const backHov = checkHover('cs_back', pauseMouseX >= backX && pauseMouseX <= backX + backW && pauseMouseY >= backY && pauseMouseY <= backY + backH)
   ctx.beginPath()
-  ctx.roundRect(backX, backY, backW, backH, 10)
+  ctx.roundRect(backX, backY, backW, backH, 12)
   ctx.strokeStyle = `rgba(0, 255, 255, ${backHov ? 0.7 : 0.35})`
-  ctx.lineWidth = backHov ? 2.5 : 1.5
+  ctx.lineWidth = backHov ? 3 : 2
   ctx.stroke()
   ctx.fillStyle = `rgba(0, 255, 255, ${backHov ? 0.15 : 0.06})`
   ctx.fill()
-  ctx.font = 'bold 24px monospace'
+  ctx.font = 'bold 34px monospace'
   ctx.textAlign = 'center'
   ctx.fillStyle = `rgba(0, 255, 255, ${backHov ? 0.95 : 0.7})`
-  ctx.fillText('\u2190 BACK', backX + backW / 2, backY + backH / 2 + 8)
+  ctx.fillText('\u2190 BACK', backX + backW / 2, backY + backH / 2 + 10)
+
+  // Fullscreen / Windowed toggle
+  const csfsW = 260, csfsH = 52
+  const csfsX = backX, csfsY = backY + backH + 12
+  const csfsHov = checkHover('cs_fs', pauseMouseX >= csfsX && pauseMouseX <= csfsX + csfsW && pauseMouseY >= csfsY && pauseMouseY <= csfsY + csfsH)
+  ctx.beginPath()
+  ctx.roundRect(csfsX, csfsY, csfsW, csfsH, 10)
+  ctx.strokeStyle = `rgba(255, 50, 200, ${csfsHov ? 0.65 : 0.3})`
+  ctx.lineWidth = csfsHov ? 2.5 : 1.5
+  ctx.stroke()
+  ctx.fillStyle = `rgba(255, 50, 200, ${csfsHov ? 0.15 : 0.05})`
+  ctx.fill()
+  ctx.font = 'bold 22px monospace'
+  ctx.fillStyle = `rgba(255, 50, 200, ${csfsHov ? 0.95 : 0.65})`
+  ctx.fillText(document.fullscreenElement ? 'WINDOWED' : 'FULLSCREEN', csfsX + csfsW / 2, csfsY + csfsH / 2 + 7)
+
+  // Volume slider
+  const csVolRect = drawVolumeSlider(csfsX, csfsY + csfsH + 30, csfsW)
+  volumeSliderRect = csVolRect
+  ctx.globalAlpha = 1
 
   if (challenges.length === 0) {
     ctx.font = '24px monospace'
     ctx.fillStyle = 'rgba(255, 255, 255, 0.4)'
     ctx.fillText('No challenges created yet', cx, height / 2)
-    ctx.font = '16px monospace'
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.25)'
-    ctx.fillText('Open Workshop (Tab) to create one', cx, height / 2 + 35)
     ctx.textAlign = 'left'
     return
   }
 
-  // Challenge cards — single column, full width
-  const cardW = Math.min(750, width - 80)
-  const cardH = 150
-  const cardGap = 14
-  const startY = 110
-  const cardX = (width - cardW) / 2
+  // ── Draw challenge card content (name + leaderboard) ──
+  function drawCard(idx: number, xOffset: number, alpha: number): void {
+    if (idx < 0 || idx >= challenges.length) return
+    const ch = challenges[idx]!
+    ctx.globalAlpha = alpha
 
-  for (let i = 0; i < challenges.length; i++) {
-    const ch = challenges[i]!
-    const cardY = startY + i * (cardH + cardGap) - challengeSelectScroll
-    if (cardY + cardH < 0 || cardY > height) continue
-
-    const isHover = challengeSelectHover === i
-    const pulse = isHover ? 0.5 + 0.5 * Math.sin(now * 4) : 0
-
-    // Card bg — slightly lighter than background
-    ctx.beginPath()
-    ctx.roundRect(cardX, cardY, cardW, cardH, 10)
-    ctx.fillStyle = isHover ? 'rgba(0, 255, 255, 0.07)' : 'rgba(200, 130, 200, 0.12)'
-    ctx.fill()
-    ctx.strokeStyle = isHover ? `rgba(0, 255, 255, ${0.5 + pulse * 0.3})` : 'rgba(200, 130, 200, 0.32)'
-    ctx.lineWidth = isHover ? 2 : 1
-    ctx.stroke()
-
-    // Left accent bar — cyan
-    ctx.beginPath()
-    ctx.roundRect(cardX, cardY, 5, cardH, [10, 0, 0, 10])
-    ctx.fillStyle = isHover ? 'rgba(0, 255, 255, 0.7)' : 'rgba(0, 255, 255, 0.3)'
-    ctx.fill()
-
-    // Challenge name — BIG
-    ctx.font = 'bold 35px monospace'
-    ctx.textAlign = 'left'
-    ctx.fillStyle = isHover ? 'rgba(0, 255, 255, 0.95)' : 'rgba(255, 255, 255, 0.9)'
-    ctx.fillText(ch.name, cardX + 20, cardY + 38)
-
-    // Play hint on hover — under the name on left side
-    if (isHover) {
-      const fastPulse = 0.5 + 0.5 * Math.sin(now * 8)
-      ctx.font = 'bold 34px monospace'
-      ctx.textAlign = 'left'
-      ctx.fillStyle = `rgba(255, 50, 200, ${0.6 + fastPulse * 0.35})`
-      ctx.fillText('PLAY \u25B6', cardX + 20, cardY + 80)
+    // Challenge name — drop in animation on initial load
+    const nameE = introEase(0.06, 0.18)
+    const nameDropY = xOffset === 0 && csSlideDir === 0 ? (1 - nameE) * -40 : 0
+    const nameA = xOffset === 0 && csSlideDir === 0 ? nameE : 1
+    ctx.globalAlpha = alpha * nameA
+    ctx.font = 'bold 79px monospace'
+    ctx.textAlign = 'center'
+    // Per-letter cyan/pink wave — smooth shift synced to beat
+    const nameStr = ch.name
+    const letterW = 48
+    const totalNameW = nameStr.length * letterW
+    const nameStartX = cx + xOffset - totalNameW / 2 + letterW / 2
+    const nameY = 180 + nameDropY
+    // Smooth wave using beat phase — scrolls continuously through letters
+    const wavePhase = loopPos * Math.PI * 2  // full cycle per beat
+    for (let li = 0; li < nameStr.length; li++) {
+      // Sine wave determines blend: 0=cyan, 1=pink
+      const blend = 0.5 + 0.5 * Math.sin(wavePhase + li * 0.8)
+      const r = Math.floor(blend * 255)
+      const g = Math.floor((1 - blend) * 230 + blend * 50)
+      const b = Math.floor((1 - blend) * 255 + blend * 200)
+      ctx.fillStyle = `rgba(${r}, ${g}, ${b}, 0.95)`
+      // Beat shake — each letter bounces on beat with slight stagger
+      const shake = csBeat * csBeat * 8
+      const shakeX = Math.sin(now * 40 + li * 1.5) * shake
+      const shakeY = -csBeat * csBeat * 14 + Math.cos(now * 35 + li * 1.1) * shake * 0.6
+      ctx.fillText(nameStr[li]!, nameStartX + li * letterW + shakeX, nameY + shakeY)
     }
+    ctx.globalAlpha = alpha
 
-    // LEADERBOARD — top 5 scores, right side
-    const lbX = cardX + cardW * 0.5
-    ctx.font = 'bold 22px monospace'
-    ctx.textAlign = 'left'
+    // Leaderboard — top 10
+    const lbW = 500
+    const lbX = cx + xOffset - lbW / 2
+    const lbStartY = 350
+    const rowH = 36
+
+    ctx.font = 'bold 32px monospace'
+    ctx.textAlign = 'center'
     ctx.fillStyle = 'rgba(0, 255, 255, 0.7)'
-    ctx.fillText('LEADERBOARD', lbX, cardY + 24)
+    ctx.fillText('LEADERBOARD', cx + xOffset, lbStartY - 10)
 
-    const top5 = getScoresForChallenge(ch.name, 5)
-    const medalColors = ['rgba(255, 215, 64, 0.75)', 'rgba(120, 220, 255, 0.65)', 'rgba(255, 160, 80, 0.6)']
-    for (let s = 0; s < 5; s++) {
-      const scoreY = cardY + 46 + s * 22
-      if (s < top5.length) {
-        const sc = top5[s]!
-        ctx.font = 'bold 14px monospace'
-        ctx.textAlign = 'left'
-        ctx.fillStyle = s < 3 ? medalColors[s]! : 'rgba(255, 255, 255, 0.45)'
-        ctx.fillText(`${s + 1}.`, lbX, scoreY)
-        ctx.fillText(sc.playerName, lbX + 22, scoreY)
+    const top10 = getScoresForChallenge(ch.name, 10)
+    const medalColors = ['rgba(255, 215, 64, 0.9)', 'rgba(120, 220, 255, 0.8)', 'rgba(255, 160, 80, 0.75)']
+
+    for (let s = 0; s < 10; s++) {
+      // Cascade animation for initial load
+      const rowDelay = 0.12 + s * 0.024
+      const rowE = introEase(rowDelay, 0.12)
+      const rowDropY = xOffset === 0 && csSlideDir === 0 ? (1 - rowE) * -20 : 0
+      const rowA = xOffset === 0 && csSlideDir === 0 ? rowE : 1
+      ctx.globalAlpha = alpha * rowA
+
+      const scoreY = lbStartY + 28 + s * rowH + rowDropY
+      if (s < top10.length) {
+        const sc = top10[s]!
+        const isTop3 = s < 3
+        const color = isTop3 ? medalColors[s]! : 'rgba(255, 255, 255, 0.55)'
+
+        ctx.font = 'bold 24px monospace'
         ctx.textAlign = 'right'
-        ctx.fillStyle = s < 3 ? medalColors[s]! : 'rgba(255, 255, 255, 0.45)'
-        ctx.fillText(formatTime(sc.time), cardX + cardW - 20, scoreY)
-      } else {
-        ctx.font = '14px monospace'
+        ctx.fillStyle = color
+        ctx.fillText(`${s + 1}.`, lbX + 45, scoreY)
+
+        ctx.font = '24px monospace'
         ctx.textAlign = 'left'
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.1)'
-        ctx.fillText(`${s + 1}.  ---`, lbX, scoreY)
+        ctx.fillStyle = color
+        ctx.fillText(sc.playerName, lbX + 60, scoreY)
+
+        ctx.textAlign = 'right'
+        ctx.fillStyle = color
+        ctx.fillText(formatTime(sc.time), lbX + lbW - 10, scoreY)
+      } else {
+        ctx.font = '22px monospace'
+        ctx.textAlign = 'right'
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.12)'
+        ctx.fillText(`${s + 1}.`, lbX + 45, scoreY)
+        ctx.textAlign = 'left'
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.08)'
+        ctx.fillText('---', lbX + 60, scoreY)
       }
     }
-    ctx.textAlign = 'left'
+    ctx.globalAlpha = 1
   }
 
+  // Slide animation
+  if (csSlideDir !== 0) {
+    const t = Math.min(csSlideTimer / CS_SLIDE_DUR, 1)
+    const eased = 1 - (1 - t) * (1 - t)
+    const outX = eased * -csSlideDir * width * 0.6
+    const inX = (1 - eased) * csSlideDir * width * 0.6
+    drawCard(csSelectedIndex, outX, 1 - eased)
+    drawCard(csSelectedIndex + csSlideDir, inX, eased)
+  } else {
+    drawCard(csSelectedIndex, 0, 1)
+  }
+
+  // Navigation arrows — chevron stacks, beat-synced
+  const arrowA = introAlpha(0.24, 0.12)
+  const arrowBeat = csBeat
+  const arrowY = height / 2 + 40
+  const arrowInset = 140
+  const chevW = 73   // chevron width (how far the point sticks out)
+  const chevH = 130  // chevron half-height
+  const chevGap = 57  // spacing between chevrons
+  const chevCount = 3
+  const chevThick = 13
+
+  function drawChevrons(centerX: number, centerY: number, dir: number, hov: boolean): void {
+    const cr = hov ? 0 : 255, cg = hov ? 200 : 50, cb = hov ? 255 : 200
+    const glowR = hov ? 100 : 255, glowG = hov ? 220 : 150, glowB = hov ? 255 : 230
+
+    for (let c = 0; c < chevCount; c++) {
+      // Ripple: beat pulse hits inner chevron first (c=2), ripples outward with delay
+      // dir=1 (right arrow): inner=left, outer=right → pulse travels in arrow direction
+      const rippleDelay = (chevCount - 1 - c) * 0.12  // 120ms stagger per chevron
+      const chevPulse = Math.max(0, arrowBeat - rippleDelay * 3)  // scale delay to beat decay rate
+      const litAmount = Math.min(1, chevPulse * 2)  // 0→1 intensity for this chevron
+
+      const offset = (c - 1) * chevGap * dir
+      const px = centerX + offset
+      const baseAlpha = hov ? 0.85 : 0.65
+      const alpha = baseAlpha + litAmount * 0.5
+
+      ctx.beginPath()
+      ctx.moveTo(px + chevW * dir, centerY)
+      ctx.lineTo(px - chevW * 0.3 * dir, centerY - chevH)
+      ctx.moveTo(px + chevW * dir, centerY)
+      ctx.lineTo(px - chevW * 0.3 * dir, centerY + chevH)
+      ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, ${alpha})`
+      ctx.lineWidth = chevThick + litAmount * 5
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      ctx.stroke()
+
+      // Glow ripples through
+      if (litAmount > 0.1) {
+        ctx.beginPath()
+        ctx.moveTo(px + chevW * dir, centerY)
+        ctx.lineTo(px - chevW * 0.3 * dir, centerY - chevH)
+        ctx.moveTo(px + chevW * dir, centerY)
+        ctx.lineTo(px - chevW * 0.3 * dir, centerY + chevH)
+        ctx.strokeStyle = `rgba(${glowR}, ${glowG}, ${glowB}, ${litAmount * 0.35})`
+        ctx.lineWidth = chevThick + 18
+        ctx.stroke()
+      }
+    }
+    ctx.lineCap = 'butt'
+    ctx.lineJoin = 'miter'
+  }
+
+  const hitW = chevCount * chevGap + chevW * 2
+  const hitH = chevH * 2 + 30
+
+  if (csSelectedIndex > 0 && csSlideDir === 0) {
+    ctx.globalAlpha = arrowA
+    const lx = arrowInset + hitW / 2
+    const lHov = checkHover('cs_left', pauseMouseX >= arrowInset - 10 && pauseMouseX <= arrowInset + hitW + 10 && pauseMouseY >= arrowY - hitH / 2 && pauseMouseY <= arrowY + hitH / 2)
+    drawChevrons(lx, arrowY, -1, lHov)
+  }
+
+  if (csSelectedIndex < challenges.length - 1 && csSlideDir === 0) {
+    ctx.globalAlpha = arrowA
+    const rx = width - arrowInset - hitW / 2
+    const rHov = checkHover('cs_right', pauseMouseX >= width - arrowInset - hitW - 10 && pauseMouseX <= width - arrowInset + 10 && pauseMouseY >= arrowY - hitH / 2 && pauseMouseY <= arrowY + hitH / 2)
+    drawChevrons(rx, arrowY, 1, rHov)
+  }
+
+  // Numbered pips — clickable level select circles
+  const pipA = introAlpha(0.24, 0.12)
+  ctx.globalAlpha = pipA
+  const pipY = height - 60
+  const pipR = 22
+  const pipGap = 72
+  const pipTotalW = (challenges.length - 1) * pipGap
+  const activeIdx = csSlideDir !== 0 ? csSelectedIndex + csSlideDir : csSelectedIndex
+  for (let i = 0; i < challenges.length; i++) {
+    const px = cx - pipTotalW / 2 + i * pipGap
+    const isActive = i === activeIdx
+    const pipHov = checkHover(`pip_${i}`, pauseMouseX >= px - pipR - 4 && pauseMouseX <= px + pipR + 4 && pauseMouseY >= pipY - pipR - 4 && pauseMouseY <= pipY + pipR + 4)
+    const beat = isActive ? csBeat : 0
+
+    ctx.beginPath()
+    ctx.arc(px, pipY, pipR + beat * 3, 0, Math.PI * 2)
+    if (isActive) {
+      ctx.fillStyle = `rgba(0, 255, 255, ${0.85 + beat * 0.15})`
+      ctx.fill()
+      ctx.strokeStyle = `rgba(0, 255, 255, ${0.6 + beat * 0.3})`
+      ctx.lineWidth = 2.5
+      ctx.stroke()
+    } else {
+      ctx.fillStyle = `rgba(0, 0, 0, ${pipHov ? 0.4 : 0.25})`
+      ctx.fill()
+      ctx.strokeStyle = `rgba(0, 255, 255, ${pipHov ? 0.7 : 0.35})`
+      ctx.lineWidth = pipHov ? 2.5 : 1.5
+      ctx.stroke()
+    }
+
+    // Number label
+    ctx.font = 'bold 24px monospace'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    if (isActive) {
+      ctx.fillStyle = `rgba(13, 10, 26, 0.95)`  // dark on bright bg
+    } else {
+      ctx.fillStyle = `rgba(0, 255, 255, ${pipHov ? 0.9 : 0.5})`
+    }
+    ctx.fillText(`${i}`, px, pipY + 1)
+    ctx.textBaseline = 'alphabetic'
+  }
+
+  // PLAY button — pop in at 0.3s, directly under challenge name
+  const playT = Math.max(0, csAnimTimer - 0.18)
+  const playProgress = Math.min(playT / 0.12, 1)
+  const playScale = playProgress < 1 ? playProgress * 1.05 : 1 + (1 - Math.min((playT - 0.12) / 0.06, 1)) * 0.05
+  const playA = Math.min(playProgress / 0.5, 1)
+
+  ctx.globalAlpha = playA
+  const playW = 416, playH = 94
+  const playY = 208
+  const playX = cx - playW / 2
+  const playHov = checkHover('cs_play', pauseMouseX >= playX && pauseMouseX <= playX + playW && pauseMouseY >= playY && pauseMouseY <= playY + playH)
+  csPlayHover = playHov
+  const playBeat = csBeat
+
+  ctx.save()
+  ctx.translate(cx, playY + playH / 2)
+  ctx.scale(playScale, playScale)
+  ctx.translate(-cx, -(playY + playH / 2))
+
+  const phr = playHov ? 0 : 255, phg = playHov ? 200 : 50, phb = playHov ? 255 : 200
+  ctx.beginPath()
+  ctx.roundRect(playX, playY, playW, playH, 12)
+  ctx.strokeStyle = `rgba(${phr}, ${phg}, ${phb}, ${playHov ? 1 : 0.6 + playBeat * 0.35})`
+  ctx.lineWidth = 2.5 + playBeat * 2 + (playHov ? 1 : 0)
+  ctx.stroke()
+  ctx.fillStyle = `rgba(${phr}, ${phg}, ${phb}, ${playHov ? 0.2 : 0.06 + playBeat * 0.1})`
+  ctx.fill()
+
+  ctx.font = 'bold 48px monospace'
+  ctx.textAlign = 'center'
+  ctx.fillStyle = `rgba(${phr}, ${phg}, ${phb}, ${playHov ? 1 : 0.7 + playBeat * 0.3})`
+  ctx.fillText('P L A Y', cx, playY + playH / 2 + 14)
+
+  ctx.restore()
+  ctx.globalAlpha = 1
   ctx.textAlign = 'left'
   finalizeHoverCheck()
 }
 
 export function handleChallengeSelectClick(mx: number, my: number): Challenge | null {
   const challenges = getChallenges()
-  const cardW = Math.min(750, width - 80), cardH = 150, cardGap = 14, startY = 110
-  const cardX = (width - cardW) / 2
+  if (challenges.length === 0 || csSlideDir !== 0) return null
 
+  // PLAY button
+  const playW = 416, playH = 94
+  const playY = 208
+  const playX = width / 2 - playW / 2
+  if (mx >= playX && mx <= playX + playW && my >= playY && my <= playY + playH) {
+    return challenges[csSelectedIndex] ?? null
+  }
+
+  // Left arrow — chevron hit area
+  const arrowY = height / 2 + 40
+  const csArrowInset = 140
+  const csHitW = 3 * 57 + 73 * 2  // chevCount * chevGap + chevW * 2
+  const csHitH = 130 * 2 + 40     // chevH * 2 + padding
+  if (csSelectedIndex > 0 && mx >= csArrowInset - 10 && mx <= csArrowInset + csHitW + 10 && my >= arrowY - csHitH / 2 && my <= arrowY + csHitH / 2) {
+    playUIClick()
+    csSlideDir = -1
+    csSlideTimer = 0
+    return null
+  }
+
+  // Right arrow
+  if (csSelectedIndex < challenges.length - 1 && mx >= width - csArrowInset - csHitW - 10 && mx <= width - csArrowInset + 10 && my >= arrowY - csHitH / 2 && my <= arrowY + csHitH / 2) {
+    playUIClick()
+    csSlideDir = 1
+    csSlideTimer = 0
+    return null
+  }
+
+  // Numbered pips — click to jump to challenge
+  const pipY = height - 60
+  const pipR = 22
+  const pipGap = 72
+  const pipTotalW = (challenges.length - 1) * pipGap
   for (let i = 0; i < challenges.length; i++) {
-    const cardY = startY + i * (cardH + cardGap) - challengeSelectScroll
-    if (mx >= cardX && mx <= cardX + cardW && my >= cardY && my <= cardY + cardH) {
-      return challenges[i]!
+    const px = width / 2 - pipTotalW / 2 + i * pipGap
+    if (mx >= px - pipR - 4 && mx <= px + pipR + 4 && my >= pipY - pipR - 4 && my <= pipY + pipR + 4) {
+      if (i !== csSelectedIndex) {
+        playUIClick()
+        csSlideDir = i > csSelectedIndex ? 1 : -1
+        csSlideTimer = 0
+        // Jump directly — override the slide to land on target
+        csSelectedIndex = i - csSlideDir
+      }
+      return null
     }
   }
+
   return null
 }
 
 export function handleChallengeSelectHover(mx: number, my: number): void {
-  const challenges = getChallenges()
-  const cardW = Math.min(750, width - 80), cardH = 150, cardGap = 14, startY = 110
-  const cardX = (width - cardW) / 2
-
-  const prevHover = challengeSelectHover
-  challengeSelectHover = -1
-  for (let i = 0; i < challenges.length; i++) {
-    const cardY = startY + i * (cardH + cardGap) - challengeSelectScroll
-    if (mx >= cardX && mx <= cardX + cardW && my >= cardY && my <= cardY + cardH) {
-      challengeSelectHover = i
-      break
-    }
-  }
-  if (challengeSelectHover >= 0 && challengeSelectHover !== prevHover) {
-    playUIHover()
-  }
+  // Hover is handled by checkHover in draw — nothing extra needed here
 }
 
 // Store panel button rects for click detection
@@ -6319,19 +7094,119 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.textAlign = 'left'
   }
 
+  // Tutorial dash orb drawing helper
+  function drawTutorialOrbs(lx: number, ly: number, rx: number, ry: number, a: number, p: Player): void {
+    const orbR = 27
+    const positions = [{ x: lx, y: ly }, { x: rx, y: ry }]
+
+    for (let i = 0; i < 2; i++) {
+      const pos = positions[i]!
+      const slot = p.dashSlots[i] ?? 0
+      const isReady = slot <= 0
+      const rechargeTime = p.dashChargeTime * (p.modifiers?.dashChargeMult ?? 1) || 3
+
+      if (isReady) {
+        // Green ready orb — pulsing glow
+        const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 400)
+        ctx.beginPath()
+        ctx.arc(pos.x, pos.y, orbR + 6 + pulse * 3, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(100, 255, 120, ${(0.12 + pulse * 0.08) * a})`
+        ctx.fill()
+
+        ctx.beginPath()
+        ctx.arc(pos.x, pos.y, orbR, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(100, 255, 120, ${0.85 * a})`
+        ctx.fill()
+
+        // White highlight
+        ctx.beginPath()
+        ctx.arc(pos.x - orbR * 0.25, pos.y - orbR * 0.25, orbR * 0.35, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(255, 255, 255, ${0.3 * a})`
+        ctx.fill()
+      } else {
+        // Recharging — white pie chart
+        const progress = 1 - (slot / rechargeTime)
+
+        // Dark bg circle
+        ctx.beginPath()
+        ctx.arc(pos.x, pos.y, orbR, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(40, 40, 50, ${0.6 * a})`
+        ctx.fill()
+        ctx.strokeStyle = `rgba(100, 255, 120, ${0.25 * a})`
+        ctx.lineWidth = 1.5
+        ctx.stroke()
+
+        // White pie showing progress
+        if (progress > 0) {
+          const startA = -Math.PI / 2
+          const endA = startA + progress * Math.PI * 2
+          ctx.beginPath()
+          ctx.moveTo(pos.x, pos.y)
+          ctx.arc(pos.x, pos.y, orbR - 2, startA, endA)
+          ctx.closePath()
+          ctx.fillStyle = `rgba(255, 255, 255, ${0.5 * a})`
+          ctx.fill()
+        }
+      }
+
+      // Border ring
+      ctx.beginPath()
+      ctx.arc(pos.x, pos.y, orbR + 1, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(100, 255, 120, ${(isReady ? 0.6 : 0.2) * a})`
+      ctx.lineWidth = 2
+      ctx.stroke()
+    }
+  }
+
+  // Toast messages
+  updateAndDrawToasts(frameDt)
+
   // Controls hint
-  if (controlsHintTimer > 0) {
+  const dashTutorialActive = tutorialBeginner && (!(tutorialDashUsed[0] && tutorialDashUsed[1]) || tutorialDashFade > 0)
+  if (controlsHintTimer > 0 || dashTutorialActive) {
     controlsHintTimer -= frameDt
+
+    // Track dash slot transitions for tutorial
+    if (tutorialBeginner && player.dashSlots.length >= 2) {
+      for (let di = 0; di < 2; di++) {
+        const slot = player.dashSlots[di] ?? 0
+        if (slot > 0 && tutorialPrevSlots[di]! <= 0) {
+          tutorialDashUsed[di] = true
+        }
+        tutorialPrevSlots[di] = slot
+      }
+    }
+
+    const bothDashesUsed = tutorialBeginner && tutorialDashUsed[0] && tutorialDashUsed[1]
+
+    // Start dash fade timer when both dashes used
+    if (bothDashesUsed && tutorialDashFade === 0) {
+      tutorialDashFade = CONTROLS_HINT_FADE
+    }
+    if (tutorialDashFade > 0) {
+      tutorialDashFade -= frameDt
+    }
+
+    // Movement controls fade on normal timer
     const alpha = controlsHintTimer <= CONTROLS_HINT_FADE
       ? Math.max(0, controlsHintTimer / CONTROLS_HINT_FADE)
       : 1
+    // Dash section: own smooth fade after both used, otherwise hold at full
+    let dashAlpha: number
+    if (!tutorialBeginner) {
+      dashAlpha = alpha
+    } else if (bothDashesUsed) {
+      dashAlpha = Math.max(0, tutorialDashFade / CONTROLS_HINT_FADE)
+    } else {
+      dashAlpha = 1
+    }
     ctx.save()
     const cx = width / 2
     const a = alpha
 
     if (isTouchMode()) {
       // Touch controls hint — animated joystick graphic + tap instruction
-      const hintY = height / 2 + 120
+      const hintY = height * 0.82
 
       // Animated joystick — knob orbits in a circle to show movement
       const joyR = 45
@@ -6411,13 +7286,19 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
 
       // "TAP = DASH" label
       ctx.font = 'bold 34px monospace'
-      ctx.fillStyle = `rgba(255, 50, 200, ${(0.7 * a).toFixed(3)})`
-      ctx.fillText('TAP = DASH', cx, hintY + joyR + 72)
+      ctx.fillStyle = `rgba(255, 50, 200, ${(0.7 * dashAlpha).toFixed(3)})`
+      const tapDashY = hintY + joyR + 72
+      ctx.fillText('TAP = DASH', cx, tapDashY)
+
+      // Tutorial dash orbs — flanking the text
+      if (tutorialBeginner) {
+        drawTutorialOrbs(cx - 140, tapDashY, cx + 140, tapDashY, dashAlpha, player)
+      }
     } else {
       // Keyboard controls hint — arrow keys + spacebar
       const keySize = 48
       const gap = 5
-      const baseY = height / 2 + 200
+      const baseY = height * 0.82
       const keyColor = `rgba(255, 255, 255, ${(0.12 * a).toFixed(3)})`
       const borderColor = `rgba(0, 255, 255, ${(0.4 * a).toFixed(3)})`
       const arrowColor = `rgba(0, 255, 255, ${(0.85 * a).toFixed(3)})`
@@ -6453,11 +7334,12 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
       const spaceW = keySize * 3 + gap * 2 + 80
       const spaceH = 46
       const spaceX = cx - spaceW / 2
-      ctx.fillStyle = `rgba(0, 255, 255, ${(0.1 * a).toFixed(3)})`
+      const da = dashAlpha
+      ctx.fillStyle = `rgba(0, 255, 255, ${(0.1 * da).toFixed(3)})`
       ctx.beginPath()
       ctx.roundRect(spaceX, spaceY, spaceW, spaceH, 6)
       ctx.fill()
-      ctx.strokeStyle = `rgba(0, 255, 255, ${(0.45 * a).toFixed(3)})`
+      ctx.strokeStyle = `rgba(0, 255, 255, ${(0.45 * da).toFixed(3)})`
       ctx.lineWidth = 1.5
       ctx.beginPath()
       ctx.roundRect(spaceX, spaceY, spaceW, spaceH, 6)
@@ -6465,8 +7347,14 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
       ctx.font = 'bold 24px monospace'
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillStyle = `rgba(0, 255, 255, ${(0.7 * a).toFixed(3)})`
+      ctx.fillStyle = `rgba(0, 255, 255, ${(0.7 * da).toFixed(3)})`
       ctx.fillText('SPACE = DASH', cx, spaceY + spaceH / 2)
+
+      // Tutorial dash orbs — flanking the spacebar
+      if (tutorialBeginner) {
+        const orbY = spaceY + spaceH / 2
+        drawTutorialOrbs(spaceX - 35, orbY, spaceX + spaceW + 35, orbY, da, player)
+      }
     }
 
     ctx.restore()
@@ -6726,7 +7614,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
 
       const rowH = 38
       const listStartY = listTop + 36
-      const visibleHeight = height - listStartY - 90
+      const visibleHeight = height - listStartY - 160
       const totalHeight = topScores.length * rowH
       const maxScroll = Math.max(0, totalHeight - visibleHeight)
       victoryScroll = Math.max(0, Math.min(victoryScroll, maxScroll))
@@ -6743,13 +7631,13 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
       // Clip so rows don't scroll over the header
       ctx.save()
       ctx.beginPath()
-      ctx.rect(0, listStartY - 22, width, height - listStartY - 65)
+      ctx.rect(0, listStartY - 22, width, visibleHeight + 22)
       ctx.clip()
 
       for (let i = 0; i < topScores.length; i++) {
         const s = topScores[i]!
         const rowY = listStartY + i * rowH - victoryScroll
-        if (rowY < listStartY - rowH || rowY > height - 90) continue
+        if (rowY < listStartY - rowH || rowY > listStartY + visibleHeight) continue
         const isMe = i === myRank - 1
         const isTop3 = i < 3
 
@@ -6827,93 +7715,96 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
       ctx.restore()  // end list clip
     }
 
-    // Celebration fireworks for top 10
-    if (myRank > 0 && myRank <= 10) {
-      const intensity = myRank <= 3 ? 0.12 : 0.06  // top 3 = more frequent
-      // Both sides simultaneously
+    // Celebration fireworks
+    {
       for (let side = 0; side < 2; side++) {
-        if (Math.random() < intensity) {
+        if (Math.random() < 0.12) {
           const sx = side === 0 ? width * 0.15 + Math.random() * width * 0.1 : width * 0.75 + Math.random() * width * 0.1
           const sy = height * (0.25 + Math.random() * 0.4)
-          const count = myRank <= 3 ? 20 : 12
-          // Pick a random burst color
-          const colorSet = [
-            [255, 215, 64],   // gold
-            [0, 255, 255],    // cyan
-            [255, 50, 200],   // magenta
-            [100, 255, 160],  // green
-            [255, 160, 80],   // orange
-            [120, 220, 255],  // light blue
-          ]
+          const colorSet = [[255, 215, 64], [0, 255, 255], [255, 50, 200], [100, 255, 160], [255, 160, 80], [120, 220, 255]]
           const baseColor = colorSet[Math.floor(Math.random() * colorSet.length)]!
-          for (let p = 0; p < count; p++) {
+          for (let p = 0; p < 18; p++) {
             const angle = Math.random() * Math.PI * 2
             const speed = 100 + Math.random() * 180
-            const pr = Math.min(255, baseColor[0]! + Math.floor((Math.random() - 0.5) * 50))
-            const pg = Math.min(255, baseColor[1]! + Math.floor((Math.random() - 0.5) * 50))
-            const pb = Math.min(255, baseColor[2]! + Math.floor((Math.random() - 0.5) * 50))
-            spawnParticle(
-              sx + camX, sy + camY,
-              Math.cos(angle) * speed,
-              Math.sin(angle) * speed - 40,
-              pr, pg, pb,
-              0.6 + Math.random() * 0.5, 5 + Math.random() * 5)
+            nameFireworks.push({ x: sx, y: sy, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed - 40,
+              r: Math.min(255, baseColor[0]! + Math.floor((Math.random() - 0.5) * 50)),
+              g: Math.min(255, baseColor[1]! + Math.floor((Math.random() - 0.5) * 50)),
+              b: Math.min(255, baseColor[2]! + Math.floor((Math.random() - 0.5) * 50)),
+              life: 0, maxLife: 0.6 + Math.random() * 0.5, size: 5 + Math.random() * 5 })
           }
-          // White core sparks
-          for (let p = 0; p < 6; p++) {
+          for (let p = 0; p < 5; p++) {
             const angle = Math.random() * Math.PI * 2
             const speed = 60 + Math.random() * 100
-            spawnParticle(
-              sx + camX, sy + camY,
-              Math.cos(angle) * speed,
-              Math.sin(angle) * speed - 30,
-              255, 255, 255,
-              0.3 + Math.random() * 0.2, 3 + Math.random() * 3)
+            nameFireworks.push({ x: sx, y: sy, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed - 30,
+              r: 255, g: 255, b: 255, life: 0, maxLife: 0.3 + Math.random() * 0.2, size: 3 + Math.random() * 3 })
           }
         }
       }
     }
+    // Draw fireworks on victory screen
+    ctx.globalAlpha = 1
+    for (let fi = nameFireworks.length - 1; fi >= 0; fi--) {
+      const fw = nameFireworks[fi]!
+      fw.life += lastDt
+      if (fw.life >= fw.maxLife) { nameFireworks.splice(fi, 1); continue }
+      fw.x += fw.vx * lastDt
+      fw.y += fw.vy * lastDt
+      fw.vx *= 0.98
+      fw.vy *= 0.98
+      const ft = 1 - fw.life / fw.maxLife
+      const sz = fw.size * (0.5 + ft * 0.5)
+      ctx.beginPath()
+      ctx.arc(fw.x, fw.y, sz, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${fw.r}, ${fw.g}, ${fw.b}, ${ft * 0.9})`
+      ctx.fill()
+    }
 
     // Buttons at bottom
-    const vBtnW = 180
-    const vBtnH = 44
-    const vBtnGap = 14
-    const vBtnY = height - 80
+    const vBtnW = 270
+    const vBtnH = 66
+    const vBtnGap = 20
+    const vBtnY = height - 130
     const retryX = vcx - vBtnW - vBtnGap / 2
     const menuX = vcx + vBtnGap / 2
 
     // Try Again
     const vRetryHov = checkHover('v_retry', pauseMouseX >= retryX && pauseMouseX <= retryX + vBtnW && pauseMouseY >= vBtnY && pauseMouseY <= vBtnY + vBtnH)
     ctx.beginPath()
-    ctx.roundRect(retryX, vBtnY, vBtnW, vBtnH, 6)
+    ctx.roundRect(retryX, vBtnY, vBtnW, vBtnH, 8)
     ctx.strokeStyle = `rgba(0, 255, 255, ${vRetryHov ? 0.8 : 0.5})`
-    ctx.lineWidth = vRetryHov ? 2.5 : 2
+    ctx.lineWidth = vRetryHov ? 3 : 2
     ctx.stroke()
     ctx.fillStyle = `rgba(0, 255, 255, ${vRetryHov ? 0.2 : 0.08})`
     ctx.fill()
-    ctx.font = 'bold 18px monospace'
+    ctx.font = 'bold 26px monospace'
     ctx.textAlign = 'center'
     ctx.fillStyle = `rgba(0, 255, 255, ${vRetryHov ? 1 : 0.8})`
-    ctx.fillText('TRY AGAIN', retryX + vBtnW / 2, vBtnY + vBtnH / 2 + 6)
+    ctx.fillText('TRY AGAIN', retryX + vBtnW / 2, vBtnY + vBtnH / 2 + 8)
 
     // Menu
     const vMenuHov = checkHover('v_menu', pauseMouseX >= menuX && pauseMouseX <= menuX + vBtnW && pauseMouseY >= vBtnY && pauseMouseY <= vBtnY + vBtnH)
     ctx.beginPath()
-    ctx.roundRect(menuX, vBtnY, vBtnW, vBtnH, 6)
+    ctx.roundRect(menuX, vBtnY, vBtnW, vBtnH, 8)
     ctx.strokeStyle = `rgba(255, 255, 255, ${vMenuHov ? 0.6 : 0.3})`
-    ctx.lineWidth = vMenuHov ? 2.5 : 1.5
+    ctx.lineWidth = vMenuHov ? 3 : 2
     ctx.stroke()
     ctx.fillStyle = `rgba(255, 255, 255, ${vMenuHov ? 0.15 : 0.05})`
     ctx.fill()
-    ctx.font = 'bold 16px monospace'
+    ctx.font = 'bold 24px monospace'
     ctx.fillStyle = `rgba(255, 255, 255, ${vMenuHov ? 0.9 : 0.6})`
-    ctx.fillText('MENU', menuX + vBtnW / 2, vBtnY + vBtnH / 2 + 6)
+    ctx.fillText('MENU', menuX + vBtnW / 2, vBtnY + vBtnH / 2 + 8)
 
     ctx.textAlign = 'left'
   }
 
   // Name entry screen
   if (getPhase() === 'entering_name') {
+    if (!nameEntryStarted) {
+      nameEntryStarted = true
+    }
+
+    particles.length = 0  // kill all game particles
+
     ctx.fillStyle = COLOR_BG
     ctx.fillRect(0, 0, width, height)
 
@@ -7010,18 +7901,14 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
       ctx.fillStyle = pRankColor
       ctx.fillText(`RANK #${projectedRank}`, ncx, ncy + 130)
 
-      ctx.font = 'bold 28px monospace'
-      ctx.fillStyle = 'rgba(255, 215, 64, 0.9)'
-      ctx.fillText('NEW BEST TIME!', ncx, ncy + 175)
-
       ctx.font = '24px monospace'
       ctx.fillStyle = 'rgba(255, 255, 255, 0.5)'
-      ctx.fillText('Enter your name:', ncx, ncy + 230)
+      ctx.fillText('Enter your name:', ncx, ncy + 185)
 
       const boxW = 400
       const boxH = 60
       const boxX = ncx - boxW / 2
-      const boxY = ncy + 245
+      const boxY = ncy + 200
       ctx.beginPath()
       ctx.roundRect(boxX, boxY, boxW, boxH, 6)
       ctx.fillStyle = 'rgba(255, 255, 255, 0.08)'
@@ -7074,45 +7961,61 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
       else if (projectedRank <= 90) msgKey = '76-90'
       const msgs = rankMessages[msgKey]!
       const msgIdx = Math.floor((time * 7 + projectedRank * 13) % msgs.length)
-      ctx.font = 'bold 26px monospace'
+      const commentY = subY + subH + 30
+      ctx.font = 'bold 22px monospace'
       ctx.fillStyle = projectedRank <= 3 ? 'rgba(255, 215, 64, 0.9)' : projectedRank <= 10 ? 'rgba(0, 255, 255, 0.8)' : 'rgba(255, 255, 255, 0.6)'
-      ctx.fillText(msgs[msgIdx]!, ncx, boxY + boxH + 45)
+      ctx.fillText(msgs[msgIdx]!, ncx, commentY)
 
       ctx.font = '16px monospace'
       ctx.fillStyle = 'rgba(255, 255, 255, 0.25)'
-      ctx.fillText('Press Enter to confirm', ncx, boxY + boxH + 75)
+      ctx.fillText('Press Enter to confirm', ncx, commentY + 30)
     }
 
-    // Celebration fireworks — all screens
-    if (projectedRank <= 10) for (let side = 0; side < 2; side++) {
-      if (Math.random() < 0.1) {
-        const sx = side === 0 ? width * 0.15 + Math.random() * width * 0.1 : width * 0.75 + Math.random() * width * 0.1
-        const sy = height * (0.15 + Math.random() * 0.5)
-        const colorSet = [[255, 215, 64], [0, 255, 255], [255, 50, 200], [100, 255, 160], [255, 160, 80], [120, 220, 255]]
-        const baseColor = colorSet[Math.floor(Math.random() * colorSet.length)]!
-        for (let p = 0; p < 18; p++) {
-          const angle = Math.random() * Math.PI * 2
-          const speed = 100 + Math.random() * 180
-          spawnParticle(sx + camX, sy + camY,
-            Math.cos(angle) * speed, Math.sin(angle) * speed - 40,
-            Math.min(255, baseColor[0]! + Math.floor((Math.random() - 0.5) * 50)),
-            Math.min(255, baseColor[1]! + Math.floor((Math.random() - 0.5) * 50)),
-            Math.min(255, baseColor[2]! + Math.floor((Math.random() - 0.5) * 50)),
-            0.6 + Math.random() * 0.5, 5 + Math.random() * 5)
-        }
-        for (let p = 0; p < 5; p++) {
-          const angle = Math.random() * Math.PI * 2
-          const speed = 60 + Math.random() * 100
-          spawnParticle(sx + camX, sy + camY,
-            Math.cos(angle) * speed, Math.sin(angle) * speed - 30,
-            255, 255, 255, 0.3 + Math.random() * 0.2, 3 + Math.random() * 3)
+    // Fireworks — celebrate!
+    {
+      for (let side = 0; side < 2; side++) {
+        if (Math.random() < 0.12) {
+          const sx = side === 0 ? width * 0.12 + Math.random() * width * 0.15 : width * 0.73 + Math.random() * width * 0.15
+          const sy = height * (0.1 + Math.random() * 0.6)
+          const colorSet = [[255, 215, 64], [0, 255, 255], [255, 50, 200], [100, 255, 160], [255, 160, 80], [120, 220, 255]]
+          const baseColor = colorSet[Math.floor(Math.random() * colorSet.length)]!
+          for (let p = 0; p < 18; p++) {
+            const a = Math.random() * Math.PI * 2
+            const spd = 100 + Math.random() * 180
+            nameFireworks.push({ x: sx, y: sy, vx: Math.cos(a) * spd, vy: Math.sin(a) * spd - 40,
+              r: Math.min(255, baseColor[0]! + Math.floor((Math.random() - 0.5) * 50)),
+              g: Math.min(255, baseColor[1]! + Math.floor((Math.random() - 0.5) * 50)),
+              b: Math.min(255, baseColor[2]! + Math.floor((Math.random() - 0.5) * 50)),
+              life: 0, maxLife: 0.6 + Math.random() * 0.5, size: 5 + Math.random() * 5 })
+          }
+          for (let p = 0; p < 5; p++) {
+            const a = Math.random() * Math.PI * 2
+            const spd = 60 + Math.random() * 100
+            nameFireworks.push({ x: sx, y: sy, vx: Math.cos(a) * spd, vy: Math.sin(a) * spd - 30,
+              r: 255, g: 255, b: 255, life: 0, maxLife: 0.3 + Math.random() * 0.2, size: 3 + Math.random() * 3 })
+          }
         }
       }
     }
+    // Update + draw fireworks in screen space
+    ctx.globalAlpha = 1
+    for (let fi = nameFireworks.length - 1; fi >= 0; fi--) {
+      const fw = nameFireworks[fi]!
+      fw.life += lastDt
+      if (fw.life >= fw.maxLife) { nameFireworks.splice(fi, 1); continue }
+      fw.x += fw.vx * lastDt
+      fw.y += fw.vy * lastDt
+      fw.vx *= 0.98
+      fw.vy *= 0.98
+      const ft = 1 - fw.life / fw.maxLife
+      const sz = fw.size * (0.5 + ft * 0.5)
+      ctx.beginPath()
+      ctx.arc(fw.x, fw.y, sz, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${fw.r}, ${fw.g}, ${fw.b}, ${ft * 0.9})`
+      ctx.fill()
+    }
 
     ctx.textAlign = 'left'
-    updateParticles(lastDt)
-    drawParticles()
   }
 
   // Pause screen
@@ -7226,6 +8129,20 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
 
   // Death screen
   if (getPhase() === 'dead') {
+    // Beat pulse for death screen
+    const dLoopPos = getLoopPosition()
+    const dBeatPhase = dLoopPos % 1
+    const dPeakPoint = 0.45
+    const dCurrentBeat = Math.floor(dLoopPos)
+    const dPastPeak = dBeatPhase >= dPeakPoint
+    const dBeatId = dCurrentBeat * 2 + (dPastPeak ? 1 : 0)
+    if (dBeatId !== titleLastBeat && titleLastBeat >= 0 && dPastPeak) {
+      titleBeatPulse = 1
+    }
+    titleLastBeat = dBeatId
+    titleBeatPulse = Math.max(0, titleBeatPulse - frameDt * 3)
+    const deadBeat = titleBeatPulse
+
     const time = getRunTimer()
     const total = Math.ceil(time)
     const mins = Math.floor(total / 60)
@@ -7306,25 +8223,64 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
       }
     }
 
+    // Pro tip — between leaderboard and buttons
+    {
+      const tipY = height - 238
+      const arrowSize = 43
+      const headingY = tipY - 22
+
+      // "PRO TIP:" heading
+      ctx.font = 'bold 28px monospace'
+      ctx.textAlign = 'center'
+      ctx.fillStyle = 'rgba(255, 215, 64, 0.85)'
+      ctx.fillText(`PRO TIP #${proTipIndex + 1}`, dcx, headingY)
+
+      // Arrows flanking the heading
+      const headingHalfW = 110  // approx half width of "PRO TIP #X" text
+      const leftArrowX = dcx - headingHalfW - arrowSize - 8
+      const rightArrowX = dcx + headingHalfW + 8
+
+      const arrowFlash = 0.55 + deadBeat * 0.45
+
+      if (proTipIndex > 0) {
+        const lHov = checkHover('tip_l', pauseMouseX >= leftArrowX && pauseMouseX <= leftArrowX + arrowSize && pauseMouseY >= headingY - 18 && pauseMouseY <= headingY + 10)
+        ctx.font = `bold ${arrowSize}px monospace`
+        ctx.textAlign = 'center'
+        ctx.fillStyle = `rgba(255, 50, 200, ${lHov ? 1 : arrowFlash})`
+        ctx.fillText('\u25C0', leftArrowX + arrowSize / 2, headingY)
+      }
+
+      if (proTipIndex < PRO_TIPS.length - 1) {
+        const rHov = checkHover('tip_r', pauseMouseX >= rightArrowX && pauseMouseX <= rightArrowX + arrowSize && pauseMouseY >= headingY - 18 && pauseMouseY <= headingY + 10)
+        ctx.font = `bold ${arrowSize}px monospace`
+        ctx.textAlign = 'center'
+        ctx.fillStyle = `rgba(255, 50, 200, ${rHov ? 1 : arrowFlash})`
+        ctx.fillText('\u25B6', rightArrowX + arrowSize / 2, headingY)
+      }
+      ctx.font = '26px monospace'
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.8)'
+      ctx.fillText(PRO_TIPS[proTipIndex]!, dcx, tipY + 12)
+    }
+
     // Buttons at bottom
     const btnW = 220
     const btnH = 52
     const btnGap = 16
-    const btnBaseY = height - 180
+    const btnBaseY = height - 190
     const retryX = dcx - btnW - btnGap / 2
     const menuX = dcx + btnGap / 2
 
     const dRetryHov = checkHover('d_retry', pauseMouseX >= retryX && pauseMouseX <= retryX + btnW && pauseMouseY >= btnBaseY && pauseMouseY <= btnBaseY + btnH)
     ctx.beginPath()
     ctx.roundRect(retryX, btnBaseY, btnW, btnH, 8)
-    ctx.strokeStyle = `rgba(0, 255, 255, ${dRetryHov ? 0.8 : 0.5})`
-    ctx.lineWidth = dRetryHov ? 2.5 : 2
+    ctx.strokeStyle = `rgba(0, 255, 255, ${dRetryHov ? 0.9 : 0.5 + deadBeat * 0.4})`
+    ctx.lineWidth = 2 + deadBeat * 1.5 + (dRetryHov ? 1 : 0)
     ctx.stroke()
-    ctx.fillStyle = `rgba(0, 255, 255, ${dRetryHov ? 0.2 : 0.08})`
+    ctx.fillStyle = `rgba(0, 255, 255, ${dRetryHov ? 0.2 : 0.04 + deadBeat * 0.08})`
     ctx.fill()
     ctx.font = 'bold 22px monospace'
     ctx.textAlign = 'center'
-    ctx.fillStyle = `rgba(0, 255, 255, ${dRetryHov ? 1 : 0.8})`
+    ctx.fillStyle = `rgba(0, 255, 255, ${dRetryHov ? 1 : 0.6 + deadBeat * 0.35})`
     ctx.fillText('TRY AGAIN', retryX + btnW / 2, btnBaseY + btnH / 2 + 8)
 
     const dMenuHov = checkHover('d_menu', pauseMouseX >= menuX && pauseMouseX <= menuX + btnW && pauseMouseY >= btnBaseY && pauseMouseY <= btnBaseY + btnH)

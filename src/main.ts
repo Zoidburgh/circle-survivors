@@ -9,7 +9,7 @@ import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameStat
 import { update, render } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
 import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, onStartChallenge } from './game/EnemyDesigner.ts'
-import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd, startIrisTransition, startIrisOpen } from './render/Renderer.ts'
+import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd, startIrisTransition, startIrisOpen, isIrisActive, cycleProTip, getCsSelectedIndex, navigateChallenge, showToast } from './render/Renderer.ts'
 import { setVolume } from './audio/AudioEngine.ts'
 import { submitScore, isNameClean, fetchOnlineScores } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
@@ -88,6 +88,7 @@ let lastChallenge: Challenge | null = null
 import { setActiveChallenge, getActiveChallenge, getChallenges } from './game/ChallengeBuilder.ts'
 
 function launchChallenge(ch: Challenge): void {
+  if (lastChallenge?.name !== ch.name) challengeRetries = 0
   lastChallenge = ch
   setActiveChallenge(ch)
   ensureAudio()
@@ -104,12 +105,20 @@ function launchChallenge(ch: Challenge): void {
     }
   }
   setPhase('playing')
-  showControlsHint()
+  showControlsHint(getActiveChallenge()?.name === 'Beginner Challenge')
   Audio.startShieldFuseBurn(getPlayer().shieldRechargeTime)
+  // Challenge-specific intro toast
+  if (ch.name === 'Beginner Challenge') {
+    setTimeout(() => showToast('Welcome :) Try not to die immediately.', { duration: 4, y: 0.14, size: 34 }), 500)
+  }
 }
+
+let beginnerRetries = 0
+let challengeRetries = 0
 
 function restartChallenge(): void {
   if (!lastChallenge) return
+  challengeRetries++
   resetGameState()
   setArenaShape(lastChallenge.arenaShape as any)
   for (const ce of lastChallenge.enemies) {
@@ -117,10 +126,19 @@ function restartChallenge(): void {
     if (type) getEnemies().push(createEnemy(ce.x, ce.y, type))
   }
   setPhase('playing')
-  showControlsHint()
+  showControlsHint(getActiveChallenge()?.name === 'Beginner Challenge')
   startIrisOpen()
   Audio.playIrisOpen()
   Audio.startShieldFuseBurn(getPlayer().shieldRechargeTime)
+  if (lastChallenge.name === 'Beginner Challenge') {
+    beginnerRetries++
+    if (beginnerRetries === 1) {
+      setTimeout(() => showToast('This time do better.', { duration: 3, y: 0.14 }), 500)
+    }
+  }
+  if (challengeRetries === 3) {
+    setTimeout(() => showToast('Persistence is key. Apparently.', { duration: 4, y: 0.14 }), 500)
+  }
 }
 
 // Challenge start handler
@@ -142,7 +160,7 @@ onStartChallenge((ch: Challenge) => {
   }
   console.log('Spawned enemies:', getEnemies().length)
   setPhase('playing')
-  showControlsHint()
+  showControlsHint(getActiveChallenge()?.name === 'Beginner Challenge')
   Audio.startShieldFuseBurn(getPlayer().shieldRechargeTime)
 })
 
@@ -219,18 +237,39 @@ window.addEventListener('keydown', e => {
     return
   }
   // Challenge select — back to title
-  if (getPhase() === 'challenge_select' && e.key === 'Escape') {
-    setPhase('title')
+  if (getPhase() === 'challenge_select') {
+    if (e.key === 'Escape') {
+      setPhase('title')
+      return
+    }
+    if (e.key === 'Enter' || e.key === ' ') {
+      const challenges = getChallenges()
+      const ch = challenges[getCsSelectedIndex()]
+      if (ch && !isIrisActive()) {
+        Audio.playIrisClose()
+        startIrisTransition(canvas.width / 2, canvas.height / 2, () => launchChallenge(ch))
+      }
+      return
+    }
+    if (e.key === 'a' || e.key === 'A' || e.key === 'ArrowLeft') {
+      if (navigateChallenge(-1)) Audio.playUIClick()
+      return
+    }
+    if (e.key === 'd' || e.key === 'D' || e.key === 'ArrowRight') {
+      if (navigateChallenge(1)) Audio.playUIClick()
+      return
+    }
     return
   }
-  // Victory
-  if (isRunComplete()) {
+  // Victory — but not if we just submitted name entry this frame
+  if (isRunComplete() && getPhase() === 'playing') {
     if (e.key === 'r' || e.key === 'R') {
       restartChallenge()
-    } else if (e.key === ' ' || e.key === 'Enter' || e.key === 'Escape') {
+    } else if (e.key === 'Escape') {
       resetGameState()
       setPhase('challenge_select')
     }
+    // Don't let Space/Enter skip the victory leaderboard immediately
     return
   }
   // Death screen — no Space (too easy to accidentally press while dashing)
@@ -355,7 +394,7 @@ canvas.addEventListener('pointerdown', e => {
     handleVictoryScrollDragStart(p.x, p.y)
     if (e.pointerType === 'touch') touchScrollStart(p.y)
   }
-  if (getPhase() === 'title' || getPhase() === 'paused') startVolumeDrag(p.x, p.y)
+  if (getPhase() === 'title' || getPhase() === 'paused' || getPhase() === 'challenge_select') startVolumeDrag(p.x, p.y)
 
   // Touch tap handling — fires for all phases on touch devices
   if (e.pointerType === 'touch') {
@@ -414,7 +453,7 @@ canvas.addEventListener('click', e => {
       subY = 200
     } else {
       const ncy = canvas.height * 0.2
-      const boxY = ncy + 245
+      const boxY = ncy + 200
       subW = 200; subH = 50
       subX = ncx - subW / 2
       subY = boxY + 60 + 16
@@ -426,8 +465,8 @@ canvas.addEventListener('click', e => {
   }
   // Victory buttons
   if (isRunComplete() && getPhase() === 'playing') {
-    const vBtnW = 180, vBtnH = 44, vBtnGap = 14
-    const vBtnY = canvas.height - 80
+    const vBtnW = 270, vBtnH = 66, vBtnGap = 20
+    const vBtnY = canvas.height - 130
     const retryX = canvas.width / 2 - vBtnW - vBtnGap / 2
     const menuX = canvas.width / 2 + vBtnGap / 2
     if (c.y >= vBtnY && c.y <= vBtnY + vBtnH) {
@@ -471,10 +510,17 @@ canvas.addEventListener('click', e => {
     return
   }
   if (getPhase() === 'challenge_select') {
-    // Back button — top-left
-    if (c.x <= 180 && c.y <= 74) {
+    if (isIrisActive()) return  // block clicks during iris transition
+    // Back button — top-left (260x72)
+    if (c.x >= 20 && c.x <= 280 && c.y >= 18 && c.y <= 90) {
       Audio.playUIClick()
       setPhase('title')
+      return
+    }
+    // Fullscreen toggle — under back button (260x52)
+    if (c.x >= 20 && c.x <= 280 && c.y >= 102 && c.y <= 154) {
+      Audio.playUIClick()
+      toggleFullscreen()
       return
     }
     const ch = handleChallengeSelectClick(c.x, c.y)
@@ -487,7 +533,7 @@ canvas.addEventListener('click', e => {
   if (getPhase() === 'dead') {
     const dcx = canvas.width / 2
     const btnW = 220, btnH = 52, btnGap = 16
-    const btnBaseY = canvas.height - 180
+    const btnBaseY = canvas.height - 190
     const retryX = dcx - btnW - btnGap / 2
     const menuX = dcx + btnGap / 2
     if (c.y >= btnBaseY && c.y <= btnBaseY + btnH) {
@@ -500,6 +546,22 @@ canvas.addEventListener('click', e => {
         setPhase('challenge_select')
       }
     }
+    // Pro tip arrows — flanking the "PRO TIP:" heading
+    const tipY = canvas.height - 238
+    const headingY = tipY - 22
+    const arrowSize = 43
+    const headingHalfW = 110
+    const leftArrowX = dcx - headingHalfW - arrowSize - 8
+    const rightArrowX = dcx + headingHalfW + 8
+    if (c.y >= headingY - 18 && c.y <= headingY + 10) {
+      if (c.x >= leftArrowX && c.x <= leftArrowX + arrowSize) {
+        Audio.playUIClick()
+        cycleProTip(-1)
+      } else if (c.x >= rightArrowX && c.x <= rightArrowX + arrowSize) {
+        Audio.playUIClick()
+        cycleProTip(1)
+      }
+    }
     return
   }
   if (getPhase() === 'title') {
@@ -508,9 +570,9 @@ canvas.addEventListener('click', e => {
       ensureAudio()
       Audio.switchBeat(0)
     }
-    const btnW = 200, btnH = 50
+    const btnW = 230, btnH = 58
     const btnX = canvas.width / 2 - btnW / 2
-    const btnY = canvas.height * 0.52
+    const btnY = canvas.height * 0.52 - 60
     if (c.x >= btnX && c.x <= btnX + btnW && c.y >= btnY && c.y <= btnY + btnH) {
       startGame()
     }

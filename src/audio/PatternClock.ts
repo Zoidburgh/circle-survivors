@@ -3,7 +3,7 @@
 
 import type { SongPattern } from './SongPatterns.ts'
 import { BEAT_SEC } from '../utils/constants.ts'
-import { getAudioTime } from './AudioEngine.ts'
+import { getAudioTime, tickDangerBeat } from './AudioEngine.ts'
 import { getBeatZeroTime } from './BeatLoop.ts'
 
 let currentPattern: SongPattern | null = null
@@ -48,6 +48,9 @@ export function advancePatternClock(_dt: number): void {
     firedBeats.clear()
   }
   lastLoopBeat = beatTime
+
+  // Danger melody — synced to beat
+  tickDangerBeat(beatTime)
 
   // Compute which types fire this tick
   firingThisTick.clear()

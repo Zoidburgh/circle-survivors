@@ -40,7 +40,7 @@ export function playKick(): void {
   sub.type = 'sine'
   sub.frequency.setValueAtTime(rP(160), t)
   sub.frequency.exponentialRampToValueAtTime(rP(35), t + 0.15)
-  subGain.gain.setValueAtTime(rV(0.9), t)
+  subGain.gain.setValueAtTime(rV(1.12), t)
   subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.25)
   sub.connect(subGain)
   subGain.connect(dest)
@@ -53,7 +53,7 @@ export function playKick(): void {
   punch.type = 'triangle'
   punch.frequency.setValueAtTime(100, t)
   punch.frequency.exponentialRampToValueAtTime(30, t + 0.1)
-  punchGain.gain.setValueAtTime(0.6, t)
+  punchGain.gain.setValueAtTime(0.75, t)
   punchGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
   punch.connect(punchGain)
   punchGain.connect(dest)
@@ -65,7 +65,7 @@ export function playKick(): void {
   const clickGain = ctx.createGain()
   click.type = 'square'
   click.frequency.value = rP(350)
-  clickGain.gain.setValueAtTime(rV(0.4), t)
+  clickGain.gain.setValueAtTime(rV(0.5), t)
   clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.012)
   click.connect(clickGain)
   clickGain.connect(dest)

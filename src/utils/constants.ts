@@ -46,7 +46,7 @@ export const MAGNET_STRENGTH = 80    // pull speed in px/s
 // ── Shield ──
 export const SHIELD_MAX_CHARGES = 1
 export const SHIELD_RECHARGE_TIME = 4.0       // seconds to regen one charge
-export const SHIELD_BREAK_FLASH = 0.3         // visual break effect duration
+export const SHIELD_BREAK_FLASH = 0.2         // visual break effect duration
 export const SHIELD_ORBIT_RADIUS_OFFSET = 12  // px outside player body
 
 // ── Ritual Nodes ──

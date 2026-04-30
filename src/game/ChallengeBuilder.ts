@@ -38,8 +38,19 @@ export function getSelectedPlacement(): number { return selectedPlacementIdx }
 export function getPlaceTypeName(): string { return placeTypeName }
 export function getChallengeName(): string { return challengeName }
 export function getChallengeArena(): Challenge['arenaShape'] { return challengeArena }
+// Hardcoded challenge order — always authoritative
+const BUNDLED_ORDER: Record<string, number> = {
+  'Beginner Challenge': 0,
+  'Challenge 1': 10,
+  'Challenge 2': 20,
+}
+
 export function getChallenges(): Challenge[] {
-  return [...challenges].sort((a, b) => (a.order ?? 999) - (b.order ?? 999))
+  return [...challenges].sort((a, b) => {
+    const oa = BUNDLED_ORDER[a.name] ?? a.order ?? 999
+    const ob = BUNDLED_ORDER[b.name] ?? b.order ?? 999
+    return oa - ob
+  })
 }
 export function getActiveChallenge(): Challenge | null { return activeChallenge }
 
@@ -143,6 +154,21 @@ export function loadFromStorage(): void {
     const raw = localStorage.getItem(SAVE_KEY)
     if (raw) {
       challenges = JSON.parse(raw)
+      // Merge order fields from bundled data (in case they were added after first save)
+      const bundled = (defaultData as any).challenges as Challenge[] | undefined
+      if (Array.isArray(bundled)) {
+        let merged = false
+        for (const bc of bundled) {
+          if (bc.order != null) {
+            const existing = challenges.find(c => c.name === bc.name)
+            if (existing && existing.order !== bc.order) {
+              existing.order = bc.order
+              merged = true
+            }
+          }
+        }
+        if (merged) saveToStorage()
+      }
     } else {
       // First time — use bundled default challenges
       const bundled = (defaultData as any).challenges
