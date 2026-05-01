@@ -6080,6 +6080,7 @@ export function drawTitleScreen(dt: number): void {
   // Update + draw particles on title screen
   updateParticles(dt)
   drawParticles()
+  drawPortalButton()
   finalizeHoverCheck()
 }
 
@@ -6121,7 +6122,7 @@ interface Toast {
   size: number
   color: [number, number, number]
   id: string
-  style: 'normal' | 'combo' | 'glow' | 'sad'
+  style: 'normal' | 'combo' | 'glow' | 'sad' | 'wave' | 'heavy' | 'zigzag' | 'explosive'
   glowWords: string[] | undefined
   glowColor: [number, number, number] | undefined
 }
@@ -6137,7 +6138,7 @@ export interface ToastOptions {
   size: number
   color: [number, number, number]
   id: string
-  style: 'normal' | 'combo' | 'glow' | 'sad'
+  style: 'normal' | 'combo' | 'glow' | 'sad' | 'wave' | 'heavy' | 'zigzag' | 'explosive'
   glowWords: string[]
   glowColor: [number, number, number]
 }
@@ -6152,6 +6153,9 @@ export function showToast(text: string, opts?: Partial<ToastOptions>): void {
     oldest.timer = Math.min(oldest.timer, oldest.fadeOut)  // force into fade-out
     toasts.shift()
   }
+  // Reduce size if stacking on an active toast
+  const baseSize = opts?.size ?? 34
+  const actualSize = toasts.length > 0 ? Math.round(baseSize * 0.9) : baseSize
   toasts.push({
     text,
     timer: 0,
@@ -6159,7 +6163,7 @@ export function showToast(text: string, opts?: Partial<ToastOptions>): void {
     fadeIn: opts?.fadeIn ?? 0.3,
     fadeOut: opts?.fadeOut ?? 0.5,
     y: opts?.y ?? 0.35,
-    size: opts?.size ?? 34,
+    size: actualSize,
     color: opts?.color ?? [255, 255, 255],
     id,
     style: opts?.style ?? 'normal',
@@ -6273,11 +6277,16 @@ function updateAndDrawToasts(dt: number): void {
         const isGlow = t.glowWords.some(gw => word.toLowerCase().includes(gw.toLowerCase()))
 
         if (isGlow) {
-          // Scale bounce on glow words
+          // Scale bounce + motion on glow words
           const wordCx = curX + wordW / 2
           const glowScale = 1 + glowPulse * 0.06
+          // Dash motion for glow words on dash-related toasts, shake for others
+          const isDashWord = t.id.includes('dash')
+          const shakeAmt = glowPulse * 3
+          const motionX = isDashWord ? Math.max(0, Math.sin(now * 8)) * 12 * glowPulse : Math.sin(now * 45) * shakeAmt
+          const motionY = isDashWord ? 0 : Math.cos(now * 40) * shakeAmt
           ctx.save()
-          ctx.translate(wordCx, textY)
+          ctx.translate(wordCx + motionX, textY + motionY)
           ctx.scale(glowScale, glowScale)
           ctx.translate(-wordCx, -textY)
 
@@ -6365,6 +6374,139 @@ function updateAndDrawToasts(dt: number): void {
           ctx.fillRect(cursorX, ty - t.size * 0.3, 3, t.size * 0.8)
         }
       }
+    } else if (t.style === 'explosive') {
+      // ── Explosive style: starts stable, shake intensifies, then letters fly apart ──
+      const now = performance.now() / 1000
+      ctx.font = `bold ${t.size}px monospace`
+      const fullW = ctx.measureText(displayText).width
+      const letterW = fullW / Math.max(displayText.length, 1)
+      const startX = tx - fullW / 2
+      const textY = ty + t.size * 0.35
+      const totalTime = typeTime + t.duration
+      const progress = Math.min(t.timer / totalTime, 1)
+
+      // Shake builds over time — starts calm, gets shaky
+      const shakeIntensity = progress * progress * 6
+      // In last 20%, letters drift outward slightly
+      const explodeT = progress > 0.8 ? (progress - 0.8) / 0.2 : 0
+      const centerX = tx
+      const centerY = textY
+
+      for (let li = 0; li < displayText.length; li++) {
+        const lx = startX + li * letterW
+        const sx = Math.sin(now * 40 + li * 2.3) * shakeIntensity
+        const sy = Math.cos(now * 35 + li * 1.7) * shakeIntensity
+
+        // Explode outward from center in last phase
+        const exDx = (lx - centerX) * explodeT * 1.5
+        const exDy = (Math.random() - 0.5) * explodeT * 30
+
+        // Shadow
+        ctx.fillStyle = `rgba(0, 0, 0, ${0.5 * alpha})`
+        ctx.textAlign = 'left'
+        ctx.fillText(displayText[li]!, lx + sx + exDx + 1, textY + sy + exDy + 2)
+
+        // Letter — gets redder as it builds
+        const ramp = Math.min(progress * 1.5, 1)
+        const lr = Math.floor(cr + (255 - cr) * ramp)
+        const lg = Math.floor(cg * (1 - ramp * 0.5))
+        const lb = Math.floor(cb * (1 - ramp * 0.7))
+        ctx.fillStyle = `rgba(${lr}, ${lg}, ${lb}, ${0.95 * alpha})`
+        ctx.fillText(displayText[li]!, lx + sx + exDx, textY + sy + exDy)
+      }
+    } else if (t.style === 'zigzag') {
+      // ── Zigzag style: letters alternate up/down, sliding side to side ──
+      const now = performance.now() / 1000
+      ctx.font = `bold ${t.size}px monospace`
+      const fullW = ctx.measureText(displayText).width
+      const letterW = fullW / Math.max(displayText.length, 1)
+      const startX = tx - fullW / 2
+      const textY = ty + t.size * 0.35
+
+      // Slide in from left
+      const slideT = Math.min(t.timer / 0.2, 1)
+      const slideX = (1 - slideT) * -100
+
+      for (let li = 0; li < displayText.length; li++) {
+        // Zigzag: odd letters go up, even go down, oscillating
+        const zigDir = li % 2 === 0 ? 1 : -1
+        const zigAmt = Math.sin(now * 4 + li * 0.8) * 5 * zigDir
+        const lateralZig = Math.cos(now * 3 + li * 1.2) * 2
+        const lx = startX + li * letterW + slideX + lateralZig
+
+        // Shadow
+        ctx.fillStyle = `rgba(0, 0, 0, ${0.5 * alpha})`
+        ctx.textAlign = 'left'
+        ctx.fillText(displayText[li]!, lx + 1, textY + zigAmt + 2)
+
+        // Letter
+        ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.95 * alpha})`
+        ctx.fillText(displayText[li]!, lx, textY + zigAmt)
+      }
+    } else if (t.style === 'heavy') {
+      // ── Heavy style: slams down, slow beefy shake, scale pulses ──
+      const now = performance.now() / 1000
+      // Slam: starts 80px above, drops with bounce
+      const slamT = Math.min(t.timer / 0.25, 1)
+      const bounce = slamT < 1 ? (1 - slamT) * -80 : Math.sin((t.timer - 0.25) * 8) * 6 * Math.max(0, 1 - (t.timer - 0.25) * 1.5)
+      // Scale: big on slam, settles
+      const scale = slamT < 1 ? 1.3 - slamT * 0.3 : 1 + Math.sin((t.timer - 0.25) * 6) * 0.05 * Math.max(0, 1 - (t.timer - 0.25))
+
+      ctx.save()
+      ctx.translate(tx, ty + bounce)
+      ctx.scale(scale * alpha, scale * alpha)
+      ctx.translate(-tx, -(ty + bounce))
+
+      ctx.font = `bold ${t.size}px monospace`
+      const fullW = ctx.measureText(displayText).width
+      const letterW = fullW / Math.max(displayText.length, 1)
+      const startX = tx - fullW / 2
+
+      // Slow, wide shake per letter
+      const shakeAmt = Math.max(0, 1 - t.timer * 0.8) * 4
+
+      for (let li = 0; li < displayText.length; li++) {
+        const lx = startX + li * letterW
+        const sx = Math.sin(now * 15 + li * 2) * shakeAmt
+        const sy = Math.cos(now * 12 + li * 1.5) * shakeAmt
+
+        // Heavy shadow — double thick
+        ctx.fillStyle = `rgba(0, 0, 0, ${0.6 * alpha})`
+        ctx.textAlign = 'left'
+        ctx.fillText(displayText[li]!, lx + sx + 2, ty + bounce + t.size * 0.35 + sy + 3)
+
+        // Glow
+        ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.15 * alpha})`
+        ctx.fillText(displayText[li]!, lx + sx, ty + bounce + t.size * 0.35 + sy)
+
+        // Letter
+        ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.95 * alpha})`
+        ctx.fillText(displayText[li]!, lx + sx, ty + bounce + t.size * 0.35 + sy)
+      }
+
+      ctx.restore()
+    } else if (t.style === 'wave') {
+      // ── Wave style: RuneScape wave2 — each letter bobs with sine offset ──
+      ctx.font = `bold ${t.size}px monospace`
+      const fullW = ctx.measureText(displayText).width
+      const letterW = fullW / Math.max(displayText.length, 1)
+      const startX = tx - fullW / 2
+      const now = performance.now() / 1000
+      const textY = ty + t.size * 0.35
+
+      for (let li = 0; li < displayText.length; li++) {
+        const waveY = Math.sin(now * 5 + li * 0.5) * 4
+        const lx = startX + li * letterW
+
+        // Shadow
+        ctx.fillStyle = `rgba(0, 0, 0, ${0.5 * alpha})`
+        ctx.textAlign = 'left'
+        ctx.fillText(displayText[li]!, lx + 1, textY + waveY + 2)
+
+        // Letter
+        ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${0.95 * alpha})`
+        ctx.fillText(displayText[li]!, lx, textY + waveY)
+      }
     } else {
       // ── Normal style: typewriter + glow ──
       ctx.font = `bold ${t.size}px monospace`
@@ -6405,6 +6547,40 @@ function updateAndDrawToasts(dt: number): void {
   }
 }
 
+// ── Passive Vibe Jam Portal button — bottom right, all screens ──
+const PORTAL_W = 220
+const PORTAL_H = 38
+const PORTAL_PAD = 37
+
+export function drawPortalButton(): void {
+  const px = width - PORTAL_W - 4
+  const py = height - PORTAL_H - PORTAL_PAD
+  const hov = checkHover('portal_btn', pauseMouseX >= px && pauseMouseX <= px + PORTAL_W && pauseMouseY >= py && pauseMouseY <= py + PORTAL_H)
+  const beat = globalBeatPulse || (titleBeatPulse ?? 0)
+
+  ctx.globalAlpha = hov ? 1 : 0.7 + beat * 0.25
+  ctx.beginPath()
+  ctx.roundRect(px, py, PORTAL_W, PORTAL_H, 6)
+  ctx.strokeStyle = `rgba(180, 80, 255, ${hov ? 0.9 : 0.5 + beat * 0.2})`
+  ctx.lineWidth = hov ? 2 : 1.5
+  ctx.stroke()
+  ctx.fillStyle = `rgba(180, 80, 255, ${hov ? 0.2 : 0.06 + beat * 0.04})`
+  ctx.fill()
+
+  ctx.font = 'bold 18px monospace'
+  ctx.textAlign = 'center'
+  ctx.fillStyle = `rgba(180, 80, 255, ${hov ? 1 : 0.85 + beat * 0.15})`
+  ctx.fillText('VIBE JAM PORTAL', px + PORTAL_W / 2, py + PORTAL_H / 2 + 6)
+  ctx.globalAlpha = 1
+  ctx.textAlign = 'left'
+}
+
+export function isPortalClick(mx: number, my: number): boolean {
+  const px = width - PORTAL_W - 4
+  const py = height - PORTAL_H - PORTAL_PAD
+  return mx >= px && mx <= px + PORTAL_W && my >= py && my <= py + PORTAL_H
+}
+
 // Controls hint — shows at challenge start, fades out
 let controlsHintTimer = 0
 const CONTROLS_HINT_DURATION = 5.25  // seconds visible
@@ -6413,6 +6589,7 @@ const CONTROLS_HINT_FADE = 1.0      // seconds to fade out
 const PRO_TIPS = [
   'Dash on the beat to trigger a close-range AOE attack',
   'Dash before the beat to spread out your next attack',
+  'Turn while you dash!',
   'Your pink shield absorbs 1 hit - let it activate by not getting hit',
   "Don't summon more enemies than you can handle",
   'Exploding enemies damage other enemies',
@@ -6618,7 +6795,7 @@ export function drawChallengeSelect(dt: number): void {
     const letterW = 48
     const totalNameW = nameStr.length * letterW
     const nameStartX = cx + xOffset - totalNameW / 2 + letterW / 2
-    const nameY = 180 + nameDropY
+    const nameY = 140 + nameDropY
     // Smooth wave using beat phase — scrolls continuously through letters
     const wavePhase = loopPos * Math.PI * 2  // full cycle per beat
     for (let li = 0; li < nameStr.length; li++) {
@@ -6639,7 +6816,7 @@ export function drawChallengeSelect(dt: number): void {
     // Leaderboard — top 10
     const lbW = 500
     const lbX = cx + xOffset - lbW / 2
-    const lbStartY = 350
+    const lbStartY = 310
     const rowH = 36
 
     ctx.font = 'bold 32px monospace'
@@ -6664,12 +6841,12 @@ export function drawChallengeSelect(dt: number): void {
         const isTop3 = s < 3
         const color = isTop3 ? medalColors[s]! : 'rgba(255, 255, 255, 0.55)'
 
-        ctx.font = 'bold 24px monospace'
+        ctx.font = 'bold 22px monospace'
         ctx.textAlign = 'right'
         ctx.fillStyle = color
         ctx.fillText(`${s + 1}.`, lbX + 45, scoreY)
 
-        ctx.font = '24px monospace'
+        ctx.font = '22px monospace'
         ctx.textAlign = 'left'
         ctx.fillStyle = color
         ctx.fillText(sc.playerName, lbX + 60, scoreY)
@@ -6678,7 +6855,7 @@ export function drawChallengeSelect(dt: number): void {
         ctx.fillStyle = color
         ctx.fillText(formatTime(sc.time), lbX + lbW - 10, scoreY)
       } else {
-        ctx.font = '22px monospace'
+        ctx.font = '20px monospace'
         ctx.textAlign = 'right'
         ctx.fillStyle = 'rgba(255, 255, 255, 0.12)'
         ctx.fillText(`${s + 1}.`, lbX + 45, scoreY)
@@ -6824,7 +7001,7 @@ export function drawChallengeSelect(dt: number): void {
 
   ctx.globalAlpha = playA
   const playW = 416, playH = 94
-  const playY = 208
+  const playY = 168
   const playX = cx - playW / 2
   const playHov = checkHover('cs_play', pauseMouseX >= playX && pauseMouseX <= playX + playW && pauseMouseY >= playY && pauseMouseY <= playY + playH)
   csPlayHover = playHov
@@ -6851,6 +7028,7 @@ export function drawChallengeSelect(dt: number): void {
 
   ctx.restore()
   ctx.globalAlpha = 1
+  drawPortalButton()
   ctx.textAlign = 'left'
   finalizeHoverCheck()
 }
@@ -6861,7 +7039,7 @@ export function handleChallengeSelectClick(mx: number, my: number): Challenge | 
 
   // PLAY button
   const playW = 416, playH = 94
-  const playY = 208
+  const playY = 168
   const playX = width / 2 - playW / 2
   if (mx >= playX && mx <= playX + playW && my >= playY && my <= playY + playH) {
     return challenges[csSelectedIndex] ?? null
@@ -7157,6 +7335,8 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
       ctx.stroke()
     }
   }
+
+  drawPortalButton()
 
   // Toast messages
   updateAndDrawToasts(frameDt)
@@ -7794,6 +7974,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.fillStyle = `rgba(255, 255, 255, ${vMenuHov ? 0.9 : 0.6})`
     ctx.fillText('MENU', menuX + vBtnW / 2, vBtnY + vBtnH / 2 + 8)
 
+
     ctx.textAlign = 'left'
   }
 
@@ -8166,7 +8347,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.font = 'bold 52px monospace'
     ctx.textAlign = 'center'
     ctx.fillStyle = 'rgba(255, 60, 60, 0.95)'
-    ctx.fillText('DEFEATED', dcx, 60)
+    ctx.fillText('YOU DIED', dcx, 60)
 
     ctx.font = 'bold 42px monospace'
     ctx.fillStyle = 'rgba(255, 100, 100, 0.95)'
@@ -8175,7 +8356,7 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     // Leaderboard
     const ch = getActiveChallenge()
     if (ch) {
-      const topScores = getScoresForChallenge(ch.name, 10)
+      const topScores = getScoresForChallenge(ch.name, 5)
       if (topScores.length > 0) {
         const listTop = 140
         const listW = 520

@@ -4,12 +4,17 @@ import { ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { shouldFire, getBeatInterval, getLoopPosition } from '../audio/PatternClock.ts'
 import { playWindup } from '../audio/AudioEngine.ts'
 import { isRunTimerActive, isRunComplete, startRunTimer } from '../core/GameState.ts'
+import { showToast } from '../render/Renderer.ts'
+
+let leaveToastGlobalCD = 0
+export function tickLeaveToastCD(dt: number): void { if (leaveToastGlobalCD > 0) leaveToastGlobalCD -= dt }
+export function resetLeaveToastCD(): void { leaveToastGlobalCD = 0 }
 import { clampToArena, getArenaShape, ARENA_CX, ARENA_CY } from '../game/Arena.ts'
 import { emit } from '../core/EventBus.ts'
 import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import type { Player } from './Player.ts'
-import type { EnemyType, MovePattern, SummonPhase } from './EnemyTypes.ts'
+import type { EnemyType, MovePattern, SummonPhase, ShrinePhase } from './EnemyTypes.ts'
 import { SpatialGrid } from '../core/SpatialGrid.ts'
 import { getChillRank } from '../game/UpgradeManager.ts'
 
@@ -68,6 +73,8 @@ export interface Enemy {
   cg: number
   cb: number
   immovable: boolean   // derived from movePattern === 'immovable'
+  recentHitTimes: number[]  // timestamps of recent hits for toast tracking
+  leaveToastCooldown: number  // cooldown until next "leave me alone" can fire
   totemSpawn: string    // empty = not a totem, otherwise enemy type name to spawn
   dropType: 'xp' | 'hp' | 'none'
   dropXp: number   // 0-100
@@ -105,9 +112,11 @@ export interface Enemy {
   summonLastBeat: number          // last whole beat seen
   summonActivationTimer: number   // >0 = activation animation playing, counts down
   isShrine: boolean
-  shrineSpawnEnemy: string        // enemy type name per hit (empty = none)
-  shrineXpCount: number           // XP orbs per hit
-  shrineHpCount: number           // HP orbs per hit
+  shrineSpawnEnemy: string        // LEGACY — use shrinePhases
+  shrineXpCount: number           // LEGACY
+  shrineHpCount: number           // LEGACY
+  shrinePhases: ShrinePhase[]     // per-hit spawn waves
+  shrineCurrentPhase: number      // which phase we're on
   shrineSummonTimer: number       // >0 = summoning animation playing, counts down
 }
 
@@ -188,6 +197,8 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     cg: parseInt(type.color.slice(3, 5), 16),
     cb: parseInt(type.color.slice(5, 7), 16),
     immovable: (type.movePattern ?? 'pursue') === 'immovable',
+    recentHitTimes: [],
+    leaveToastCooldown: 0,
     totemSpawn: type.totemSpawn ?? '',
     dropType: type.dropType ?? 'xp',
     dropXp: type.dropXp ?? (type.dropType === 'hp' ? 0 : type.dropType === 'none' ? 0 : 100),
@@ -228,19 +239,26 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     shrineSpawnEnemy: type.shrineSpawnEnemy ?? '',
     shrineXpCount: type.shrineXpCount ?? 0,
     shrineHpCount: type.shrineHpCount ?? 0,
+    shrinePhases: type.shrinePhases ?? [],
+    shrineCurrentPhase: 0,
     shrineSummonTimer: 0,
   }
-  // Shrines: skip spawn animation, pushable by enemies, HP from designer
+  // Shrines: skip spawn animation, pushable by enemies
   if (e.isShrine) {
     e.immovable = false
     e.radius = e.baseRadius  // full size immediately, no spawn anim
     e.spawnTimer = 1          // mark spawn complete
+    if (e.shrinePhases.length > 0) {
+      e.hp = e.shrinePhases.length
+      e.maxHp = e.shrinePhases.length
+    }
   }
   return e
 }
 
 export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: SpatialGrid): void {
   if (!enemy.alive || enemy.dying) return
+  // (leaveToast uses global cooldown now)
   // Summon beat counter — must run before any early returns
   if (enemy.summon) {
     const cb = Math.floor(getLoopPosition())
@@ -673,6 +691,20 @@ export function rollDrop(enemy: Enemy): 'xp' | 'hp' | null {
 export function damageEnemy(enemy: Enemy, amount: number): void {
   if (enemy.dying || enemy.isShrine) return
   if (!isRunTimerActive() && !isRunComplete()) startRunTimer()
+  // Track hits on stationary enemies
+  if (enemy.immovable) {
+    const now = performance.now() / 1000
+    enemy.recentHitTimes.push(now)
+    // Keep only hits in last 6s
+    while (enemy.recentHitTimes.length > 0 && enemy.recentHitTimes[0]! < now - 6) {
+      enemy.recentHitTimes.shift()
+    }
+    if (enemy.recentHitTimes.length >= 6 && leaveToastGlobalCD <= 0) {
+      showToast('Bro. Leave me alone.', { y: 0.14, duration: 1.5, fadeOut: 0.3, id: `leave_${now}` })
+      enemy.recentHitTimes.length = 0
+      leaveToastGlobalCD = 60  // 1 minute global cooldown
+    }
+  }
   enemy.hp -= amount
   enemy.hitFlash = HIT_FLASH_DURATION
   if (enemy.hp <= 0) {

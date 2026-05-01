@@ -933,7 +933,7 @@
     },
     {
       "name": "Exploding",
-      "color": "#d4a017",
+      "color": "#ffee58",
       "hp": 3,
       "moveSpeed": 440,
       "radius": 40,
@@ -990,7 +990,11 @@
       "dropCount": 1,
       "summon": false,
       "summonNodes": 3,
-      "summonPhases": []
+      "summonPhases": [],
+      "isShrine": false,
+      "shrineSpawnEnemy": "",
+      "shrineXpCount": 3,
+      "shrineHpCount": 0
     },
     {
       "name": "Heavy_Totem",
@@ -1136,71 +1140,6 @@
       "summon": false,
       "summonNodes": 3,
       "summonPhases": []
-    },
-    {
-      "name": "Enemy22",
-      "color": "#4fc3f7",
-      "hp": 2,
-      "moveSpeed": 80,
-      "radius": 150,
-      "ringRadius": 300,
-      "key": "22",
-      "role": "rim",
-      "sound": "rim",
-      "beats": [
-        0.5,
-        1.5,
-        2.5,
-        3.5,
-        4.5,
-        5.5,
-        6.5,
-        7.5
-      ],
-      "rings": [
-        {
-          "ringRadius": 300,
-          "sound": "rim",
-          "beats": [
-            0.5,
-            1.5,
-            2.5,
-            3.5,
-            4.5,
-            5.5,
-            6.5,
-            7.5
-          ],
-          "edgeMode": false,
-          "edgePoints": 3,
-          "edgeActive": 1,
-          "edgeSwitchBeats": 1
-        }
-      ],
-      "blocksRings": false,
-      "consume": false,
-      "magnet": false,
-      "magnetRange": 200,
-      "blink": false,
-      "blinkBeats": 4,
-      "volatile": false,
-      "volatileRange": 150,
-      "revenge": false,
-      "revengeRings": 4,
-      "revengeRadius": 120,
-      "movePattern": "lunge",
-      "totemSpawn": "",
-      "dropType": "xp",
-      "dropXp": 100,
-      "dropHp": 0,
-      "dropCount": 2,
-      "summon": false,
-      "summonNodes": 3,
-      "summonPhases": [],
-      "isShrine": true,
-      "shrineSpawnEnemy": "Enemy14:3",
-      "shrineXpCount": 3,
-      "shrineHpCount": 0
     },
     {
       "name": "BegTotemBasic",
@@ -1442,6 +1381,84 @@
       "shrineSpawnEnemy": "",
       "shrineXpCount": 3,
       "shrineHpCount": 0
+    },
+    {
+      "name": "shrine1",
+      "color": "#e6a800",
+      "hp": 3,
+      "moveSpeed": 95,
+      "radius": 170,
+      "ringRadius": 350,
+      "key": "22",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0.5,
+        1.5,
+        2.5,
+        3.5,
+        4.5,
+        5.5,
+        6.5,
+        7.5
+      ],
+      "rings": [
+        {
+          "ringRadius": 350,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ],
+          "edgeMode": false,
+          "edgePoints": 3,
+          "edgeActive": 1,
+          "edgeSwitchBeats": 1
+        }
+      ],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "movePattern": "lunge",
+      "totemSpawn": "",
+      "dropType": "xp",
+      "dropXp": 100,
+      "dropHp": 0,
+      "dropCount": 2,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": [],
+      "isShrine": true,
+      "shrineSpawnEnemy": "",
+      "shrineXpCount": 0,
+      "shrineHpCount": 0,
+      "shrinePhases": [
+        {
+          "xpOrbs": 15
+        },
+        {
+          "hpOrbs": 3,
+          "spawnEnemy": "Enemy15",
+          "spawnCount": 3
+        },
+        {
+          "xpOrbs": 20
+        }
+      ]
     }
   ],
   "challenges": [
@@ -1469,7 +1486,8 @@
           "x": 858.8841872732255,
           "y": 193.80237888911256
         }
-      ]
+      ],
+      "order": 0
     },
     {
       "name": "Challenge 1",
@@ -1477,10 +1495,11 @@
       "enemies": [
         {
           "typeName": "Enemy9",
-          "x": 266.20750456863107,
-          "y": 490.16414756319057
+          "x": 345,
+          "y": 544.8300968657295
         }
-      ]
+      ],
+      "order": 10
     },
     {
       "name": "Challenge 2",
@@ -1491,7 +1510,8 @@
           "x": 1281,
           "y": 578.3010277400324
         }
-      ]
+      ],
+      "order": 20
     }
   ]
 }

@@ -12,12 +12,15 @@ import { getBlockedArcs, isTargetBlocked } from './RingOcclusion.ts'
 import { getGameTimeMs } from '../render/Renderer.ts'
 import { spawnOrb, collectOrb, ORB_HP_HEAL } from '../entities/XPOrb.ts'
 import type { XPOrb } from '../entities/XPOrb.ts'
-import { addAbsorbEffect } from '../render/Renderer.ts'
+import { addAbsorbEffect, showToast } from '../render/Renderer.ts'
 import { hasBonus } from './UpgradeManager.ts'
 import { getRitualGroups, hitRitualNode, missRitualNode, getActiveIndex } from './RitualNodes.ts'
 
+let sweepMasterCooldown = 0
+
 export function initHitDetection(): void {
   on('player:beat', () => {
+    sweepMasterCooldown = Math.max(0, sweepMasterCooldown - 1)  // tick down per beat (~1/sec at 60bpm)
     incrementRunBeat()
     const player = getPlayer()
     const grid = getGrid()
@@ -98,6 +101,12 @@ export function initHitDetection(): void {
       }
     }
 
+    // Sweep master — 5+ enemies hit during a full dash sweep (30% of dash path)
+    if (isDashing && player.dashPath.length > 5 && hitEnemies.size >= 5 && sweepMasterCooldown <= 0) {
+      sweepMasterCooldown = 30
+      showToast('SWEEP MASTER!', { y: 0.14, duration: 1.5, size: 44, id: `sweep_${performance.now()}`, color: [0, 255, 255], style: 'combo' })
+    }
+
     // Multi-kill XP bonus: 2+ kills in one beat = double XP per orb
     const multiKill = killedEnemies.length >= 2 && hasBonus('multiKillBonus')
     const orbValue = multiKill ? 2 : 1
@@ -136,6 +145,9 @@ export function initHitDetection(): void {
         }
       }
       playCollect()
+      if (collectedOrbs.size >= 7) {
+        showToast("Gotta catch 'em all!", { y: 0.14, duration: 2, id: `catch_${performance.now()}`, color: [255, 215, 64], style: 'combo' })
+      }
     }
 
     // Ritual node check

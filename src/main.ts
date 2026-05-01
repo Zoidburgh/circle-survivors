@@ -9,7 +9,7 @@ import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameStat
 import { update, render } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
 import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, onStartChallenge } from './game/EnemyDesigner.ts'
-import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd, startIrisTransition, startIrisOpen, isIrisActive, cycleProTip, getCsSelectedIndex, navigateChallenge, showToast } from './render/Renderer.ts'
+import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd, startIrisTransition, startIrisOpen, isIrisActive, cycleProTip, getCsSelectedIndex, navigateChallenge, showToast, isPortalClick } from './render/Renderer.ts'
 import { setVolume } from './audio/AudioEngine.ts'
 import { submitScore, isNameClean, fetchOnlineScores } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
@@ -50,7 +50,8 @@ let wasEnteringName = false
 function submitNameEntry(): void {
   if (getPhase() !== 'entering_name') return
   const text = getNameEntryText() || nameInput.value
-  const name = (text.trim() || 'Player').slice(0, 16)
+  if (!text.trim()) return  // must enter a name
+  const name = text.trim().slice(0, 16)
   if (!isNameClean(name)) {
     nameInput.value = ''
     setNameEntryText('')
@@ -109,11 +110,16 @@ function launchChallenge(ch: Challenge): void {
   Audio.startShieldFuseBurn(getPlayer().shieldRechargeTime)
   // Challenge-specific intro toast
   if (ch.name === 'Beginner Challenge') {
-    setTimeout(() => showToast('Welcome :) Try not to die immediately.', { duration: 4, y: 0.14, size: 34 }), 500)
+    setTimeout(() => showToast("Welcome :) Don't die immediately.", { duration: 2.5, y: 0.14, size: 34, style: 'glow', glowWords: ['die'], glowColor: [255, 50, 50] }), 500)
+  } else if (ch.name === 'Challenge 1') {
+    setTimeout(() => showToast('You can figure this out.', { duration: 2.5, y: 0.14 }), 500)
+  } else if (ch.name === 'Challenge 2') {
+    setTimeout(() => showToast("This one's kinda tough.", { duration: 2.5, y: 0.14 }), 500)
   }
 }
 
 let beginnerRetries = 0
+let nameEntryGrace = 0
 let challengeRetries = 0
 
 function restartChallenge(): void {
@@ -133,11 +139,11 @@ function restartChallenge(): void {
   if (lastChallenge.name === 'Beginner Challenge') {
     beginnerRetries++
     if (beginnerRetries === 1) {
-      setTimeout(() => showToast('This time do better.', { duration: 3, y: 0.14 }), 500)
+      setTimeout(() => showToast('This time do better.', { duration: 2, y: 0.14 }), 500)
     }
   }
   if (challengeRetries === 3) {
-    setTimeout(() => showToast('Persistence is key. Apparently.', { duration: 4, y: 0.14 }), 500)
+    setTimeout(() => showToast('Persistence is key. Apparently.', { duration: 2.5, y: 0.14 }), 500)
   }
 }
 
@@ -201,21 +207,19 @@ window.addEventListener('keydown', e => {
   }
   // Name entry
   if (getPhase() === 'entering_name') {
+    // Ignore keys briefly after entering name screen (prevents held WASD from spamming)
+    if (nameEntryGrace > 0) { e.preventDefault(); return }
+    // Ignore movement keys
+    if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Tab'].includes(e.key)) {
+      e.preventDefault()
+      return
+    }
     if (e.key === 'Enter') {
-      const name = (getNameEntryText().trim() || 'Player').slice(0, 16)
-      if (!isNameClean(name)) {
-        setNameEntryText('')  // clear and let them try again
-        return
-      }
-      const ch = getActiveChallenge()
-      const scoreTime = Math.ceil(getRunFinalTime())
-      if (ch) submitScore(ch.name, scoreTime, name)
-      setLastSubmittedName(name)
-      setLastSubmittedTime(scoreTime)
-      resetNameEntry()
-      setPhase('playing')
+      submitNameEntry()
     } else if (e.key === 'Backspace') {
       setNameEntryText(getNameEntryText().slice(0, -1))
+    } else if (e.key === 'Escape') {
+      // skip — don't type it
     } else if (e.key.length === 1 && getNameEntryText().length < 16) {
       setNameEntryText(getNameEntryText() + e.key)
     }
@@ -441,10 +445,15 @@ canvas.addEventListener('pointercancel', e => {
 
 canvas.addEventListener('click', e => {
   const c = screenToCanvas(e.clientX, e.clientY)
+  // Portal button — works on all screens
+  if (isPortalClick(c.x, c.y)) {
+    goToPortal()
+    return
+  }
   // Name entry submit button — handles both compact and full layout
   if (getPhase() === 'entering_name') {
     const ncx = canvas.width / 2
-    const compact = canvas.height < 800
+    const compact = canvas.height < 500  // match renderer
     let subW: number, subH: number, subX: number, subY: number
     if (compact) {
       // Compact: VICTORY(40) + time(40) + label(20) + box(48+12) = cy starts at 40+40+40+20=140, box ends 140+48=188, sub at 200
@@ -666,6 +675,7 @@ function checkNameInput(): void {
     nameInput.value = getNameEntryText()
     nameInput.style.pointerEvents = 'auto'
     nameInput.focus()
+    nameEntryGrace = 0.8  // 0.8s grace to ignore held keys
   } else if (!entering && wasEnteringName) {
     nameInput.blur()
     nameInput.style.pointerEvents = 'none'
@@ -676,10 +686,34 @@ function checkNameInput(): void {
       nameInput.value = getNameEntryText()
     }
   }
+  if (nameEntryGrace > 0) nameEntryGrace -= 1 / 60  // approx 60fps
   wasEnteringName = entering
   requestAnimationFrame(checkNameInput)
 }
 requestAnimationFrame(checkNameInput)
+
+// ── Portal — passive exit button always available ──
+const urlParams = new URLSearchParams(window.location.search)
+const isPortalEntry = urlParams.get('portal') === 'true'
+const portalRef = urlParams.get('ref') || ''
+
+export function goToPortal(): void {
+  const name = encodeURIComponent(getNameEntryText() || 'Player')
+  window.location.href = `https://vibejam.cc/portal/2026?username=${name}&ref=beatbackgame.com`
+}
+
+// ── Portal entry — drop straight into Beginner Challenge ──
+if (isPortalEntry) {
+  const challenges = getChallenges()
+  const beginner = challenges.find(c => c.name === 'Beginner Challenge')
+  if (beginner) {
+    setTimeout(() => {
+      ensureAudio()
+      Audio.switchBeat(0)
+      launchChallenge(beginner)
+    }, 100)
+  }
+}
 
 // ── Start game loop ──
 start(update, render)

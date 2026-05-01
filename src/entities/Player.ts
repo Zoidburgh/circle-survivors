@@ -5,6 +5,11 @@ import { shouldFire } from '../audio/PatternClock.ts'
 import * as Input from '../game/InputManager.ts'
 import { emit } from '../core/EventBus.ts'
 import { playDash, playWindup } from '../audio/AudioEngine.ts'
+import { showToast } from '../render/Renderer.ts'
+
+let dashCDToastFired = false
+let dashCDBeginner = false
+export function resetDashCDToast(beginner = false): void { dashCDToastFired = false; dashCDBeginner = beginner }
 import { clampToArena, ARENA_W, ARENA_H, getArenaShape, ARENA_CX, ARENA_CY, ARENA_RADIUS } from '../game/Arena.ts'
 import {
   PLAYER_SPEED,
@@ -402,6 +407,13 @@ export function updatePlayer(player: Player, dt: number): void {
   // Dash input — need a charge AND not mid-dash
   if (Input.consumeLeftClick() || Input.consumeSpace()) {
     const readySlot = player.dashSlots.findIndex(t => t <= 0)
+    if (readySlot < 0) {
+      // No dash available — notify on beginner only
+      if (!dashCDToastFired && dashCDBeginner) {
+        dashCDToastFired = true
+        showToast('DASH is on CD!', { y: 0.14, duration: 1.5, id: 'dash_cd', color: [0, 200, 255], style: 'glow', glowWords: ['DASH', 'CD!'], glowColor: [100, 255, 120] })
+      }
+    }
     if (readySlot >= 0) {
       // Check if dash is on-beat (ring is near peak)
       const nearPeak = player.attackTimer >= 0 && Math.abs(player.attackTimer - ATTACK_EXPAND_TIME) < 0.15

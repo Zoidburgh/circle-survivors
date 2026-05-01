@@ -41,13 +41,22 @@ export interface EnemyType {
   summonNodes?: number              // how many nodes (3 = triangle, 5 = pentagon, default 3)
   summonPhases?: SummonPhase[]      // each phase = one completed sequence, spawns enemies
   isShrine?: boolean                // ritual station — beat-dash while fully inside to activate
-  shrineSpawnEnemy?: string         // enemy type name to spawn per hit (empty = none)
-  shrineXpCount?: number            // XP orbs per hit
-  shrineHpCount?: number            // HP orbs per hit
+  shrineSpawnEnemy?: string         // LEGACY — use shrinePhases instead
+  shrineXpCount?: number            // LEGACY
+  shrineHpCount?: number            // LEGACY
+  shrinePhases?: ShrinePhase[]      // per-hit spawn waves
 }
 
 export interface SummonPhase {
   spawns: { enemyName: string; count: number }[]
+}
+
+export interface ShrinePhase {
+  spawnEnemy?: string    // enemy type to spawn (empty = none)
+  spawnCount?: number    // how many (default 1)
+  xpOrbs?: number        // XP orbs this phase
+  hpOrbs?: number        // HP orbs this phase
+  isShop?: boolean       // opens shop instead of spawning
 }
 
 /** Look up an enemy type by name */

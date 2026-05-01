@@ -2,7 +2,34 @@ import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
 import defaultEnemies from '../../data/enemies.json'
 import * as ChallengeBuilder from './ChallengeBuilder.ts'
 import type { Challenge } from './ChallengeBuilder.ts'
-import type { EnemyType } from '../entities/EnemyTypes.ts'
+import type { EnemyType, ShrinePhase } from '../entities/EnemyTypes.ts'
+
+// Shrine phase string format: "xp:3, hp:1, enemy:Name:2, shop"
+function phaseToString(phase: ShrinePhase): string {
+  const parts: string[] = []
+  if (phase.xpOrbs) parts.push(`xp:${phase.xpOrbs}`)
+  if (phase.hpOrbs) parts.push(`hp:${phase.hpOrbs}`)
+  if (phase.spawnEnemy) parts.push(`enemy:${phase.spawnEnemy}${phase.spawnCount && phase.spawnCount > 1 ? ':' + phase.spawnCount : ''}`)
+  if (phase.isShop) parts.push('shop')
+  return parts.join(', ') || 'xp:3'
+}
+
+function parsePhaseString(str: string): ShrinePhase {
+  const phase: ShrinePhase = {}
+  const parts = str.split(',').map(s => s.trim()).filter(Boolean)
+  for (const part of parts) {
+    if (part === 'shop') { phase.isShop = true; continue }
+    const [key, ...rest] = part.split(':')
+    const k = key!.toLowerCase().trim()
+    if (k === 'xp') phase.xpOrbs = parseInt(rest[0] ?? '1') || 1
+    else if (k === 'hp') phase.hpOrbs = parseInt(rest[0] ?? '1') || 1
+    else if (k === 'enemy') {
+      phase.spawnEnemy = rest[0] ?? ''
+      if (rest[1]) phase.spawnCount = parseInt(rest[1]) || 1
+    }
+  }
+  return phase
+}
 import type { SongPattern } from '../audio/SongPatterns.ts'
 import { setPattern, getPattern, getLoopPosition, getLoopLength } from '../audio/PatternClock.ts'
 import { getPlayer, getEnemies } from '../core/GameState.ts'
@@ -218,6 +245,7 @@ export interface PreviewEnemy {
   shrineSpawnEnemy: string
   shrineXpCount: number
   shrineHpCount: number
+  shrinePhases: import('../entities/EnemyTypes.ts').ShrinePhase[]
 }
 let previewEnemy: PreviewEnemy | null = null
 
@@ -740,17 +768,18 @@ function addEnemyForm(existing?: DesignedEnemy): void {
           <input id="ed-totem-${id}" type="text" value="${existing?.totemSpawn ?? ''}" placeholder="enemy name" style="width:100%;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
         </div>
         <div id="ed-shrine-wrap-${id}" style="margin-top:4px;display:${existing?.isShrine ? 'block' : 'none'};">
-          <div style="margin-top:4px;">
-            <span style="color:#FFD740;font:10px monospace;">Spawn Enemy:</span>
-            <input id="ed-shrine-enemy-${id}" type="text" value="${existing?.shrineSpawnEnemy ?? ''}" placeholder="enemy name (empty = none)" style="width:100%;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+          <span style="color:#FFD740;font:10px monospace;">Shrine Phases (each = 1 beat-dash hit):</span>
+          <div id="ed-shrine-phases-${id}" style="margin-top:4px;">
+            ${(existing?.shrinePhases ?? [{ xpOrbs: 3 }]).map((phase: any, pi: number) =>
+              `<div class="ed-shrine-phase-row" draggable="true" style="display:flex;align-items:center;gap:4px;margin-top:2px;padding:2px 4px;background:rgba(255,255,255,0.03);border-radius:3px;">
+                <span class="ed-shrine-phase-label" style="color:#FFD740;font:9px monospace;min-width:18px;">S${pi + 1}</span>
+                <input class="ed-shrine-phase-input" type="text" value="${phaseToString(phase)}" placeholder="xp:3, hp:1, enemy:Name:2, shop" style="flex:1;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+                <span class="ed-shrine-phase-del" style="cursor:pointer;color:#FF5252;font:12px monospace;user-select:none;" title="Delete">×</span>
+              </div>`
+            ).join('')}
           </div>
-          <div style="margin-top:4px;">
-            <span style="color:#64FFc8;font:10px monospace;">XP Orbs/Hit: <span id="ed-shrine-xp-val-${id}">${existing?.shrineXpCount ?? 3}</span></span>
-            <input id="ed-shrine-xp-${id}" type="range" min="0" max="15" step="1" value="${existing?.shrineXpCount ?? 3}" style="width:100%;">
-          </div>
-          <div style="margin-top:4px;">
-            <span style="color:#FF6080;font:10px monospace;">HP Orbs/Hit: <span id="ed-shrine-hp-val-${id}">${existing?.shrineHpCount ?? 0}</span></span>
-            <input id="ed-shrine-hp-${id}" type="range" min="0" max="15" step="1" value="${existing?.shrineHpCount ?? 0}" style="width:100%;">
+          <div style="margin-top:4px;display:flex;gap:6px;">
+            <span id="ed-shrine-add-${id}" style="cursor:pointer;color:#64FFc8;font:10px monospace;user-select:none;">+ Add Phase</span>
           </div>
         </div>
       </div>
@@ -1057,18 +1086,45 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     renumberPhases()
   })
 
-  // Shrine checkbox toggles settings
+  // Shrine checkbox + phase list
   const shrineCheckbox = body.querySelector(`#ed-shrine-${id}`) as HTMLInputElement
   const shrineWrap = body.querySelector(`#ed-shrine-wrap-${id}`) as HTMLDivElement
-  const shrineXpInput = body.querySelector(`#ed-shrine-xp-${id}`) as HTMLInputElement
-  const shrineXpVal = body.querySelector(`#ed-shrine-xp-val-${id}`) as HTMLSpanElement
-  const shrineHpInput = body.querySelector(`#ed-shrine-hp-${id}`) as HTMLInputElement
-  const shrineHpVal = body.querySelector(`#ed-shrine-hp-val-${id}`) as HTMLSpanElement
+  const shrinePhasesDiv = body.querySelector(`#ed-shrine-phases-${id}`) as HTMLDivElement
+  const shrineAddBtn = body.querySelector(`#ed-shrine-add-${id}`) as HTMLSpanElement
+
   shrineCheckbox.addEventListener('change', () => {
     shrineWrap.style.display = shrineCheckbox.checked ? 'block' : 'none'
   })
-  shrineXpInput.addEventListener('input', () => { shrineXpVal.textContent = shrineXpInput.value })
-  shrineHpInput.addEventListener('input', () => { shrineHpVal.textContent = shrineHpInput.value })
+
+  function renumberShrinePhases(): void {
+    const labels = shrinePhasesDiv.querySelectorAll('.ed-shrine-phase-label')
+    labels.forEach((el, i) => { el.textContent = `S${i + 1}` })
+  }
+
+  function createShrinePhaseRow(value = 'xp:3'): HTMLDivElement {
+    const row = document.createElement('div')
+    row.className = 'ed-shrine-phase-row'
+    row.draggable = true
+    row.style.cssText = 'display:flex;align-items:center;gap:4px;margin-top:2px;padding:2px 4px;background:rgba(255,255,255,0.03);border-radius:3px;'
+    row.innerHTML = `<span class="ed-shrine-phase-label" style="color:#FFD740;font:9px monospace;min-width:18px;">S1</span><input class="ed-shrine-phase-input" type="text" value="${value}" placeholder="xp:3, hp:1, enemy:Name:2, shop" style="flex:1;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;"><span class="ed-shrine-phase-del" style="cursor:pointer;color:#FF5252;font:12px monospace;user-select:none;" title="Delete">×</span>`
+    return row
+  }
+
+  shrinePhasesDiv.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement
+    const row = target.closest('.ed-shrine-phase-row') as HTMLElement
+    if (!row) return
+    if (target.classList.contains('ed-shrine-phase-del')) {
+      row.remove()
+      renumberShrinePhases()
+    }
+  })
+
+  shrineAddBtn.addEventListener('click', () => {
+    const row = createShrinePhaseRow()
+    shrinePhasesDiv.appendChild(row)
+    renumberShrinePhases()
+  })
 
   // Drop sliders
   const dropXpInput = body.querySelector(`#ed-drop-xp-${id}`) as HTMLInputElement
@@ -1126,6 +1182,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       shrineSpawnEnemy: form.shrineSpawnEnemy ?? '',
       shrineXpCount: form.shrineXpCount ?? 0,
       shrineHpCount: form.shrineHpCount ?? 0,
+      shrinePhases: form.shrinePhases ?? [],
     }
   }
 
@@ -1181,9 +1238,16 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       if (spawns.length > 0) summonPhases.push({ spawns })
     })
     const isShrine = (div.querySelector(`#ed-shrine-${id}`) as HTMLInputElement).checked
-    const shrineSpawnEnemy = (div.querySelector(`#ed-shrine-enemy-${id}`) as HTMLInputElement)?.value?.trim() ?? ''
-    const shrineXpCount = parseInt((div.querySelector(`#ed-shrine-xp-${id}`) as HTMLInputElement)?.value ?? '3') || 0
-    const shrineHpCount = parseInt((div.querySelector(`#ed-shrine-hp-${id}`) as HTMLInputElement)?.value ?? '0') || 0
+    const shrinePhaseInputs = div.querySelectorAll(`#ed-shrine-phases-${id} .ed-shrine-phase-input`) as NodeListOf<HTMLInputElement>
+    const shrinePhases: ShrinePhase[] = []
+    shrinePhaseInputs.forEach(input => {
+      const text = input.value.trim()
+      if (!text) return
+      shrinePhases.push(parsePhaseString(text))
+    })
+    const shrineSpawnEnemy = ''
+    const shrineXpCount = 0
+    const shrineHpCount = 0
     const dropXp = parseInt((div.querySelector(`#ed-drop-xp-${id}`) as HTMLInputElement).value) || 0
     const dropHp = parseInt((div.querySelector(`#ed-drop-hp-${id}`) as HTMLInputElement).value) || 0
     const dropCount = parseInt((div.querySelector(`#ed-drop-count-${id}`) as HTMLInputElement).value) || 1
@@ -1193,7 +1257,8 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const sound = (rings[0]?.sound ?? 'pop') as SoundName
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
-    return { name, color, hp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount }
+    const finalHp = isShrine && shrinePhases.length > 0 ? shrinePhases.length : hp
+    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
   }
 
 
