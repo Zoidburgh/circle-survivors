@@ -84,18 +84,14 @@ export function getScoresForChallenge(challengeName: string, limit = 30): ScoreE
   const local = localScores.filter(s => s.challengeName === challengeName)
   const online = onlineScores.get(challengeName) ?? []
 
-  // Merge local + online, deduplicate by player + time (date may differ between local/server)
-  const all = [...local, ...online]
-  const seen = new Set<string>()
-  const unique = all.filter(s => {
-    const key = `${s.playerName}:${s.time}`
-    if (seen.has(key)) return false
-    seen.add(key)
-    return true
-  })
-  unique.sort((a, b) => a.time - b.time || a.date.localeCompare(b.date))
+  // Server is authoritative — never collapse online-vs-online.
+  // Only drop local entries whose (playerName, time) already appears online.
+  const onlineKeys = new Set(online.map(s => `${s.playerName}:${s.time}`))
+  const localOnly = local.filter(s => !onlineKeys.has(`${s.playerName}:${s.time}`))
+  const merged = [...localOnly, ...online]
+  merged.sort((a, b) => a.time - b.time || a.date.localeCompare(b.date))
 
-  return unique.slice(0, limit)
+  return merged.slice(0, limit)
 }
 
 /** Get the best time for a challenge */

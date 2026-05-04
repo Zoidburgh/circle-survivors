@@ -585,7 +585,7 @@ export function spawnVolatileParticles(cx: number, cy: number, range: number, r:
     spawnParticle(px, py,
       Math.cos(outAngle) * speed, Math.sin(outAngle) * speed,
       pr, pg, pb,
-      0.33 + Math.random() * 0.2, 9 + Math.random() * 7, spin)
+      0.41 + Math.random() * 0.25, 9 + Math.random() * 7, spin)
   }
   // White-hot core flash particles — fast outward burst from center
   const hotCount = Math.min(16, Math.round(range / 10))
@@ -595,7 +595,7 @@ export function spawnVolatileParticles(cx: number, cy: number, range: number, r:
     spawnParticle(cx, cy,
       Math.cos(angle) * speed, Math.sin(angle) * speed,
       255, 240, 220,
-      0.15 + Math.random() * 0.1, 4 + Math.random() * 3)
+      0.19 + Math.random() * 0.13, 4 + Math.random() * 3)
   }
   // Edge ring sparks — fast particles tracing the blast circumference
   const edgeCount = Math.min(20, Math.round(range / 8))
@@ -609,7 +609,7 @@ export function spawnVolatileParticles(cx: number, cy: number, range: number, r:
       Math.cos(tangent) * speed + Math.cos(angle) * 30,
       Math.sin(tangent) * speed + Math.sin(angle) * 30,
       Math.min(255, r + 100), Math.min(255, g + 60), Math.min(255, b + 60),
-      0.18 + Math.random() * 0.12, 3 + Math.random() * 2.5)
+      0.22 + Math.random() * 0.15, 3 + Math.random() * 2.5)
   }
 }
 
@@ -4663,7 +4663,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     const baseCr = 255
     const baseCg = 215
     const baseCb = 64
-    const lockCr = 255, lockCg = 50, lockCb = isShopPhase ? 200 : 200  // bright pink when locked
+    const lockCr = 0, lockCg = 220, lockCb = 255  // electric cyan when locked
 
     const prevActiveIdx = ((enemy.summonBeatCount - 1 + N * 100) % N)
 
@@ -4827,12 +4827,12 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         ctx.lineWidth = 3 + lockPulse
         ctx.stroke()
 
-        // Inner radial glow — solid cyan, covers underlying color
+        // Inner radial glow — bright, covers underlying color
         const lockGrad = ctx.createRadialGradient(nx, ny, 0, nx, ny, nodeR)
-        lockGrad.addColorStop(0, `rgba(${cr}, ${cg}, ${cb}, ${0.85 + lockPulse * 0.15})`)
-        lockGrad.addColorStop(0.4, `rgba(${cr}, ${cg}, ${cb}, 0.6)`)
-        lockGrad.addColorStop(0.8, `rgba(${cr}, ${cg}, ${cb}, 0.35)`)
-        lockGrad.addColorStop(1, `rgba(${cr}, ${cg}, ${cb}, 0.2)`)
+        lockGrad.addColorStop(0, `rgba(200, 255, 255, ${0.9 + lockPulse * 0.1})`)
+        lockGrad.addColorStop(0.3, `rgba(${cr}, ${cg}, ${cb}, ${0.75 + lockPulse * 0.15})`)
+        lockGrad.addColorStop(0.7, `rgba(${cr}, ${cg}, ${cb}, 0.5)`)
+        lockGrad.addColorStop(1, `rgba(${cr}, ${cg}, ${cb}, 0.3)`)
         ctx.beginPath()
         ctx.arc(nx, ny, nodeR, 0, Math.PI * 2)
         ctx.fillStyle = lockGrad
@@ -4842,10 +4842,15 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         drawRitualNodeArcs(nx, ny, nodeR * 0.7, cr, cg, cb, 0.6, 2, lockSpin, 2, 0.35)
         drawRitualNodeArcs(nx, ny, nodeR * 0.45, 255, 255, 255, 0.25, 1.5, -lockSpin * 1.3, 3, 0.3)
 
-        // Bright white core dot
+        // Bright white core dot — big and glowy
         ctx.beginPath()
-        ctx.arc(nx, ny, 3 + lockPulse * 2, 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(255, 255, 255, ${0.6 + lockPulse * 0.3})`
+        ctx.arc(nx, ny, 8 + lockPulse * 5, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(255, 255, 255, ${0.85 + lockPulse * 0.15})`
+        ctx.fill()
+        // Soft glow halo behind core
+        ctx.beginPath()
+        ctx.arc(nx, ny, 10 + lockPulse * 5, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(200, 255, 255, ${0.15 + lockPulse * 0.1})`
         ctx.fill()
         // Lock flash + explosion
         if (enemy.summonLockFlash[i]! > 0) {
@@ -5870,22 +5875,47 @@ export function drawTitleScreen(dt: number): void {
     ctx.lineWidth = 1.5 + 2.5 * buildup
     ctx.stroke()
 
+    // Trail particles during buildup — race along ring
+    if (buildup > 0.3) {
+      const trailCount = Math.floor(buildup * 2)
+      const worldCxT = rcx + camX
+      const worldCyT = rcy + camY
+      spawnRingParticles(worldCxT, worldCyT, ringR, 100, 255, 255, trailCount, 20 + buildup * 40, 0.3, 2)
+    }
+
+    // White-gold flash at exact peak
+    if (pastPeak >= 0 && pastPeak < 0.05) {
+      const peakFlash = 1 - (pastPeak / 0.05)
+      ctx.beginPath()
+      ctx.arc(rcx, rcy, ringR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 220, 100, ${peakFlash * 0.5})`
+      ctx.lineWidth = 14
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(rcx, rcy, ringR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 255, 255, ${peakFlash * 0.95})`
+      ctx.lineWidth = 7
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(rcx, rcy, ringR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 255, 255, ${peakFlash})`
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    }
+
     // Red flash at peak
     if (pastPeak >= 0 && pastPeak < 0.2) {
       const redT = 1 - pastPeak / 0.2
-      // Wide glow
       ctx.beginPath()
       ctx.arc(rcx, rcy, ringR, 0, Math.PI * 2)
       ctx.strokeStyle = `rgba(255, 100, 100, ${redT * 0.08})`
       ctx.lineWidth = 20
       ctx.stroke()
-      // Soft red
       ctx.beginPath()
       ctx.arc(rcx, rcy, ringR, 0, Math.PI * 2)
       ctx.strokeStyle = `rgba(255, 80, 80, ${redT * 0.18})`
       ctx.lineWidth = 8
       ctx.stroke()
-      // Sharp red core
       ctx.beginPath()
       ctx.arc(rcx, rcy, ringR, 0, Math.PI * 2)
       ctx.strokeStyle = `rgba(255, 80, 80, ${redT * 0.5})`
@@ -5893,23 +5923,31 @@ export function drawTitleScreen(dt: number): void {
       ctx.stroke()
     }
 
-    // Explosion particles at peak — first frame only
-    if (pastPeak >= 0 && pastPeak < 0.02) {
-      const worldCx = rcx + camX  // convert screen → world for particle system
+    // Tangential streak explosion at peak — particles race along ring circumference
+    if (pastPeak >= 0 && pastPeak < lastDt * 2) {
+      const worldCx = rcx + camX
       const worldCy = rcy + camY
-      const count = 25
-      for (let i = 0; i < count; i++) {
-        const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
+      const ringScale = Math.max(1, ringR / 140)
+      const totalCount = Math.round(21 * ringScale)
+      const angleOffset = Math.random() * Math.PI * 2
+      for (let i = 0; i < totalCount; i++) {
+        const angle = angleOffset + (i / totalCount) * Math.PI * 2 + (Math.random() - 0.5) * (Math.PI * 2 / totalCount) * 0.3
         const px = worldCx + Math.cos(angle) * ringR
         const py = worldCy + Math.sin(angle) * ringR
-        const isWhite = i % 3 === 0
-        const sp = (isWhite ? 25 : 18) * (0.5 + Math.random())
-        const vx = Math.cos(angle) * sp + (Math.random() - 0.5) * sp * 0.7
-        const vy = Math.sin(angle) * sp + (Math.random() - 0.5) * sp * 0.7
-        spawnParticle(px, py, vx, vy,
-          isWhite ? 255 : 0, isWhite ? 255 : 255, 255,
-          (isWhite ? 0.5 : 0.6) * (0.8 + Math.random() * 0.2),
-          (isWhite ? 8 : 7) * 1.1)
+        const dir = i % 2 === 0 ? 1 : -1
+        const tangentAngle = angle + (Math.PI / 2) * dir
+        const tangentSpeed = 240 + Math.random() * 360
+        const inwardSpeed = -(40 + Math.random() * 40)
+        const vx = Math.cos(tangentAngle) * tangentSpeed + Math.cos(angle) * inwardSpeed
+        const vy = Math.sin(tangentAngle) * tangentSpeed + Math.sin(angle) * inwardSpeed
+        const isRed = i % 10 === 0
+        const isWhite = !isRed && i % 4 === 0
+        const lt = 0.16 + Math.random() * 0.12
+        const sz = (isWhite ? 7.7 : 6.5) * (0.9 + Math.random() * 0.3)
+        const pr = isRed ? 255 : isWhite ? 255 : 100
+        const pg = isRed ? 60 + Math.floor(Math.random() * 40) : isWhite ? 255 : 255
+        const pb = isRed ? 50 + Math.floor(Math.random() * 30) : isWhite ? 255 : 255
+        spawnParticle(px, py, vx, vy, pr, pg, pb, lt, sz)
       }
     }
 
@@ -5933,7 +5971,35 @@ export function drawTitleScreen(dt: number): void {
     ctx.lineWidth = 1.5 + 2.5 * buildup2
     ctx.stroke()
 
-    // Flash at peak
+    // Trail particles during buildup
+    if (buildup2 > 0.3) {
+      const trailCount = Math.floor(buildup2 * 2)
+      const worldCxT = rcx + camX
+      const worldCyT = rcy + camY
+      spawnRingParticles(worldCxT, worldCyT, ring2R, 255, 150, 230, trailCount, 20 + buildup2 * 40, 0.3, 2)
+    }
+
+    // White-gold flash at exact peak
+    if (pastPeak2 >= 0 && pastPeak2 < 0.05) {
+      const peakFlash = 1 - (pastPeak2 / 0.05)
+      ctx.beginPath()
+      ctx.arc(rcx, rcy, ring2R, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 220, 100, ${peakFlash * 0.5})`
+      ctx.lineWidth = 14
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(rcx, rcy, ring2R, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 255, 255, ${peakFlash * 0.95})`
+      ctx.lineWidth = 7
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(rcx, rcy, ring2R, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 255, 255, ${peakFlash})`
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+    }
+
+    // Pink flash at peak
     if (pastPeak2 >= 0 && pastPeak2 < 0.2) {
       const redT2 = 1 - pastPeak2 / 0.2
       ctx.beginPath()
@@ -5953,26 +6019,39 @@ export function drawTitleScreen(dt: number): void {
       ctx.stroke()
     }
 
-    // Explosion particles at peak
-    if (pastPeak2 >= 0 && pastPeak2 < 0.02) {
+    // Tangential streak explosion at peak
+    if (pastPeak2 >= 0 && pastPeak2 < lastDt * 2) {
       const worldCx2 = rcx + camX
       const worldCy2 = rcy + camY
-      for (let i = 0; i < 18; i++) {
-        const angle = (i / 18) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
+      const ringScale = Math.max(1, ring2R / 140)
+      const totalCount = Math.round(18 * ringScale)
+      const angleOffset = Math.random() * Math.PI * 2
+      for (let i = 0; i < totalCount; i++) {
+        const angle = angleOffset + (i / totalCount) * Math.PI * 2 + (Math.random() - 0.5) * (Math.PI * 2 / totalCount) * 0.3
         const px = worldCx2 + Math.cos(angle) * ring2R
         const py = worldCy2 + Math.sin(angle) * ring2R
-        const isWhite = i % 4 === 0
-        const sp = (isWhite ? 22 : 16) * (0.5 + Math.random())
-        const vx = Math.cos(angle) * sp + (Math.random() - 0.5) * sp * 0.7
-        const vy = Math.sin(angle) * sp + (Math.random() - 0.5) * sp * 0.7
-        spawnParticle(px, py, vx, vy,
-          isWhite ? 255 : 255, isWhite ? 255 : 50, isWhite ? 255 : 200,
-          (isWhite ? 0.5 : 0.6) * (0.8 + Math.random() * 0.2),
-          (isWhite ? 7 : 6) * 1.1)
+        const dir = i % 2 === 0 ? 1 : -1
+        const tangentAngle = angle + (Math.PI / 2) * dir
+        const tangentSpeed = 220 + Math.random() * 340
+        const inwardSpeed = -(40 + Math.random() * 40)
+        const vx = Math.cos(tangentAngle) * tangentSpeed + Math.cos(angle) * inwardSpeed
+        const vy = Math.sin(tangentAngle) * tangentSpeed + Math.sin(angle) * inwardSpeed
+        const isPink = i % 10 === 0
+        const isWhite = !isPink && i % 4 === 0
+        const lt = 0.16 + Math.random() * 0.12
+        const sz = (isWhite ? 7.7 : 6.5) * (0.9 + Math.random() * 0.3)
+        const pr = isPink ? 255 : isWhite ? 255 : 255
+        const pg = isPink ? 80 + Math.floor(Math.random() * 40) : isWhite ? 255 : 150
+        const pb = isPink ? 180 + Math.floor(Math.random() * 30) : isWhite ? 255 : 230
+        spawnParticle(px, py, vx, vy, pr, pg, pb, lt, sz)
       }
     }
 
   }
+
+  // Particles drawn before title so letters render on top of streaks
+  updateParticles(dt)
+  drawParticles()
 
   // Vignette
   const vigGrad = ctx.createRadialGradient(width / 2, height / 2, height * 0.3, width / 2, height / 2, height * 0.8)
@@ -6077,9 +6156,6 @@ export function drawTitleScreen(dt: number): void {
 
   ctx.textAlign = 'left'
 
-  // Update + draw particles on title screen
-  updateParticles(dt)
-  drawParticles()
   drawPortalButton()
   finalizeHoverCheck()
 }
@@ -6087,6 +6163,7 @@ export function drawTitleScreen(dt: number): void {
 // ── Challenge Select Screen ──
 let csSelectedIndex = 0
 export function getCsSelectedIndex(): number { return csSelectedIndex }
+export function setCsSelectedIndex(idx: number): void { csSelectedIndex = idx }
 export function navigateChallenge(dir: number): boolean {
   const challenges = getChallenges()
   const newIdx = csSelectedIndex + dir
@@ -6154,13 +6231,13 @@ export function showToast(text: string, opts?: Partial<ToastOptions>): void {
     toasts.shift()
   }
   // Reduce size if stacking on an active toast
-  const baseSize = opts?.size ?? 34
+  const baseSize = opts?.size ?? 42
   const actualSize = toasts.length > 0 ? Math.round(baseSize * 0.9) : baseSize
   toasts.push({
     text,
     timer: 0,
     duration: opts?.duration ?? 3,
-    fadeIn: opts?.fadeIn ?? 0.3,
+    fadeIn: opts?.fadeIn ?? 0.15,
     fadeOut: opts?.fadeOut ?? 0.5,
     y: opts?.y ?? 0.35,
     size: actualSize,
@@ -6398,8 +6475,8 @@ function updateAndDrawToasts(dt: number): void {
         const sy = Math.cos(now * 35 + li * 1.7) * shakeIntensity
 
         // Explode outward from center in last phase
-        const exDx = (lx - centerX) * explodeT * 1.5
-        const exDy = (Math.random() - 0.5) * explodeT * 30
+        const exDx = (lx - centerX) * explodeT * 0.6
+        const exDy = (Math.random() - 0.5) * explodeT * 12
 
         // Shadow
         ctx.fillStyle = `rgba(0, 0, 0, ${0.5 * alpha})`
@@ -7974,6 +8051,66 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     ctx.fillStyle = `rgba(255, 255, 255, ${vMenuHov ? 0.9 : 0.6})`
     ctx.fillText('MENU', menuX + vBtnW / 2, vBtnY + vBtnH / 2 + 8)
 
+    // Next Challenge arrow — right side, if there's a next challenge
+    const challenges = getChallenges()
+    const curIdx = challenges.findIndex(c => c.name === ch?.name)
+    if (curIdx >= 0 && curIdx < challenges.length - 1) {
+      const nextCh = challenges[curIdx + 1]!
+      const arrowX = width - 300
+      const arrowCY = height / 2 + 115
+      const nextHov = checkHover('v_next', pauseMouseX >= arrowX - 30 && pauseMouseX <= arrowX + 120 && pauseMouseY >= arrowCY - 100 && pauseMouseY <= arrowCY + 130)
+      // Beat pulse
+      const nLoopPos = getLoopPosition()
+      const nBeatPhase = nLoopPos % 1
+      const nPastPeak = nBeatPhase >= 0.45
+      const nBeatId = Math.floor(nLoopPos) * 2 + (nPastPeak ? 1 : 0)
+      if (nBeatId !== titleLastBeat && titleLastBeat >= 0 && nPastPeak) titleBeatPulse = 1
+      titleLastBeat = nBeatId
+      titleBeatPulse = Math.max(0, titleBeatPulse - lastDt * 3)
+      const beat = titleBeatPulse
+
+      // Box around everything
+      const boxW = 180
+      const boxX = arrowX - 50
+      const boxY = arrowCY - 75
+      const boxH = 210
+      ctx.beginPath()
+      ctx.roundRect(boxX, boxY, boxW, boxH, 12)
+      ctx.strokeStyle = nextHov ? `rgba(255, 50, 200, ${nextHov ? 0.7 : 0.3 + beat * 0.2})` : `rgba(0, 255, 255, ${0.25 + beat * 0.15})`
+      ctx.lineWidth = nextHov ? 2.5 : 1.5
+      ctx.stroke()
+      // Dark backing to block noise
+      ctx.fillStyle = `rgba(13, 10, 26, 0.7)`
+      ctx.fill()
+      // Tinted overlay
+      ctx.fillStyle = nextHov ? `rgba(255, 50, 200, 0.1)` : `rgba(0, 255, 255, ${0.04 + beat * 0.03})`
+      ctx.fill()
+
+      // Arrow chevrons — big
+      const chevCount = 3
+      for (let c = 0; c < chevCount; c++) {
+        const offset = (c - 1) * 36
+        const chevAlpha = nextHov ? 0.95 : 0.5 + beat * 0.3
+        ctx.beginPath()
+        ctx.moveTo(arrowX + offset + 20, arrowCY - 60)
+        ctx.lineTo(arrowX + offset + 60, arrowCY)
+        ctx.lineTo(arrowX + offset + 20, arrowCY + 60)
+        ctx.strokeStyle = nextHov ? `rgba(255, 50, 200, ${chevAlpha})` : `rgba(0, 255, 255, ${chevAlpha})`
+        ctx.lineWidth = (nextHov ? 8 : 6) + beat * 3
+        ctx.lineCap = 'round'
+        ctx.lineJoin = 'round'
+        ctx.stroke()
+      }
+      ctx.lineCap = 'butt'
+      ctx.lineJoin = 'miter'
+
+      // Label
+      ctx.font = 'bold 34px monospace'
+      ctx.textAlign = 'center'
+      ctx.fillStyle = nextHov ? `rgba(255, 50, 200, 0.95)` : `rgba(0, 255, 255, ${0.6 + beat * 0.3})`
+      ctx.fillText('NEXT', arrowX + 40, arrowCY + 85)
+      ctx.fillText('CHALLENGE', arrowX + 40, arrowCY + 120)
+    }
 
     ctx.textAlign = 'left'
   }

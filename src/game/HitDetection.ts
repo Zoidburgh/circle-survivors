@@ -104,7 +104,7 @@ export function initHitDetection(): void {
     // Sweep master — 5+ enemies hit during a full dash sweep (30% of dash path)
     if (isDashing && player.dashPath.length > 5 && hitEnemies.size >= 5 && sweepMasterCooldown <= 0) {
       sweepMasterCooldown = 30
-      showToast('SWEEP MASTER!', { y: 0.14, duration: 1.5, size: 44, id: `sweep_${performance.now()}`, color: [0, 255, 255], style: 'combo' })
+      showToast('SWEEP MASTER!', { y: 0.14, duration: 1.5, size: 44, id: `sweep_${performance.now()}`, color: [255, 215, 64], style: 'combo' })
     }
 
     // Multi-kill XP bonus: 2+ kills in one beat = double XP per orb
@@ -146,7 +146,7 @@ export function initHitDetection(): void {
       }
       playCollect()
       if (collectedOrbs.size >= 7) {
-        showToast("Gotta catch 'em all!", { y: 0.14, duration: 2, id: `catch_${performance.now()}`, color: [255, 215, 64], style: 'combo' })
+        showToast("Gotta catch 'em all!", { y: 0.14, duration: 2, size: 42, id: `catch_${performance.now()}`, color: [255, 215, 64], style: 'combo' })
       }
     }
 

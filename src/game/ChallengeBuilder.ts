@@ -154,17 +154,18 @@ export function loadFromStorage(): void {
     const raw = localStorage.getItem(SAVE_KEY)
     if (raw) {
       challenges = JSON.parse(raw)
-      // Merge order fields from bundled data (in case they were added after first save)
+      // Merge from bundled data: add missing challenges and refresh order fields
       const bundled = (defaultData as any).challenges as Challenge[] | undefined
       if (Array.isArray(bundled)) {
         let merged = false
         for (const bc of bundled) {
-          if (bc.order != null) {
-            const existing = challenges.find(c => c.name === bc.name)
-            if (existing && existing.order !== bc.order) {
-              existing.order = bc.order
-              merged = true
-            }
+          const existing = challenges.find(c => c.name === bc.name)
+          if (!existing) {
+            challenges.push(bc)
+            merged = true
+          } else if (bc.order != null && existing.order !== bc.order) {
+            existing.order = bc.order
+            merged = true
           }
         }
         if (merged) saveToStorage()

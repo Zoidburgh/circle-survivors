@@ -411,7 +411,7 @@ export function updatePlayer(player: Player, dt: number): void {
       // No dash available — notify on beginner only
       if (!dashCDToastFired && dashCDBeginner) {
         dashCDToastFired = true
-        showToast('DASH is on CD!', { y: 0.14, duration: 1.5, id: 'dash_cd', color: [0, 200, 255], style: 'glow', glowWords: ['DASH', 'CD!'], glowColor: [100, 255, 120] })
+        showToast('DASH on CD!', { y: 0.14, duration: 1.5, size: 42, id: 'dash_cd', color: [0, 200, 255], style: 'glow', glowWords: ['DASH', 'CD!'], glowColor: [100, 255, 120] })
       }
     }
     if (readySlot >= 0) {

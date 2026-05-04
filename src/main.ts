@@ -9,7 +9,7 @@ import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameStat
 import { update, render } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
 import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, onStartChallenge } from './game/EnemyDesigner.ts'
-import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd, startIrisTransition, startIrisOpen, isIrisActive, cycleProTip, getCsSelectedIndex, navigateChallenge, showToast, isPortalClick } from './render/Renderer.ts'
+import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd, startIrisTransition, startIrisOpen, isIrisActive, cycleProTip, getCsSelectedIndex, setCsSelectedIndex, navigateChallenge, showToast, isPortalClick, resetVictoryScroll } from './render/Renderer.ts'
 import { setVolume } from './audio/AudioEngine.ts'
 import { submitScore, isNameClean, fetchOnlineScores } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
@@ -95,6 +95,7 @@ function launchChallenge(ch: Challenge): void {
   ensureAudio()
   Audio.switchBeat(0)
   resetGameState()
+  resetVictoryScroll()
   setArenaShape(ch.arenaShape as any)
   console.log('Launch challenge:', ch.name, 'enemies:', ch.enemies.map(e => e.typeName), 'ENEMY_TYPES:', ENEMY_TYPES.map(t => t.name))
   for (const ce of ch.enemies) {
@@ -110,7 +111,7 @@ function launchChallenge(ch: Challenge): void {
   Audio.startShieldFuseBurn(getPlayer().shieldRechargeTime)
   // Challenge-specific intro toast
   if (ch.name === 'Beginner Challenge') {
-    setTimeout(() => showToast("Welcome :) Don't die immediately.", { duration: 2.5, y: 0.14, size: 34, style: 'glow', glowWords: ['die'], glowColor: [255, 50, 50] }), 500)
+    setTimeout(() => showToast("Welcome :) Don't die immediately.", { duration: 2.5, y: 0.14, size: 42, style: 'glow', glowWords: ['die'], glowColor: [255, 50, 50] }), 500)
   } else if (ch.name === 'Challenge 1') {
     setTimeout(() => showToast('You can figure this out.', { duration: 2.5, y: 0.14 }), 500)
   } else if (ch.name === 'Challenge 2') {
@@ -234,6 +235,7 @@ window.addEventListener('keydown', e => {
   }
   if (getPhase() === 'paused') {
     if (e.key === 'Escape' || e.key === ' ') {
+      Audio.ensureAudioContext()
       setPhase('playing')
     } else if (e.key === 'r' || e.key === 'R') {
       restartChallenge()
@@ -488,6 +490,20 @@ canvas.addEventListener('click', e => {
         setPhase('challenge_select')
       }
     }
+    // Next challenge arrow — right side
+    const challenges = getChallenges()
+    const curIdx = challenges.findIndex(ch => ch.name === getActiveChallenge()?.name)
+    if (curIdx >= 0 && curIdx < challenges.length - 1) {
+      const arrowX = canvas.width - 300
+      const arrowCY = canvas.height / 2 + 115
+      if (c.x >= arrowX - 30 && c.x <= arrowX + 120 && c.y >= arrowCY - 100 && c.y <= arrowCY + 130) {
+        Audio.playUIClick()
+        const nextCh = challenges[curIdx + 1]!
+        setCsSelectedIndex(curIdx + 1)  // update carousel position immediately
+        resetGameState()
+        launchChallenge(nextCh)
+      }
+    }
     return
   }
   if (getPhase() === 'paused') {
@@ -504,6 +520,7 @@ canvas.addEventListener('click', e => {
     if (c.x >= pcx - btnW / 2 && c.x <= pcx + btnW / 2) {
       if (c.y >= resumeY && c.y <= resumeY + btnH) {
         Audio.playUIClick()
+        Audio.ensureAudioContext()
         setPhase('playing')
       } else if (c.y >= restartBtnY && c.y <= restartBtnY + btnH) {
         Audio.playUIClick()
@@ -644,8 +661,18 @@ window.addEventListener('blur', () => {
   }
 })
 window.addEventListener('focus', () => {
-  // Resume AudioContext if it was suspended
   Audio.ensureAudioContext()
+})
+// Mobile: visibilitychange is more reliable than blur/focus
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    if (getPhase() === 'playing') {
+      Input.clearKeys()
+      setPhase('paused')
+    }
+  } else {
+    Audio.ensureAudioContext()
+  }
 })
 
 // Auto-pause when exiting fullscreen during gameplay

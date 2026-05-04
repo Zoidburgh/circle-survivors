@@ -110,6 +110,13 @@ export function ensureAudioContext(): void {
   }
 }
 
+/** Call every frame during gameplay — auto-fixes suspended AudioContext on mobile */
+export function tickAudioHealth(): void {
+  if (ctx && ctx.state === 'suspended') {
+    ctx.resume().catch(() => {})
+  }
+}
+
 export function init(): void {
   const resume = () => {
     ensureContext()
@@ -317,7 +324,7 @@ export function playVolatileExplosion(): void {
   thud.type = 'sine'
   thud.frequency.setValueAtTime(60, popTime)
   thud.frequency.exponentialRampToValueAtTime(20, popTime + 0.3)
-  thudGain.gain.setValueAtTime(rVol(1.2), popTime)
+  thudGain.gain.setValueAtTime(rVol(1.7), popTime)
   thudGain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.3)
   thud.connect(thudGain)
   thudGain.connect(master)
@@ -330,7 +337,7 @@ export function playVolatileExplosion(): void {
   thud2.type = 'triangle'
   thud2.frequency.setValueAtTime(45, popTime)
   thud2.frequency.exponentialRampToValueAtTime(15, popTime + 0.25)
-  thud2Gain.gain.setValueAtTime(rVol(1.0), popTime)
+  thud2Gain.gain.setValueAtTime(rVol(1.5), popTime)
   thud2Gain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.25)
   thud2.connect(thud2Gain)
   thud2Gain.connect(master)
@@ -340,7 +347,7 @@ export function playVolatileExplosion(): void {
   // Low rumble noise burst
   const boomBuf = c.createBuffer(1, Math.floor(c.sampleRate * 0.2), c.sampleRate)
   const boomData = boomBuf.getChannelData(0)
-  for (let i = 0; i < boomData.length; i++) boomData[i] = (Math.random() * 2 - 1) * 0.6
+  for (let i = 0; i < boomData.length; i++) boomData[i] = (Math.random() * 2 - 1) * 0.85
   const boomNoise = c.createBufferSource()
   boomNoise.buffer = boomBuf
   const boomFilter = c.createBiquadFilter()
@@ -348,7 +355,7 @@ export function playVolatileExplosion(): void {
   boomFilter.frequency.setValueAtTime(800, popTime)
   boomFilter.frequency.exponentialRampToValueAtTime(200, popTime + 0.15)
   const boomGain = c.createGain()
-  boomGain.gain.setValueAtTime(rVol(1.1), popTime)
+  boomGain.gain.setValueAtTime(rVol(1.7), popTime)
   boomGain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.2)
   boomNoise.connect(boomFilter)
   boomFilter.connect(boomGain)
@@ -1149,9 +1156,9 @@ export function playSummonerSpawn(): void {
   const rumbleGain = c.createGain()
   rumble.type = 'sawtooth'
   rumble.frequency.setValueAtTime(rPitch(90), t)
-  rumble.frequency.exponentialRampToValueAtTime(rPitch(35), t + 0.7)
-  rumbleGain.gain.setValueAtTime(rVol(0.55), t)
-  rumbleGain.gain.exponentialRampToValueAtTime(0.001, t + 0.7)
+  rumble.frequency.exponentialRampToValueAtTime(rPitch(35), t + 1.05)
+  rumbleGain.gain.setValueAtTime(rVol(1.2), t)
+  rumbleGain.gain.exponentialRampToValueAtTime(0.001, t + 1.05)
   const rumbleFilter = c.createBiquadFilter()
   rumbleFilter.type = 'lowpass'
   rumbleFilter.frequency.value = 250
@@ -1159,54 +1166,73 @@ export function playSummonerSpawn(): void {
   rumbleFilter.connect(rumbleGain)
   rumbleGain.connect(master)
   rumble.start(t)
-  rumble.stop(t + 0.7)
+  rumble.stop(t + 1.05)
 
   // Second sub layer for weight
   const sub = c.createOscillator()
   const subGain = c.createGain()
   sub.type = 'sine'
   sub.frequency.setValueAtTime(rPitch(60), t)
-  sub.frequency.exponentialRampToValueAtTime(rPitch(25), t + 0.6)
-  subGain.gain.setValueAtTime(rVol(0.5), t)
-  subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.6)
+  sub.frequency.exponentialRampToValueAtTime(rPitch(25), t + 0.9)
+  subGain.gain.setValueAtTime(rVol(1.0), t)
+  subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.9)
   sub.connect(subGain)
   subGain.connect(master)
   sub.start(t)
-  sub.stop(t + 0.6)
+  sub.stop(t + 0.9)
 
-  // Dark chord — minor third dissonance
+  // Dark chord — minor third dissonance, raised an octave for audibility
   const osc1 = c.createOscillator()
   const osc2 = c.createOscillator()
   const chordGain = c.createGain()
   osc1.type = 'triangle'
   osc2.type = 'triangle'
-  osc1.frequency.setValueAtTime(rPitch(130), t)
-  osc1.frequency.exponentialRampToValueAtTime(rPitch(100), t + 0.6)
-  osc2.frequency.setValueAtTime(rPitch(156), t) // minor third
-  osc2.frequency.exponentialRampToValueAtTime(rPitch(120), t + 0.6)
-  chordGain.gain.setValueAtTime(rVol(0.3), t)
-  chordGain.gain.exponentialRampToValueAtTime(0.001, t + 0.6)
+  osc1.frequency.setValueAtTime(rPitch(260), t)
+  osc1.frequency.exponentialRampToValueAtTime(rPitch(200), t + 0.9)
+  osc2.frequency.setValueAtTime(rPitch(312), t) // minor third up
+  osc2.frequency.exponentialRampToValueAtTime(rPitch(240), t + 0.9)
+  chordGain.gain.setValueAtTime(rVol(0.85), t)
+  chordGain.gain.exponentialRampToValueAtTime(0.001, t + 0.9)
   osc1.connect(chordGain)
   osc2.connect(chordGain)
-  chordGain.connect(reverbInput)
+  chordGain.connect(master)
   osc1.start(t)
   osc2.start(t)
-  osc1.stop(t + 0.6)
-  osc2.stop(t + 0.6)
+  osc1.stop(t + 0.9)
+  osc2.stop(t + 0.9)
 
-  // Whoosh noise burst — dark energy dispersing
-  const noiseDur = 0.45
+  // Mid-range thunk — sharp attack that punches through any speaker
+  const thunk = c.createOscillator()
+  const thunkGain = c.createGain()
+  thunk.type = 'sawtooth'
+  thunk.frequency.setValueAtTime(rPitch(400), t)
+  thunk.frequency.exponentialRampToValueAtTime(rPitch(120), t + 0.25)
+  const thunkFilter = c.createBiquadFilter()
+  thunkFilter.type = 'lowpass'
+  thunkFilter.frequency.setValueAtTime(2200, t)
+  thunkFilter.frequency.exponentialRampToValueAtTime(600, t + 0.3)
+  thunkGain.gain.setValueAtTime(rVol(0.9), t)
+  thunkGain.gain.exponentialRampToValueAtTime(0.001, t + 0.35)
+  thunk.connect(thunkFilter)
+  thunkFilter.connect(thunkGain)
+  thunkGain.connect(master)
+  thunk.start(t)
+  thunk.stop(t + 0.35)
+
+  // Whoosh noise burst — dark energy dispersing (brighter + louder for audibility)
+  const noiseDur = 0.7
   const noiseBuf = c.createBuffer(1, Math.floor(c.sampleRate * noiseDur), c.sampleRate)
   const noiseData = noiseBuf.getChannelData(0)
-  for (let i = 0; i < noiseData.length; i++) noiseData[i] = (Math.random() * 2 - 1) * 0.5
+  for (let i = 0; i < noiseData.length; i++) noiseData[i] = (Math.random() * 2 - 1) * 0.7
   const noise = c.createBufferSource()
   noise.buffer = noiseBuf
   const noiseFilter = c.createBiquadFilter()
-  noiseFilter.type = 'lowpass'
-  noiseFilter.frequency.setValueAtTime(1500, t)
-  noiseFilter.frequency.exponentialRampToValueAtTime(200, t + noiseDur)
+  noiseFilter.type = 'bandpass'
+  noiseFilter.Q.value = 1.2
+  noiseFilter.frequency.setValueAtTime(2400, t)
+  noiseFilter.frequency.exponentialRampToValueAtTime(500, t + noiseDur)
   const noiseGain = c.createGain()
-  noiseGain.gain.setValueAtTime(rVol(0.35), t + 0.02)
+  noiseGain.gain.setValueAtTime(rVol(1.1), t + 0.02)
   noiseGain.gain.exponentialRampToValueAtTime(0.001, t + noiseDur)
   noise.connect(noiseFilter)
   noiseFilter.connect(noiseGain)
@@ -1226,7 +1252,7 @@ export function playTotemSpawn(): void {
   tom.type = 'sine'
   tom.frequency.setValueAtTime(rPitch(250), t)
   tom.frequency.exponentialRampToValueAtTime(rPitch(50), t + 0.15)
-  tomGain.gain.setValueAtTime(rVol(0.8), t)
+  tomGain.gain.setValueAtTime(rVol(1.1), t)
   tomGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
   tom.connect(tomGain)
   tomGain.connect(master)
@@ -1240,7 +1266,7 @@ export function playTotemSpawn(): void {
   membrane.type = 'triangle'
   membrane.frequency.setValueAtTime(rPitch(180), t)
   membrane.frequency.exponentialRampToValueAtTime(rPitch(40), t + 0.12)
-  memGain.gain.setValueAtTime(rVol(0.55), t)
+  memGain.gain.setValueAtTime(rVol(0.8), t)
   memGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
   // Soft clip curve for grit
   const curve = new Float32Array(256)
@@ -1270,7 +1296,7 @@ export function playTotemSpawn(): void {
   wooshFilter.frequency.exponentialRampToValueAtTime(200, t + wooshDur)
   const wooshGain = c.createGain()
   wooshGain.gain.setValueAtTime(0.001, t)
-  wooshGain.gain.linearRampToValueAtTime(rVol(0.5), t + 0.05)
+  wooshGain.gain.linearRampToValueAtTime(rVol(0.75), t + 0.05)
   wooshGain.gain.exponentialRampToValueAtTime(0.001, t + wooshDur)
   woosh.connect(wooshFilter)
   wooshFilter.connect(wooshGain)

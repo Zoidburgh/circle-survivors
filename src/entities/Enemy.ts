@@ -7,8 +7,12 @@ import { isRunTimerActive, isRunComplete, startRunTimer } from '../core/GameStat
 import { showToast } from '../render/Renderer.ts'
 
 let leaveToastGlobalCD = 0
-export function tickLeaveToastCD(dt: number): void { if (leaveToastGlobalCD > 0) leaveToastGlobalCD -= dt }
-export function resetLeaveToastCD(): void { leaveToastGlobalCD = 0 }
+let revengeToastGlobalCD = 0
+export function tickLeaveToastCD(dt: number): void {
+  if (leaveToastGlobalCD > 0) leaveToastGlobalCD -= dt
+  if (revengeToastGlobalCD > 0) revengeToastGlobalCD -= dt
+}
+export function resetLeaveToastCD(): void { leaveToastGlobalCD = 0; revengeToastGlobalCD = 0 }
 import { clampToArena, getArenaShape, ARENA_CX, ARENA_CY } from '../game/Arena.ts'
 import { emit } from '../core/EventBus.ts'
 import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC } from '../utils/constants.ts'
@@ -691,18 +695,26 @@ export function rollDrop(enemy: Enemy): 'xp' | 'hp' | null {
 export function damageEnemy(enemy: Enemy, amount: number): void {
   if (enemy.dying || enemy.isShrine) return
   if (!isRunTimerActive() && !isRunComplete()) startRunTimer()
-  // Track hits on stationary enemies
-  if (enemy.immovable) {
+  // Track hits on stationary or revenge enemies
+  if (enemy.immovable || enemy.revenge) {
     const now = performance.now() / 1000
     enemy.recentHitTimes.push(now)
     // Keep only hits in last 6s
     while (enemy.recentHitTimes.length > 0 && enemy.recentHitTimes[0]! < now - 6) {
       enemy.recentHitTimes.shift()
     }
-    if (enemy.recentHitTimes.length >= 6 && leaveToastGlobalCD <= 0) {
+    if (enemy.immovable && enemy.recentHitTimes.length >= 6 && leaveToastGlobalCD <= 0) {
       showToast('Bro. Leave me alone.', { y: 0.14, duration: 1.5, fadeOut: 0.3, id: `leave_${now}` })
       enemy.recentHitTimes.length = 0
       leaveToastGlobalCD = 60  // 1 minute global cooldown
+    }
+    // Revenge enemy hit 3+ times in last 4s
+    if (enemy.revenge && revengeToastGlobalCD <= 0) {
+      const recent4s = enemy.recentHitTimes.filter(t => t >= now - 4).length
+      if (recent4s >= 3) {
+        showToast('We come in PEACE! But we BEATBACK!', { y: 0.14, duration: 2, size: 44, id: `revenge_peace_${now}`, color: [255, 80, 200], style: 'glow', glowWords: ['PEACE!', 'BEATBACK!'], glowColor: [255, 80, 200] })
+        revengeToastGlobalCD = 60
+      }
     }
   }
   enemy.hp -= amount

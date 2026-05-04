@@ -138,7 +138,18 @@ function loadFromStorage(): DesignedEnemy[] {
     }
     const data = JSON.parse(raw) as SaveData
     if (data.version !== SAVE_VERSION) return [] // future: migrate
-    return data.enemies ?? []
+    const stored = data.enemies ?? []
+    // Merge missing bundled enemies (don't overwrite user edits — add-if-missing only)
+    const bundled = (defaultEnemies as SaveData).enemies ?? []
+    let added = false
+    for (const be of bundled) {
+      if (!stored.find(e => e.name === be.name)) {
+        stored.push(be)
+        added = true
+      }
+    }
+    if (added) localStorage.setItem(SAVE_KEY, JSON.stringify({ version: SAVE_VERSION, enemies: stored }))
+    return stored
   } catch {
     return []
   }

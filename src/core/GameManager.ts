@@ -15,7 +15,7 @@ import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat, getLoopPosition } from '../audio/PatternClock.ts'
-import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare } from '../audio/AudioEngine.ts'
+import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth } from '../audio/AudioEngine.ts'
 import { resetProTip, showToast } from '../render/Renderer.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
 import { getScoresForChallenge, fetchOnlineScores } from '../game/HighScores.ts'
@@ -197,7 +197,7 @@ on('enemy:revenge', (enemy: Enemy) => {
 // Queue volatile explosion on death
 on('enemy:killed', () => {
   recentKills++
-  recentKillTimer = 0.5  // 0.5s window to count as "same time"
+  recentKillTimer = 0.3  // 0.3s window to count as "same time"
 })
 
 on('enemy:killed', (enemy: Enemy) => {
@@ -209,6 +209,14 @@ on('enemy:killed', (enemy: Enemy) => {
     timer: 0,
     soundPlayed: false,
   })
+  // DASH YOU FOOL — player within 200px when explosion starts, 1 min CD
+  const player = getPlayer()
+  const dx = player.x - enemy.x
+  const dy = player.y - enemy.y
+  if (dx * dx + dy * dy <= 200 * 200 && dashYouFoolCooldown <= 0) {
+    dashYouFoolCooldown = 60
+    showToast('DASH YOU FOOL!', { y: 0.14, duration: 1.5, size: 50, id: `dash_fool_${challengeElapsed}`, color: [255, 215, 64], style: 'heavy' })
+  }
 })
 
 // Pending shrine spawns — delayed by one beat
@@ -227,7 +235,7 @@ on('player:beatDash', (player: Player) => {
   if (getActiveChallenge()?.name === 'Beginner Challenge') {
     if (!firstBeatDashFired) {
       firstBeatDashFired = true
-      showToast('You did the thing!', { y: 0.14, duration: 1.5, id: 'first_beat_dash', color: [100, 255, 120] })
+      showToast('You did the thing!', { y: 0.14, duration: 1.5, size: 42, id: 'first_beat_dash', color: [100, 255, 120] })
     }
     // Track consecutive beat dashes
     const currentBeat = Math.floor(getLoopPosition())
@@ -239,7 +247,7 @@ on('player:beatDash', (player: Player) => {
     lastBeatDashBeat = currentBeat
     if (consecutiveBeatDashes === 2 && !doubleBeatDashFired) {
       doubleBeatDashFired = true
-      showToast('2 in a row?! My hero <3', { y: 0.14, duration: 2, id: 'double_beat_dash', color: [100, 255, 120] })
+      showToast('2 in a row?! My hero <3', { y: 0.14, duration: 2, id: 'double_beat_dash', color: [100, 255, 120], style: 'glow', glowWords: ['hero', '<3'], glowColor: [255, 50, 200] })
     }
   }
   const shockRadius = getEffectiveRadius(player) * 0.7 * player.modifiers.beatBlastMult
@@ -479,12 +487,28 @@ on('player:shieldBreak', () => {
     showToast('Shield Down :(', { y: 0.14, duration: 1.5, fadeOut: 0.3, id: 'shield_down', color: [255, 50, 200], style: 'sad' })
   }
 })
-on('player:shieldRestore', () => {
+on('player:shieldRestore', (player: Player) => {
   stopShieldFuseBurn()
   playShieldRestore()
   shieldRechargeCount++
   if (shieldRechargeCount <= 1 && getActiveChallenge()?.name === 'Beginner Challenge') {
-    showToast('Shield UP!', { y: 0.14, duration: 1.5, id: 'shield_up', color: [255, 50, 200], style: 'glow', glowWords: ['UP!'], glowColor: [255, 50, 200] })
+    showToast('Shield UP!', { y: 0.14, duration: 1.5, size: 42, id: 'shield_up', color: [255, 50, 200], style: 'glow', glowWords: ['UP!'], glowColor: [255, 50, 200] })
+  }
+  // Clutch shield — toast when shield activates while at 1 or 2 HP
+  if (player.hp <= 2 && clutchShieldCooldown <= 0) {
+    clutchShieldCooldown = 30
+    const msg = CLUTCH_SHIELD_TOASTS[Math.floor(Math.random() * CLUTCH_SHIELD_TOASTS.length)]!
+    showToast(msg, { y: 0.14, duration: 1.8, size: 42, id: `clutch_shield_${challengeElapsed}`, color: [255, 50, 200], style: 'wave' })
+  }
+  // Dumb and Dumber — once per challenge, shield activation at 3 HP
+  if (player.hp === 3 && !dumbAndDumberFired) {
+    dumbAndDumberFired = true
+    showToast("32.33 repeating of course, % chance of survival", { y: 0.14, duration: 4, size: 42, id: 'dumb_and_dumber', color: [255, 50, 200], style: 'normal' })
+  }
+  // Leeroy — once per challenge, shield activation at 4 HP
+  if (player.hp === 4 && !leeroyShieldFired) {
+    leeroyShieldFired = true
+    showToast("TIME'S UP. LET'S DO THIS.", { y: 0.14, duration: 2.5, size: 46, id: 'leeroy_shield', color: [255, 50, 200], style: 'heavy' })
   }
 })
 on('player:shieldRechargeReset', (player: Player) => {
@@ -502,29 +526,29 @@ on('summon:phase', (enemy: Enemy) => {
   if (chName === 'Challenge 2') {
     summonToastCount++
     if (summonToastCount === 1) {
-      showToast('MY BABIES WILL EAT YOUR HEALTH!', { y: 0.14, duration: 2, size: 38, id: 'babies', color: [255, 50, 50], style: 'combo' })
+      showToast('MY BABIES WILL EAT YOUR HEALTH!', { y: 0.14, duration: 2, size: 46, id: 'babies', color: [255, 50, 50], style: 'combo' })
     } else if (summonToastCount === 2) {
-      showToast('A lovely surprise inside!', { y: 0.14, duration: 2, id: 'lovely_surprise' })
+      showToast('A lovely surprise inside!', { y: 0.14, duration: 2, size: 42, id: 'lovely_surprise' })
     } else if (summonToastCount === 3) {
-      showToast("You can run, but you can't hide.", { y: 0.14, duration: 2, id: 'cant_hide', color: [255, 200, 220], style: 'glow', glowWords: ['run,', 'hide.'], glowColor: [255, 150, 255] })
+      showToast("You can run, but you can't hide.", { y: 0.14, duration: 2, size: 42, id: 'cant_hide', color: [255, 200, 220], style: 'glow', glowWords: ['run,', 'hide.'], glowColor: [255, 150, 255] })
     }
   }
   if (chName === 'Challenge 1') {
     summonToastCount++
     if (summonToastCount === 1) {
-      showToast('Lets GOOOO!', { y: 0.14, duration: 1.5, size: 52, id: 'lets_go', color: [255, 215, 64], style: 'combo' })
+      showToast("Let's GOOOO!", { y: 0.14, duration: 1.5, size: 62, id: 'lets_go', color: [255, 215, 64], style: 'combo' })
     } else if (summonToastCount === 2) {
-      showToast('ZIG ZAG ZOOM!', { y: 0.14, duration: 1.5, size: 44, id: 'zigzag', color: [255, 80, 80], style: 'zigzag' })
+      showToast('ZIG-ZAG-ZOOM!', { y: 0.14, duration: 1.5, size: 53, id: 'zigzag', color: [255, 80, 80], style: 'zigzag' })
     } else if (summonToastCount === 3) {
-      showToast('BOUNCY BOY TIME!', { y: 0.14, duration: 1.5, size: 44, id: 'bouncy_boy', color: [255, 160, 80], style: 'combo' })
+      showToast('BOUNCY BOY TIME!', { y: 0.14, duration: 1.5, size: 53, id: 'bouncy_boy', color: [255, 160, 80], style: 'combo' })
     } else if (summonToastCount === 4) {
-      showToast('BEEFY BOY TIME!', { y: 0.14, duration: 2, size: 52, id: 'beefy_boy', color: [0, 200, 220], style: 'heavy' })
+      showToast('BEEFY BOY TIME!', { y: 0.14, duration: 2, size: 62, id: 'beefy_boy', color: [0, 200, 220], style: 'heavy' })
     } else if (summonToastCount === 5) {
-      showToast('FIRE IN THE HOLE!', { y: 0.14, duration: 1.5, size: 44, id: 'fire_hole', color: [255, 120, 30], style: 'explosive' })
+      showToast('FIRE IN THE HOLE!', { y: 0.14, duration: 1.5, size: 53, id: 'fire_hole', color: [255, 120, 30], style: 'explosive' })
     } else if (summonToastCount === 6) {
-      showToast('HIDE YOUR HEARTS!', { y: 0.14, duration: 1.5, size: 44, id: 'hide_hearts', color: [200, 60, 180], style: 'glow', glowWords: ['HEARTS!'], glowColor: [200, 60, 180] })
+      showToast('HIDE YOUR HEARTS!', { y: 0.14, duration: 1.5, size: 53, id: 'hide_hearts', color: [200, 60, 180], style: 'glow', glowWords: ['HEARTS!'], glowColor: [200, 60, 180] })
     } else if (summonToastCount === 7) {
-      showToast('RELEASE THE KRA- CIRCLE!', { y: 0.14, duration: 2, size: 48, id: 'kraken', color: [255, 215, 64], style: 'heavy' })
+      showToast('RELEASE THE KRA- CIRCLE!', { y: 0.14, duration: 2, size: 58, id: 'kraken', color: [255, 215, 64], style: 'heavy' })
     }
   }
   const phase = enemy.summonPhases[enemy.summonCurrentPhase]
@@ -613,11 +637,49 @@ on('summon:phase', (enemy: Enemy) => {
 })
 
 let lowHpToastFired = false
+let criticalHpCooldown = 0
+const CRITICAL_HP_TOASTS = [
+  'HP IS A SUGGESTION',
+  'THIS IS FINE.',
+  'BUTTHOLE TIGHTENED',
+  'JUST DODGE BRO',
+  'MAYDAY MAYDAY',
+  'MEDIC!',
+  'MOMMY?',
+  "HE'S DYING JIM!",
+]
+let clutchShieldCooldown = 0
+let dumbAndDumberFired = false
+let leeroyShieldFired = false
+let swimmingFired = false
+let shieldUpTime = 0
+let pushHarderFired = false
+let pushingEnemy: Enemy | null = null
+let pushDuration = 0
+let pushedThisFrame: Enemy | null = null
+let heartsDeliciousCooldown = 0
+let dangerousStartFired = false
+let backFromDeadFired = false
+let lastHit1HpTime = -1
+let massExtinctionFired = false
+const explosionKillTimes: number[] = []
+let lastBouncerOnlyStart = -1
+let runRunFired = false
+let bouncyBallManFired = false
+const CLUTCH_SHIELD_TOASTS = [
+  'HE PROTEC',
+  'PHEW',
+  'BUBBLE WRAPPED',
+  'PROTECTED FRFR',
+  'SHIELD ON. APPLY DIRECTLY TO CIRCUMFERENCE.',
+  'BUBBLE HEARTH!',
+]
 let lastHitTime = 0
 let doSomethingFired = false
 let doSomethingCooldown = 0
 let noobToastFired = false
-let flyFoolsFired = false
+let vibeCodedToastFired = false
+let dashYouFoolCooldown = 0
 let boomToastFired = false
 let shieldRechargeCount = 0
 let shieldBreakCount = 0
@@ -682,12 +744,31 @@ export function resetPendingEffects(): void {
   pendingRevenges.length = 0
   pendingShrineSpawns.length = 0
   lowHpToastFired = false
+  criticalHpCooldown = 0
+  clutchShieldCooldown = 0
+  dumbAndDumberFired = false
+  leeroyShieldFired = false
+  swimmingFired = false
+  shieldUpTime = 0
+  pushHarderFired = false
+  pushingEnemy = null
+  pushDuration = 0
+  heartsDeliciousCooldown = 0
+  dangerousStartFired = false
+  backFromDeadFired = false
+  lastHit1HpTime = -1
+  massExtinctionFired = false
+  explosionKillTimes.length = 0
+  lastBouncerOnlyStart = -1
+  runRunFired = false
+  bouncyBallManFired = false
   resetDashCDToast(getActiveChallenge()?.name === 'Beginner Challenge')
   noobToastFired = false
+  vibeCodedToastFired = false
+  dashYouFoolCooldown = 0
   lastHitTime = 0
   doSomethingFired = false
   doSomethingCooldown = 0
-  flyFoolsFired = false
   boomToastFired = false
   shieldRechargeCount = 0
   shieldBreakCount = 0
@@ -867,6 +948,7 @@ export function update(dt: number): void {
 
   perfStart('U_TOTAL')
 
+  tickAudioHealth()  // auto-fix suspended AudioContext on mobile
   advanceGlobalTime(dt)
   advancePatternClock(dt)
   updatePreviewEnemy(dt)
@@ -946,14 +1028,14 @@ export function update(dt: number): void {
       showToast('WOW! Look at you GO!', { y: 0.14, duration: 1.5, id: 'double_dash', style: 'glow', glowWords: ['WOW!', 'GO!'], glowColor: [100, 255, 120] })
     }
     lastDashTime = now
-    // Leeroy — snapshot nearby enemies at dash start
+    // Leeroy — snapshot nearby enemies at dash start (narrower range, so it's easier to count as "lonely")
     if (!leroyFired) {
-      const leroyRange = 180
+      const leroyStartRange = 100
       leroyDashStartNearby = 0
       for (const e of enemies) {
         if (!e.alive || e.dying || e.summon || e.isShrine) continue
         const dx = e.x - player.x, dy = e.y - player.y
-        if (dx * dx + dy * dy <= leroyRange * leroyRange) leroyDashStartNearby++
+        if (dx * dx + dy * dy <= leroyStartRange * leroyStartRange) leroyDashStartNearby++
       }
       leroyCheckTimer = 0.5
     }
@@ -979,11 +1061,19 @@ export function update(dt: number): void {
   const hpGain = player.hp - prevPlayerHp
   if (hpGain > 0.5) {
     recentHpCollected += Math.round(hpGain)
-    recentHpTimer = 0.5
+    recentHpTimer = 0.3
     // Stayin' Alive — healed from 1 HP to 3+ in one tick
     if (prevPlayerHp === 1 && player.hp >= 3) {
       showToast("Stayin' Alive!", { y: 0.14, duration: 1.5, id: `stayin_${challengeElapsed}`, color: [255, 215, 64], style: 'wave' })
     }
+  }
+  // BACK FROM THE DEAD — hit 1 HP, then back to full within 4s
+  if (player.hp === 1 && prevPlayerHp > 1) {
+    lastHit1HpTime = challengeElapsed
+  }
+  if (!backFromDeadFired && lastHit1HpTime >= 0 && player.hp === player.maxHp && challengeElapsed - lastHit1HpTime <= 4) {
+    backFromDeadFired = true
+    showToast('BACK FROM THE DEAD!', { y: 0.14, duration: 2.5, size: 56, id: 'back_from_dead', color: [255, 215, 64], style: 'heavy' })
   }
   prevPlayerHp = player.hp
   if (recentHpTimer > 0) {
@@ -1023,7 +1113,7 @@ export function update(dt: number): void {
           'THIS ONE IS UNHINGED.',
         ]
         const msg = MEGA_COMBOS[Math.floor(Math.random() * MEGA_COMBOS.length)]!
-        showToast(msg, { y: 0.14, duration: 1.5, size: 38, id: `mega_${challengeElapsed}`, color: [255, 215, 64], style: 'combo' })
+        showToast(msg, { y: 0.14, duration: 1.5, size: 42, id: `mega_${challengeElapsed}`, color: [255, 215, 64], style: 'combo' })
       } else if (recentKills >= 3) {
         showToast('C-C-C-COMBO!', { y: 0.14, duration: 1.2, size: 48, id: `combo_${challengeElapsed}`, color: [255, 215, 64], style: 'combo' })
       }
@@ -1049,11 +1139,37 @@ export function update(dt: number): void {
     }
   }
 
+  // Bouncy ball man escalation — only 1 alive enemy and it's a bouncer, hanging on too long
+  if (isRunTimerActive()) {
+    let aliveCount = 0
+    let theBouncer: Enemy | null = null
+    for (const e of enemies) {
+      if (!e.alive || e.dying) continue
+      aliveCount++
+      if (e.movePattern === 'bounce') theBouncer = e
+    }
+    const isLastBouncerLeft = aliveCount === 1 && theBouncer !== null
+    if (isLastBouncerLeft) {
+      if (lastBouncerOnlyStart < 0) lastBouncerOnlyStart = challengeElapsed
+      const elapsed = challengeElapsed - lastBouncerOnlyStart
+      if (!runRunFired && elapsed >= 4) {
+        runRunFired = true
+        showToast('RUN, RUN, AS FAST AS YOU CAN!', { y: 0.14, duration: 3, size: 46, id: 'run_run_fast', color: [100, 255, 200], style: 'wave' })
+      }
+      if (!bouncyBallManFired && elapsed >= 5) {
+        bouncyBallManFired = true
+        showToast("CAN'T CATCH ME I'M THE BOUNCY BALL MAN!", { y: 0.19, duration: 3, size: 44, id: 'bouncy_ball_man', color: [255, 215, 64], style: 'wave' })
+      }
+    } else {
+      lastBouncerOnlyStart = -1
+    }
+  }
+
   // Leeroy — check 0.5s after dash
   if (!leroyFired && leroyCheckTimer > 0) {
     leroyCheckTimer -= dt
     if (leroyCheckTimer <= 0 && leroyDashStartNearby < 2) {
-      const leroyRange = 180
+      const leroyRange = 200
       let nearbyNow = 0
       for (const e of enemies) {
         if (!e.alive || e.dying || e.summon || e.isShrine) continue
@@ -1062,7 +1178,7 @@ export function update(dt: number): void {
       }
       if (nearbyNow >= 5) {
         leroyFired = true
-        showToast('LEEEEEEEEEEROY JEEEEEENNNNNKINSSS!!!', { y: 0.14, duration: 1.5, size: 40, id: 'leroy', color: [255, 215, 64], style: 'combo' })
+        showToast('LEEEEEEEEEEROY JEEEEEENNNNNKINSSS!!!', { y: 0.14, duration: 2.2, size: 56, id: 'leroy', color: [255, 215, 64], style: 'explosive' })
       }
     }
   }
@@ -1078,13 +1194,19 @@ export function update(dt: number): void {
   // "Still alive" toast — Challenge 1 at 45s
   if (!aliveToastFired && challengeElapsed >= 45 && getActiveChallenge()?.name === 'Beginner Challenge') {
     aliveToastFired = true
-    showToast('Still Alive. Pie not a lie.', { y: 0.14, duration: 2.5, id: 'still_alive' })
+    showToast('Still Alive. Pie not a lie.', { y: 0.14, duration: 2.5, id: 'still_alive', style: 'wave', color: [100, 255, 160] })
   }
 
-  // "NOOB" toast at 4 HP — Beginner Challenge
-  if (player.hp === 4 && !noobToastFired && getActiveChallenge()?.name === 'Beginner Challenge') {
+  // "NOOB" toast at 2:30 — Beginner Challenge
+  if (!noobToastFired && challengeElapsed >= 150 && getActiveChallenge()?.name === 'Beginner Challenge') {
     noobToastFired = true
-    showToast('Wave2:cyan: NOOB', { y: 0.14, duration: 2, id: 'noob', color: [0, 255, 255], style: 'wave' })
+    showToast('Wave2:cyan: N00B you so slow', { y: 0.14, duration: 4, id: 'noob', color: [0, 255, 255], style: 'wave' })
+  }
+
+  // 3.3 min vibe-code roast — any challenge
+  if (!vibeCodedToastFired && challengeElapsed >= 198) {
+    vibeCodedToastFired = true
+    showToast('Zzzzz...Did they vibe-code your skills?', { y: 0.14, duration: 4, id: 'vibe_coded', color: [120, 200, 255], style: 'wave' })
   }
 
   // "You missed step 2" — Challenge 1, node sequence resets after 1 hit
@@ -1164,7 +1286,7 @@ export function update(dt: number): void {
       } else if (missedStep3Count === 4) {
         showToast("I'm not mad, just disappointed.", { y: 0.14, duration: 2.5, id: 'missed_step3_4' })
       } else if (missedStep3Count === 5) {
-        showToast('Momma knows you can do it!', { y: 0.14, duration: 2.5, size: 40, id: 'missed_step3_5', color: [255, 50, 200], style: 'combo' })
+        showToast('Momma knows you can do it!', { y: 0.14, duration: 2.5, size: 42, id: 'missed_step3_5', color: [255, 50, 200], style: 'combo' })
       }
     }
   }
@@ -1174,25 +1296,50 @@ export function update(dt: number): void {
     if (e.summon) prevSummonProgress.set(e, e.summonProgress)
   }
 
-  // "Fly, you fools!" — 2 HP with 5+ enemies nearby
-  if (!flyFoolsFired && player.hp <= 3) {
-    const flyRange = 250
-    let nearbyCount = 0
-    for (const e of enemies) {
-      if (!e.alive || e.dying || e.summon || e.isShrine) continue
-      const dx = e.x - player.x, dy = e.y - player.y
-      if (dx * dx + dy * dy <= flyRange * flyRange) nearbyCount++
-    }
-    if (nearbyCount >= 6) {
-      flyFoolsFired = true
-      showToast('Fly, you fools!', { y: 0.14, duration: 1.5, size: 38, id: 'fly_fools', color: [255, 50, 50], style: 'glow', glowWords: ['Fly,'], glowColor: [255, 50, 50] })
-    }
-  }
 
   // Low HP toast — Beginner Challenge (once per attempt)
   if (player.hp === 2 && !lowHpToastFired && getActiveChallenge()?.name === 'Beginner Challenge') {
     lowHpToastFired = true
     showToast('AHHH 2-HP maybe dash away?', { y: 0.14, id: 'low_hp', style: 'glow', glowWords: ['AHHH', '2-HP'], glowColor: [255, 50, 50] })
+  }
+
+  // Dangerous start — player drops to 4 HP within first 15s
+  if (!dangerousStartFired && player.hp <= 3 && challengeElapsed <= 12) {
+    dangerousStartFired = true
+    const startMsgs = ['DANGEROUS START!', 'Half HP Already?!']
+    const msg = startMsgs[Math.floor(Math.random() * startMsgs.length)]!
+    showToast(msg, { y: 0.14, duration: 2, size: 50, id: 'dangerous_start', color: [255, 80, 60], style: 'heavy' })
+  }
+
+  // Critical HP toast — fires at 1 HP, 40s cooldown
+  if (criticalHpCooldown > 0) criticalHpCooldown -= dt
+  if (clutchShieldCooldown > 0) clutchShieldCooldown -= dt
+  if (heartsDeliciousCooldown > 0) heartsDeliciousCooldown -= dt
+  if (dashYouFoolCooldown > 0) dashYouFoolCooldown -= dt
+
+  // Track shield-up duration for swimming toast
+  if (player.shieldCharges > 0) shieldUpTime += dt
+  else shieldUpTime = 0
+  if (!swimmingFired && shieldUpTime >= 10 && player.hp === 5) {
+    swimmingFired = true
+    showToast('Just Keep Swimming, Just Keep Swimming', { y: 0.14, duration: 3.5, size: 42, id: 'just_keep_swimming', color: [100, 200, 255], style: 'wave' })
+  }
+
+  // Push harder — pushing the same heavy enemy/totem for 3.5s
+  if (pushedThisFrame && pushedThisFrame === pushingEnemy) {
+    pushDuration += dt
+  } else {
+    pushingEnemy = pushedThisFrame
+    pushDuration = 0
+  }
+  if (!pushHarderFired && pushDuration >= 2.5) {
+    pushHarderFired = true
+    showToast('PUSH HARDER BOZO!', { y: 0.14, duration: 1.8, size: 46, id: 'push_harder', color: [255, 215, 64], style: 'heavy' })
+  }
+  if (player.hp === 1 && criticalHpCooldown <= 0) {
+    criticalHpCooldown = 40
+    const msg = CRITICAL_HP_TOASTS[Math.floor(Math.random() * CRITICAL_HP_TOASTS.length)]!
+    showToast(msg, { y: 0.14, duration: 1.6, size: 42, id: `critical_hp_${challengeElapsed}`, color: [255, 80, 80], style: 'glow', glowWords: msg.split(' '), glowColor: [255, 80, 80] })
   }
   } // end skipToasts
 
@@ -1229,6 +1376,7 @@ export function update(dt: number): void {
       // Consume: eat orbs at ring peak, heal source enemy
       if (pr.consume) {
         const allOrbs = getOrbs()
+        let hpEatenThisRing = 0
         for (const orb of allOrbs) {
           if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
           for (const origin of pr.origins) {
@@ -1241,10 +1389,15 @@ export function update(dt: number): void {
                 pr.enemy.hp = Math.min(pr.enemy.hp + 1, pr.enemy.maxHp)
               }
               const isHP = orb.orbType === 'hp'
+              if (isHP) hpEatenThisRing++
               Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 140 : 255, isHP ? 140 : 200, pr.enemy.x, pr.enemy.y)
               break  // one origin per orb
             }
           }
+        }
+        if (hpEatenThisRing >= 2 && heartsDeliciousCooldown <= 0) {
+          heartsDeliciousCooldown = 30
+          showToast("Your hearts are DELICIOUS!", { y: 0.14, duration: 2.5, size: 42, id: `hearts_delicious_${challengeElapsed}`, color: [255, 60, 80], style: 'wave' })
         }
       }
       pendingRevenges[i] = pendingRevenges[pendingRevenges.length - 1]!
@@ -1262,9 +1415,8 @@ export function update(dt: number): void {
       exp.soundPlayed = true
       playVolatileExplosion()
     }
-    // Detonate after exactly 1 second
-    if (exp.timer >= BEAT_SEC && !boomToastFired && getActiveChallenge()?.name === 'Beginner Challenge') {
-      boomToastFired = true
+    // Detonate after exactly 1 second — BOOM toast fires on every explosion in Beginner
+    if (exp.timer >= BEAT_SEC && getActiveChallenge()?.name === 'Beginner Challenge') {
       showToast('BOOM!', { y: 0.14, duration: 1.0, size: 56, id: 'boom', color: [255, 120, 30], style: 'combo' })
     }
     if (exp.timer >= BEAT_SEC) {
@@ -1310,6 +1462,7 @@ export function update(dt: number): void {
           // Spawn orbs if killed by explosion
           if (enemy.dying && !wasDying) {
             spawnDrops(enemy, 1, spawnOrb)
+            explosionKillTimes.push(challengeElapsed)
           }
         }
       }
@@ -1330,6 +1483,18 @@ export function update(dt: number): void {
   }
   // Pass pending to renderer for buildup visuals
   setPendingExplosions(pendingExplosions)
+
+  // MASS EXTINCTION EVENT — 10+ enemies killed by explosions within a 5s window
+  if (!massExtinctionFired && explosionKillTimes.length > 0) {
+    const cutoff = challengeElapsed - 5
+    while (explosionKillTimes.length > 0 && explosionKillTimes[0]! < cutoff) {
+      explosionKillTimes.shift()
+    }
+    if (explosionKillTimes.length >= 10) {
+      massExtinctionFired = true
+      showToast('MASS EXTINCTION EVENT', { y: 0.14, duration: 2.8, size: 56, id: 'mass_extinction', color: [255, 215, 64], style: 'explosive' })
+    }
+  }
 
   for (const enemy of enemies) {
     updateDeath(enemy, dt)
@@ -1528,6 +1693,7 @@ export function update(dt: number): void {
     }
 
     // Player vs enemies + orbs
+    pushedThisFrame = null
     for (const enemy of enemies) {
       if (!enemy.alive || enemy.dying || enemy.isShrine) continue
       const minDist = enemy.radius + player.hitRadius
@@ -1539,6 +1705,7 @@ export function update(dt: number): void {
         const nx = dx / dist
         const ny = dy / dist
         if (enemy.immovable) {
+          pushedThisFrame = enemy
           // Player pushes heavy enemy a little (15%), player takes the rest
           enemy.x -= nx * overlap * 0.15
           enemy.y -= ny * overlap * 0.15
