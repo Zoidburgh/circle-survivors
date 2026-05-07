@@ -1,7 +1,8 @@
 // Arena — fixed play area with Brotato-style camera
 // Supports rectangle and circle shapes
 
-import { ARENA_BUFFER, CAMERA_LEAD_AMOUNT } from '../utils/constants.ts'
+import { ARENA_BUFFER, CAMERA_LEAD_AMOUNT, PLAYER_RADIUS } from '../utils/constants.ts'
+import type { Enemy } from '../entities/Enemy.ts'
 
 export type ArenaShape = 'rect' | 'circle' | 'hex' | 'pill' | 'cross'
 
@@ -268,6 +269,36 @@ export function clampToArena(x: number, y: number, radius: number): { x: number;
     x: Math.max(radius, Math.min(ARENA_W - radius, x)),
     y: Math.max(radius, Math.min(ARENA_H - radius, y)),
   }
+}
+
+/** Push a candidate spawn position away from immovable enemies and the player. */
+export function findClearSpawnPos(x: number, y: number, radius: number, enemies: Enemy[], player: { x: number; y: number }): { x: number; y: number } {
+  let sx = x, sy = y
+  for (let pass = 0; pass < 3; pass++) {
+    for (const enemy of enemies) {
+      if (!enemy.alive || enemy.dying) continue
+      if (!enemy.immovable) continue
+      const dx = sx - enemy.x
+      const dy = sy - enemy.y
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      const minDist = radius + enemy.radius + 2
+      if (dist < minDist && dist > 0.1) {
+        const overlap = minDist - dist
+        sx += (dx / dist) * overlap
+        sy += (dy / dist) * overlap
+      }
+    }
+    const pdx = sx - player.x
+    const pdy = sy - player.y
+    const pDist = Math.sqrt(pdx * pdx + pdy * pdy)
+    const pMin = radius + PLAYER_RADIUS + 2
+    if (pDist < pMin && pDist > 0.1) {
+      const overlap = pMin - pDist
+      sx += (pdx / pDist) * overlap
+      sy += (pdy / pDist) * overlap
+    }
+  }
+  return clampToArena(sx, sy, radius)
 }
 
 /** Get a random spawn position inside the arena, min distance from player */

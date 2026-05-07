@@ -37,6 +37,11 @@ export interface EnemyType {
   revenge?: boolean                 // fires rings on next beat after being hit
   revengeRings?: number             // how many rings fire (default: 4)
   revengeRadius?: number            // ring attack radius (default: 120)
+  dodge?: boolean                   // intelligently dodges player rings via charged sidesteps
+  dodgeCharges?: number             // number of dodge orbs (default: 2)
+  dodgeChargeTime?: number          // seconds to recharge one slot (default: 1.5)
+  dodgeDistance?: number            // how far each dodge moves (default: 100)
+  dodgeSpeed?: number               // burst speed multiplier (default: 1.0)
   summon?: boolean                  // has orbiting ritual nodes, phased spawning
   summonNodes?: number              // how many nodes (3 = triangle, 5 = pentagon, default 3)
   summonPhases?: SummonPhase[]      // each phase = one completed sequence, spawns enemies

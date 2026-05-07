@@ -5,15 +5,16 @@ import { getSpawnPanelClick } from './render/Renderer.ts'
 import * as Audio from './audio/AudioEngine.ts'
 import { createEnemy } from './entities/Enemy.ts'
 import { ENEMY_TYPES } from './entities/EnemyTypes.ts'
-import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameState, getRunFinalTime } from './core/GameState.ts'
-import { update, render } from './core/GameManager.ts'
+import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameState, getRunFinalTime, enterDesigner, exitDesigner, getDesignerReturnPhase, setDesignerPrevArenaShape, getDesignerPrevArenaShape, setInDesignerTestPlay, isInDesignerTestPlay, getCamera } from './core/GameState.ts'
+import { update, render, clearDesignerEphemerals } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
-import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, onStartChallenge } from './game/EnemyDesigner.ts'
+import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, onStartChallenge, onTestPlay } from './game/EnemyDesigner.ts'
 import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd, startIrisTransition, startIrisOpen, isIrisActive, cycleProTip, getCsSelectedIndex, setCsSelectedIndex, navigateChallenge, showToast, isPortalClick, resetVictoryScroll } from './render/Renderer.ts'
 import { setVolume } from './audio/AudioEngine.ts'
 import { submitScore, isNameClean, fetchOnlineScores } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
-import { setArenaShape } from './game/Arena.ts'
+import { setArenaShape, getArenaShape, clampToArena } from './game/Arena.ts'
+import type { ArenaShape } from './game/Arena.ts'
 import { setPattern, getPattern } from './audio/PatternClock.ts'
 import { SONG_DEFAULT } from './audio/SongPatterns.ts'
 import { getSpawnPos } from './game/Arena.ts'
@@ -86,7 +87,42 @@ setLeaderboardUrl('https://beatback-leaderboard.pohling777.workers.dev')
 
 let lastChallenge: Challenge | null = null
 
-import { setActiveChallenge, getActiveChallenge, getChallenges } from './game/ChallengeBuilder.ts'
+import { setActiveChallenge, getActiveChallenge, getChallenges, getChallengeArena } from './game/ChallengeBuilder.ts'
+import * as ChallengeBuilderMod from './game/ChallengeBuilder.ts'
+
+function launchTestPlay(): void {
+  setInDesignerTestPlay(true)
+  clearDesignerEphemerals()
+  ChallengeBuilderMod.exitPlaceMode()
+  ChallengeBuilderMod.clearSelection()
+  const placements = ChallengeBuilderMod.getPlacingEnemies()
+  const arena = getChallengeArena()
+  ensureAudio()
+  resetGameState('playing')
+  setArenaShape(arena as ArenaShape)
+  for (const ce of placements) {
+    const type = ENEMY_TYPES.find(t => t.name === ce.typeName)
+    if (type) getEnemies().push(createEnemy(ce.x, ce.y, type))
+  }
+  Audio.startShieldFuseBurn(getPlayer().shieldRechargeTime)
+}
+
+function returnFromRun(): void {
+  if (isInDesignerTestPlay()) {
+    setInDesignerTestPlay(false)
+    clearDesignerEphemerals()
+    const prevReturn = getDesignerReturnPhase()
+    resetGameState('designer')
+    enterDesigner(prevReturn)
+    setArenaShape(getChallengeArena() as ArenaShape)
+    const p = getPlayer()
+    const c = clampToArena(p.x, p.y, p.hitRadius)
+    p.x = c.x; p.y = c.y
+  } else {
+    resetGameState()
+    setPhase('challenge_select')
+  }
+}
 
 function launchChallenge(ch: Challenge): void {
   if (lastChallenge?.name !== ch.name) challengeRetries = 0
@@ -149,6 +185,8 @@ function restartChallenge(): void {
 }
 
 // Challenge start handler
+onTestPlay(() => launchTestPlay())
+
 onStartChallenge((ch: Challenge) => {
   lastChallenge = ch
   ensureAudio()
@@ -198,6 +236,32 @@ function startGame(): void {
 }
 
 window.addEventListener('keydown', e => {
+  // Designer scene toggle (L). Tab still toggles the panel UI separately.
+  if (e.key === 'l' || e.key === 'L') {
+    if (getPhase() === 'designer') {
+      clearDesignerEphemerals()
+      const prev = getDesignerPrevArenaShape()
+      if (prev) setArenaShape(prev as ArenaShape)
+      setDesignerPrevArenaShape(null)
+      const p = getPlayer()
+      const c = clampToArena(p.x, p.y, p.hitRadius)
+      p.x = c.x; p.y = c.y
+      const back = getDesignerReturnPhase()
+      exitDesigner()
+      setPhase(back)
+      return
+    }
+    if (getPhase() !== 'playing' && getPhase() !== 'entering_name') {
+      if (!audioStarted) { ensureAudio(); Audio.switchBeat(0) }
+      setDesignerPrevArenaShape(getArenaShape())
+      setArenaShape(getChallengeArena() as ArenaShape)
+      const p = getPlayer()
+      const c = clampToArena(p.x, p.y, p.hitRadius)
+      p.x = c.x; p.y = c.y
+      enterDesigner(getPhase())
+      return
+    }
+  }
   if (getPhase() === 'title') {
     if (!audioStarted) {
       ensureAudio()
@@ -225,6 +289,21 @@ window.addEventListener('keydown', e => {
       setNameEntryText(getNameEntryText() + e.key)
     }
     e.preventDefault()
+    return
+  }
+  // Designer: Escape clears placement selection / exits place mode
+  if (getPhase() === 'designer' && e.key === 'Escape') {
+    if (ChallengeBuilderMod.getSelectedPlacement() >= 0) {
+      ChallengeBuilderMod.clearSelection()
+    }
+    if (ChallengeBuilderMod.isPlaceMode()) {
+      ChallengeBuilderMod.exitPlaceMode()
+    }
+    return
+  }
+  // Test Play: Escape cancels back to designer (skips pause)
+  if (isInDesignerTestPlay() && getPhase() === 'playing' && e.key === 'Escape') {
+    returnFromRun()
     return
   }
   // Pause toggle
@@ -272,8 +351,7 @@ window.addEventListener('keydown', e => {
     if (e.key === 'r' || e.key === 'R') {
       restartChallenge()
     } else if (e.key === 'Escape') {
-      resetGameState()
-      setPhase('challenge_select')
+      returnFromRun()
     }
     // Don't let Space/Enter skip the victory leaderboard immediately
     return
@@ -283,8 +361,7 @@ window.addEventListener('keydown', e => {
     if (e.key === 'r' || e.key === 'R') {
       restartChallenge()
     } else if (e.key === 'Escape') {
-      resetGameState()
-      setPhase('challenge_select')
+      returnFromRun()
     }
     return
   }
@@ -297,6 +374,10 @@ window.addEventListener('keydown', e => {
   if (!__DEV__) return  // no debug keys in release
   if (e.key === '`' || e.key === '~') {
     Renderer.toggleSpawnPanel()
+    return
+  }
+  if (e.key === '\\') {
+    Renderer.toggleDebugOverlay()
     return
   }
   // F1-F5: switch beat presets
@@ -396,6 +477,29 @@ canvas.addEventListener('pointerdown', e => {
   const p = screenToCanvas(e.clientX, e.clientY)
   if (e.pointerType === 'touch') Input.notifyTouchInput()
   dismissAddToHomeMessage()
+  // Designer: suppress dash if this click is for placement/selection (so player still dashes
+  // when clicking empty arena to test interactions with spawn-test enemies).
+  if (getPhase() === 'designer' && e.button === 0) {
+    if (ChallengeBuilderMod.isPlaceMode() || ChallengeBuilderMod.getSelectedPlacement() >= 0) {
+      Input.suppressLeftClick()
+    } else {
+      // Hit test placements: if clicking on an existing ghost, suppress dash too
+      const placements = ChallengeBuilderMod.getPlacingEnemies()
+      const cam = getCamera()
+      const wx = p.x + cam.x - canvas.width / 2
+      const wy = p.y + cam.y - canvas.height / 2
+      for (const pl of placements) {
+        const type = ENEMY_TYPES.find(t => t.name === pl.typeName)
+        const r = type?.radius ?? 40
+        const dx = wx - pl.x
+        const dy = wy - pl.y
+        if (dx * dx + dy * dy < r * r) {
+          Input.suppressLeftClick()
+          break
+        }
+      }
+    }
+  }
   if (isRunComplete()) {
     handleVictoryScrollDragStart(p.x, p.y)
     if (e.pointerType === 'touch') touchScrollStart(p.y)
@@ -486,8 +590,7 @@ canvas.addEventListener('click', e => {
         restartChallenge()
       } else if (c.x >= menuX && c.x <= menuX + vBtnW) {
         Audio.playUIClick()
-        resetGameState()
-        setPhase('challenge_select')
+        returnFromRun()
       }
     }
     // Next challenge arrow — right side
@@ -527,8 +630,7 @@ canvas.addEventListener('click', e => {
         restartChallenge()
       } else if (c.y >= menuBtnY && c.y <= menuBtnY + btnH) {
         Audio.playUIClick()
-        resetGameState()
-        setPhase('challenge_select')
+        returnFromRun()
       } else if (c.y >= fsBtnY && c.y <= fsBtnY + btnH) {
         toggleFullscreen()
       }
@@ -568,8 +670,7 @@ canvas.addEventListener('click', e => {
         restartChallenge()
       } else if (c.x >= menuX && c.x <= menuX + btnW) {
         Audio.playUIClick()
-        resetGameState()
-        setPhase('challenge_select')
+        returnFromRun()
       }
     }
     // Pro tip arrows — flanking the "PRO TIP:" heading

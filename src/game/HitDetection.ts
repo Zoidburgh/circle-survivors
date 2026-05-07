@@ -1,5 +1,5 @@
 import { on, emit } from '../core/EventBus.ts'
-import { getPlayer, getGrid, getEnemies } from '../core/GameState.ts'
+import { getPlayer, getGrid, getEnemies, isDesignerSafe } from '../core/GameState.ts'
 import { getEffectiveRadius, hurtPlayer } from '../entities/Player.ts'
 import { damageEnemy, getRingOrigins, spawnDrops } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
@@ -273,7 +273,7 @@ export function initHitDetection(): void {
       // Check occlusion from first origin (approximation)
       const arcs = getBlockedArcs(origins[0]!.x, origins[0]!.y, ringRadius, getEnemies(), enemy)
       const blocked = isTargetBlocked(origins[0]!.x, origins[0]!.y, player.x, player.y, arcs)
-      if (!blocked) {
+      if (!blocked && !isDesignerSafe()) {
         if (hurtPlayer(player, enemy.damage)) playPlayerHit()
       }
     }

@@ -32,7 +32,8 @@ function parsePhaseString(str: string): ShrinePhase {
 }
 import type { SongPattern } from '../audio/SongPatterns.ts'
 import { setPattern, getPattern, getLoopPosition, getLoopLength } from '../audio/PatternClock.ts'
-import { getPlayer, getEnemies } from '../core/GameState.ts'
+import { getPlayer, getEnemies, getPhase } from '../core/GameState.ts'
+import { findClearSpawnPos } from '../game/Arena.ts'
 import { createEnemy } from '../entities/Enemy.ts'
 import { getSpawnPos } from './Arena.ts'
 import { playEnemyBeatTick } from '../audio/AudioEngine.ts'
@@ -251,6 +252,11 @@ export interface PreviewEnemy {
   revenge: boolean
   revengeRings: number
   revengeRadius: number
+  dodge: boolean
+  dodgeCharges: number
+  dodgeChargeTime: number
+  dodgeDistance: number
+  dodgeSpeed: number
   totemSpawn: string
   isShrine: boolean
   shrineSpawnEnemy: string
@@ -262,10 +268,12 @@ let previewEnemy: PreviewEnemy | null = null
 
 let enemySectionExpanded = true
 let startChallengeCallback: ((ch: Challenge) => void) | null = null
+let testPlayCallback: (() => void) | null = null
 export let challengeCanvasClick: ((x: number, y: number) => boolean) | null = null
 export let challengeCanvasMouseMove: ((x: number, y: number) => void) | null = null
 export let challengeCanvasMouseUp: (() => void) | null = null
 export function onStartChallenge(cb: (ch: Challenge) => void): void { startChallengeCallback = cb }
+export function onTestPlay(cb: () => void): void { testPlayCallback = cb }
 
 export function getPreviewEnemy(): PreviewEnemy | null {
   return visible && enemySectionExpanded ? previewEnemy : null
@@ -333,6 +341,39 @@ export function getDesignedEnemies(): DesignedEnemy[] {
   return designedEnemies
 }
 
+function spawnTestEnemy(typeName: string): void {
+  const type = ENEMY_TYPES.find(t => t.name === typeName)
+  if (!type) return
+  const player = getPlayer()
+  const angle = Math.random() * Math.PI * 2
+  const dist = 220 + Math.random() * 100
+  const sx = player.x + Math.cos(angle) * dist
+  const sy = player.y + Math.sin(angle) * dist
+  const radius = (type as any).radius ?? 40
+  const pos = findClearSpawnPos(sx, sy, radius, getEnemies(), player)
+  const e = createEnemy(pos.x, pos.y, type)
+  e.designerEphemeral = true
+  getEnemies().push(e)
+}
+
+function clearTestEnemies(): void {
+  const enemies = getEnemies()
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    if (enemies[i]!.designerEphemeral) enemies.splice(i, 1)
+  }
+}
+
+function rebuildSpawnStrip(container: HTMLDivElement): void {
+  container.innerHTML = ''
+  for (const t of ENEMY_TYPES) {
+    const btn = document.createElement('button')
+    btn.textContent = t.name
+    btn.style.cssText = `padding:3px 7px;cursor:pointer;background:${t.color}22;border:1px solid ${t.color}66;color:${t.color};font:9px monospace;border-radius:2px;`
+    btn.addEventListener('click', () => spawnTestEnemy(t.name))
+    container.appendChild(btn)
+  }
+}
+
 export function toggleDesigner(): void {
   visible = !visible
   if (panel) panel.style.display = visible ? 'block' : 'none'
@@ -360,6 +401,15 @@ export function initDesigner(): void {
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
       <span style="color:#4FC3F7;font-size:16px;font-weight:bold;">Workshop</span>
       <span id="ed-close" style="cursor:pointer;color:#666;font-size:18px;">✕</span>
+    </div>
+
+    <!-- Spawn-Test strip (designer scene only) -->
+    <div style="margin-bottom:10px;padding:6px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08);border-radius:4px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+        <span style="color:#888;font:10px monospace;">Spawn-Test (designer only)</span>
+        <button id="ed-st-clear" style="padding:2px 8px;cursor:pointer;background:rgba(255,80,80,0.1);border:1px solid rgba(255,80,80,0.2);color:#FF5252;font:9px monospace;border-radius:2px;">Clear</button>
+      </div>
+      <div id="ed-st-strip" style="display:flex;flex-wrap:wrap;gap:3px;"></div>
     </div>
 
     <!-- Enemy Designer Section -->
@@ -397,7 +447,7 @@ export function initDesigner(): void {
     </div>
     <div id="ed-challenge-body" style="display:none;">
       <div style="display:flex;gap:6px;margin-bottom:6px;">
-        <input id="ed-ch-name" type="text" value="Challenge 1" placeholder="Challenge name" style="flex:1;padding:4px 6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
+        <input id="ed-ch-name" type="text" value="new_challenge" placeholder="Challenge name" style="flex:1;padding:4px 6px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
         <select id="ed-ch-arena" style="padding:4px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;">
           <option value="rect">Rect</option>
           <option value="circle" selected>Circle</option>
@@ -407,7 +457,7 @@ export function initDesigner(): void {
         </select>
       </div>
       <div style="margin-bottom:6px;">
-        <span style="color:#aaa;font:10px monospace;">Click enemy type below, then click arena to place:</span>
+        <span style="color:#aaa;font:10px monospace;">Pick a type → click arena to place. Click an existing ghost to select; drag to move; Delete to remove.</span>
       </div>
       <div id="ed-ch-types" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;"></div>
       <div style="display:flex;gap:4px;margin-bottom:6px;">
@@ -417,6 +467,7 @@ export function initDesigner(): void {
       <div id="ed-ch-placements" style="margin-bottom:6px;font:10px monospace;color:#888;"></div>
       <div style="display:flex;gap:4px;">
         <button id="ed-ch-save" style="flex:1;padding:6px;cursor:pointer;background:rgba(255,215,64,0.15);border:1px solid rgba(255,215,64,0.3);color:#FFD740;font:11px monospace;border-radius:3px;">Save Challenge</button>
+        <button id="ed-ch-testplay" style="flex:1;padding:6px;cursor:pointer;background:rgba(79,195,247,0.15);border:1px solid rgba(79,195,247,0.3);color:#4FC3F7;font:11px monospace;border-radius:3px;">▶ Test Play</button>
         <button id="ed-ch-play" style="flex:1;padding:6px;cursor:pointer;background:rgba(100,255,120,0.15);border:1px solid rgba(100,255,120,0.3);color:#64FF78;font:11px monospace;border-radius:3px;">Play</button>
       </div>
       <div id="ed-ch-list" style="margin-top:8px;border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;"></div>
@@ -432,6 +483,11 @@ export function initDesigner(): void {
   panel.querySelector('#ed-add')!.addEventListener('click', () => addEnemyForm())
   panel.querySelector('#ed-export')!.addEventListener('click', () => exportEnemies())
   panel.querySelector('#ed-import')!.addEventListener('click', importEnemies)
+
+  // Spawn-Test strip
+  const spawnStrip = panel.querySelector('#ed-st-strip') as HTMLDivElement
+  rebuildSpawnStrip(spawnStrip)
+  panel.querySelector('#ed-st-clear')!.addEventListener('click', () => clearTestEnemies())
 
   // Collapsible enemy section
   const enemyBody = panel.querySelector('#ed-enemy-body') as HTMLDivElement
@@ -478,7 +534,12 @@ export function initDesigner(): void {
       btn.textContent = type.name
       btn.style.cssText = `padding:3px 8px;cursor:pointer;background:${ChallengeBuilder.getPlaceTypeName() === type.name ? 'rgba(255,215,64,0.3)' : 'rgba(255,255,255,0.05)'};border:1px solid ${ChallengeBuilder.getPlaceTypeName() === type.name ? 'rgba(255,215,64,0.5)' : 'rgba(255,255,255,0.15)'};color:${type.color};font:10px monospace;border-radius:3px;`
       btn.addEventListener('click', () => {
-        ChallengeBuilder.setPlaceMode(type.name)
+        // Toggle: clicking the active type exits place mode
+        if (ChallengeBuilder.isPlaceMode() && ChallengeBuilder.getPlaceTypeName() === type.name) {
+          ChallengeBuilder.exitPlaceMode()
+        } else {
+          ChallengeBuilder.setPlaceMode(type.name)
+        }
         rebuildChTypeButtons()
       })
       chTypesDiv.appendChild(btn)
@@ -575,6 +636,10 @@ export function initDesigner(): void {
     }
   })
 
+  panel.querySelector('#ed-ch-testplay')!.addEventListener('click', () => {
+    testPlayCallback?.()
+  })
+
   ChallengeBuilder.loadFromStorage()
   rebuildChTypeButtons()
   rebuildChPlacements()
@@ -582,17 +647,27 @@ export function initDesigner(): void {
 
   // Expose click handler for canvas placement
   challengeCanvasClick = (screenX: number, screenY: number) => {
-    if (!ChallengeBuilder.isPlaceMode()) return false
+    if (getPhase() !== 'designer') return false
     if (!chExpanded) return false
-    // Try to select existing first
+    // If a ghost is currently being moved, click drops it (deselect — its position
+    // already follows the cursor via mouse-move).
+    if (ChallengeBuilder.getSelectedPlacement() >= 0) {
+      ChallengeBuilder.clearSelection()
+      rebuildChPlacements()
+      return true
+    }
+    // Otherwise, try to pick up an existing ghost
     if (ChallengeBuilder.selectPlacement(screenX, screenY)) {
       rebuildChPlacements()
       return true
     }
-    // Place new
-    ChallengeBuilder.placeEnemy(screenX, screenY)
-    rebuildChPlacements()
-    return true
+    // Or place a new one (if a type button is active)
+    if (ChallengeBuilder.isPlaceMode()) {
+      ChallengeBuilder.placeEnemy(screenX, screenY)
+      rebuildChPlacements()
+      return true
+    }
+    return false
   }
   challengeCanvasMouseMove = (screenX: number, screenY: number) => {
     if (ChallengeBuilder.getSelectedPlacement() >= 0) {
@@ -608,6 +683,15 @@ export function initDesigner(): void {
       e.preventDefault()
       toggleDesigner()
     }
+    // Delete/Backspace removes the currently selected placement
+    if ((e.key === 'Delete' || e.key === 'Backspace') && ChallengeBuilder.getSelectedPlacement() >= 0) {
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) return
+      const sel = ChallengeBuilder.getSelectedPlacement()
+      ChallengeBuilder.removeEnemy(sel)
+      rebuildChPlacements()
+      e.preventDefault()
+    }
   })
 
   // Restore saved enemies
@@ -621,8 +705,9 @@ export function initDesigner(): void {
   }
   if (saved.length > 0) rebuildPattern()
 
-  // Rebuild challenge type buttons now that enemies are loaded
+  // Rebuild challenge type buttons + spawn-test strip now that enemies are loaded
   rebuildChTypeButtons()
+  rebuildSpawnStrip(spawnStrip)
 }
 
 let enemyCounter = 0
@@ -725,6 +810,10 @@ function addEnemyForm(existing?: DesignedEnemy): void {
             <span style="color:#FF5252;font:11px monospace;">Revenge</span>
           </label>
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input id="ed-dodge-${id}" type="checkbox" ${existing?.dodge ? 'checked' : ''}>
+            <span style="color:#4FC3F7;font:11px monospace;">Dodge</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
             <input id="ed-summon-${id}" type="checkbox" ${existing?.summon ? 'checked' : ''}>
             <span style="color:#FFD740;font:11px monospace;">Summon</span>
           </label>
@@ -753,6 +842,14 @@ function addEnemyForm(existing?: DesignedEnemy): void {
           <div style="display:flex;gap:6px;">
             <div style="flex:1;"><span style="color:#FF5252;font:9px monospace;">Rings: <span id="ed-revenge-rings-val-${id}">${existing?.revengeRings ?? 4}</span></span><input id="ed-revenge-rings-${id}" type="range" min="1" max="8" step="1" value="${existing?.revengeRings ?? 4}" style="width:100%;"></div>
             <div style="flex:1;"><span style="color:#FF5252;font:9px monospace;">Range: <span id="ed-revenge-radius-val-${id}">${existing?.revengeRadius ?? 120}</span></span><input id="ed-revenge-radius-${id}" type="range" min="60" max="300" step="10" value="${existing?.revengeRadius ?? 120}" style="width:100%;"></div>
+          </div>
+        </div>
+        <div id="ed-dodge-wrap-${id}" style="margin-top:4px;display:${existing?.dodge ? 'block' : 'none'};">
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:80px;"><span style="color:#4FC3F7;font:9px monospace;">Charges: <span id="ed-dodge-charges-val-${id}">${existing?.dodgeCharges ?? 2}</span></span><input id="ed-dodge-charges-${id}" type="range" min="1" max="5" step="1" value="${existing?.dodgeCharges ?? 2}" style="width:100%;"></div>
+            <div style="flex:1;min-width:80px;"><span style="color:#4FC3F7;font:9px monospace;">CD: <span id="ed-dodge-cd-val-${id}">${existing?.dodgeChargeTime ?? 1.5}</span>s</span><input id="ed-dodge-cd-${id}" type="range" min="0.5" max="6" step="0.1" value="${existing?.dodgeChargeTime ?? 1.5}" style="width:100%;"></div>
+            <div style="flex:1;min-width:80px;"><span style="color:#4FC3F7;font:9px monospace;">Dist: <span id="ed-dodge-dist-val-${id}">${existing?.dodgeDistance ?? 100}</span></span><input id="ed-dodge-dist-${id}" type="range" min="40" max="300" step="10" value="${existing?.dodgeDistance ?? 100}" style="width:100%;"></div>
+            <div style="flex:1;min-width:80px;"><span style="color:#4FC3F7;font:9px monospace;">Speed: <span id="ed-dodge-speed-val-${id}">${existing?.dodgeSpeed ?? 1}</span>x</span><input id="ed-dodge-speed-${id}" type="range" min="0.3" max="3" step="0.1" value="${existing?.dodgeSpeed ?? 1}" style="width:100%;"></div>
           </div>
         </div>
         <div id="ed-summon-wrap-${id}" style="margin-top:4px;display:${existing?.summon ? 'block' : 'none'};">
@@ -1018,6 +1115,25 @@ function addEnemyForm(existing?: DesignedEnemy): void {
   revengeRingsInput.addEventListener('input', () => { revengeRingsVal.textContent = revengeRingsInput.value })
   revengeRadiusInput.addEventListener('input', () => { revengeRadiusVal.textContent = revengeRadiusInput.value })
 
+  // Dodge checkbox toggles sliders
+  const dodgeCheckbox = body.querySelector(`#ed-dodge-${id}`) as HTMLInputElement
+  const dodgeWrap = body.querySelector(`#ed-dodge-wrap-${id}`) as HTMLDivElement
+  const dodgeChargesInput = body.querySelector(`#ed-dodge-charges-${id}`) as HTMLInputElement
+  const dodgeChargesVal = body.querySelector(`#ed-dodge-charges-val-${id}`) as HTMLSpanElement
+  const dodgeCdInput = body.querySelector(`#ed-dodge-cd-${id}`) as HTMLInputElement
+  const dodgeCdVal = body.querySelector(`#ed-dodge-cd-val-${id}`) as HTMLSpanElement
+  const dodgeDistInput = body.querySelector(`#ed-dodge-dist-${id}`) as HTMLInputElement
+  const dodgeDistVal = body.querySelector(`#ed-dodge-dist-val-${id}`) as HTMLSpanElement
+  const dodgeSpeedInput = body.querySelector(`#ed-dodge-speed-${id}`) as HTMLInputElement
+  const dodgeSpeedVal = body.querySelector(`#ed-dodge-speed-val-${id}`) as HTMLSpanElement
+  dodgeCheckbox.addEventListener('change', () => {
+    dodgeWrap.style.display = dodgeCheckbox.checked ? 'block' : 'none'
+  })
+  dodgeChargesInput.addEventListener('input', () => { dodgeChargesVal.textContent = dodgeChargesInput.value })
+  dodgeCdInput.addEventListener('input', () => { dodgeCdVal.textContent = dodgeCdInput.value })
+  dodgeDistInput.addEventListener('input', () => { dodgeDistVal.textContent = dodgeDistInput.value })
+  dodgeSpeedInput.addEventListener('input', () => { dodgeSpeedVal.textContent = dodgeSpeedInput.value })
+
   // Summon tag wiring
   const summonCheckbox = body.querySelector(`#ed-summon-${id}`) as HTMLInputElement
   const summonWrap = body.querySelector(`#ed-summon-wrap-${id}`) as HTMLDivElement
@@ -1188,6 +1304,11 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       revenge: form.revenge ?? false,
       revengeRings: form.revengeRings ?? 4,
       revengeRadius: form.revengeRadius ?? 120,
+      dodge: form.dodge ?? false,
+      dodgeCharges: form.dodgeCharges ?? 2,
+      dodgeChargeTime: form.dodgeChargeTime ?? 1.5,
+      dodgeDistance: form.dodgeDistance ?? 100,
+      dodgeSpeed: form.dodgeSpeed ?? 1,
       totemSpawn: form.totemSpawn ?? '',
       isShrine: form.isShrine ?? false,
       shrineSpawnEnemy: form.shrineSpawnEnemy ?? '',
@@ -1234,6 +1355,11 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const revenge = (div.querySelector(`#ed-revenge-${id}`) as HTMLInputElement).checked
     const revengeRings = parseInt((div.querySelector(`#ed-revenge-rings-${id}`) as HTMLInputElement).value) || 4
     const revengeRadius = parseInt((div.querySelector(`#ed-revenge-radius-${id}`) as HTMLInputElement).value) || 120
+    const dodge = (div.querySelector(`#ed-dodge-${id}`) as HTMLInputElement).checked
+    const dodgeCharges = parseInt((div.querySelector(`#ed-dodge-charges-${id}`) as HTMLInputElement).value) || 2
+    const dodgeChargeTime = parseFloat((div.querySelector(`#ed-dodge-cd-${id}`) as HTMLInputElement).value) || 1.5
+    const dodgeDistance = parseInt((div.querySelector(`#ed-dodge-dist-${id}`) as HTMLInputElement).value) || 100
+    const dodgeSpeed = parseFloat((div.querySelector(`#ed-dodge-speed-${id}`) as HTMLInputElement).value) || 1
     const totemSpawn = (div.querySelector(`#ed-totem-${id}`) as HTMLInputElement).value.trim()
     const summon = (div.querySelector(`#ed-summon-${id}`) as HTMLInputElement).checked
     const summonNodes = parseInt((div.querySelector(`#ed-summon-nodes-${id}`) as HTMLInputElement).value) || 3
@@ -1269,7 +1395,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
     const finalHp = isShrine && shrinePhases.length > 0 ? shrinePhases.length : hp
-    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
+    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, dodge, dodgeCharges, dodgeChargeTime, dodgeDistance, dodgeSpeed, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
   }
 
 

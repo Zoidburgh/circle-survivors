@@ -11,6 +11,7 @@ let dashCDToastFired = false
 let dashCDBeginner = false
 export function resetDashCDToast(beginner = false): void { dashCDToastFired = false; dashCDBeginner = beginner }
 import { clampToArena, ARENA_W, ARENA_H, getArenaShape, ARENA_CX, ARENA_CY, ARENA_RADIUS } from '../game/Arena.ts'
+import { applyDashMotion } from './DashMotion.ts'
 import {
   PLAYER_SPEED,
   PLAYER_TEMPO,
@@ -262,29 +263,11 @@ export function updatePlayer(player: Player, dt: number): void {
 
   // Dash movement
   if (player.dashTimer >= 0) {
-    player.dashTimer -= dt
-    const progress = 1 - (Math.max(0, player.dashTimer) / player.dashDuration)
-    const speed = Math.sin(progress * Math.PI) * (player.dashDistance * player.modifiers.dashDistanceMult * player.modifiers.speedMult / player.dashDuration) * 1.6
-    // Steer during dash — blend movement input into dash direction
-    const dir = Input.getMovementDir()
-    const steerStrength = 1.0  // full control during dash
-    if (dir.x !== 0 || dir.y !== 0) {
-      player.dashDirX += (dir.x - player.dashDirX) * steerStrength * dt * 11
-      player.dashDirY += (dir.y - player.dashDirY) * steerStrength * dt * 11
-      // Renormalize direction
-      const len = Math.sqrt(player.dashDirX * player.dashDirX + player.dashDirY * player.dashDirY)
-      if (len > 0.1) {
-        player.dashDirX /= len
-        player.dashDirY /= len
-      }
-    }
-    player.x += player.dashDirX * speed * dt
-    player.y += player.dashDirY * speed * dt
-    // Record path point every ~12px of movement
-    const lastPt = player.dashPath[player.dashPath.length - 1]
-    if (!lastPt || Math.sqrt((player.x - lastPt.x) ** 2 + (player.y - lastPt.y) ** 2) > 6) {
-      player.dashPath.push({ x: player.x, y: player.y })
-    }
+    applyDashMotion(player, dt, {
+      steerInput: Input.getMovementDir(),
+      distanceMult: player.modifiers.dashDistanceMult,
+      speedMult: player.modifiers.speedMult,
+    })
   } else {
     const dir = Input.getMovementDir()
     if (dir.x !== 0 || dir.y !== 0) {

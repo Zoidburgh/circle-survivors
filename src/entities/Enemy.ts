@@ -5,6 +5,7 @@ import { shouldFire, getBeatInterval, getLoopPosition } from '../audio/PatternCl
 import { playWindup } from '../audio/AudioEngine.ts'
 import { isRunTimerActive, isRunComplete, startRunTimer } from '../core/GameState.ts'
 import { showToast } from '../render/Renderer.ts'
+import { applyDashMotion } from './DashMotion.ts'
 
 let leaveToastGlobalCD = 0
 let revengeToastGlobalCD = 0
@@ -19,6 +20,7 @@ import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED,
 import { hexToRgba } from '../utils/math.ts'
 import type { Player } from './Player.ts'
 import type { EnemyType, MovePattern, SummonPhase, ShrinePhase } from './EnemyTypes.ts'
+import { getEnemyType } from './EnemyTypes.ts'
 import { SpatialGrid } from '../core/SpatialGrid.ts'
 import { getChillRank } from '../game/UpgradeManager.ts'
 
@@ -122,6 +124,17 @@ export interface Enemy {
   shrinePhases: ShrinePhase[]     // per-hit spawn waves
   shrineCurrentPhase: number      // which phase we're on
   shrineSummonTimer: number       // >0 = summoning animation playing, counts down
+  designerEphemeral?: boolean     // true = spawned for feel-testing in designer; cleared on exit
+  // Dodge trait — same field names/semantics as Player.dash* so shared helpers work on both
+  dodge: boolean
+  dodgeSlots: number[]            // per-slot recharge timer (0 = ready, >0 = recharging)
+  dashTimer: number               // -1 = idle, >0 = mid-burst (mirrors player.dashTimer)
+  dashDirX: number
+  dashDirY: number
+  dashDuration: number            // total burst duration in seconds
+  dashDistance: number            // total burst distance (used by sine-curve speed calc)
+  dashSpeedMult: number           // user-tunable burst speed multiplier (default 1.0)
+  dashPath: { x: number; y: number }[]   // for afterimage (mirrors player.dashPath)
 }
 
 /** Get the world positions a ring fires from (center or edge offsets) */
@@ -246,6 +259,16 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     shrinePhases: type.shrinePhases ?? [],
     shrineCurrentPhase: 0,
     shrineSummonTimer: 0,
+    // Dodge trait (no behavior yet — Step 2 wires the trigger)
+    dodge: type.dodge ?? false,
+    dodgeSlots: type.dodge ? Array(type.dodgeCharges ?? 2).fill(0) : [],
+    dashTimer: -1,
+    dashDirX: 0,
+    dashDirY: 0,
+    dashDuration: 0.2,
+    dashDistance: type.dodgeDistance ?? 100,
+    dashSpeedMult: type.dodgeSpeed ?? 1,
+    dashPath: [],
   }
   // Shrines: skip spawn animation, pushable by enemies
   if (e.isShrine) {
@@ -258,6 +281,86 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     }
   }
   return e
+}
+
+// ── Dodge trait ──────────────────────────────────────────────────────────────
+// "Brain" that watches player rings and decides when/where to dodge. Movement
+// itself is delegated to the shared applyDashMotion (same code as player dash).
+
+interface DangerRing { peakR: number; dist: number }
+
+function shouldDodge(enemy: Enemy, player: Player): DangerRing | null {
+  const baseRingR = (player.ring?.radius ?? 0) * (player.modifiers?.ringRadiusMult ?? 1)
+  // Hit band width: enemy.radius (per HitDetection) + small extra so dodge starts before edge contact
+  const band = enemy.radius + 12
+  const checkRing = (timer: number, r: number): DangerRing | null => {
+    if (timer < 0) return null
+    const pct = timer / ATTACK_EXPAND_TIME
+    if (pct < 0.75 || pct > 0.9) return null
+    const dist = Math.hypot(enemy.x - player.x, enemy.y - player.y)
+    if (Math.abs(dist - r) > band) return null
+    return { peakR: r, dist }
+  }
+  const main = checkRing(player.attackTimer, baseRingR)
+  if (main) return main
+  for (let i = 0; i < player.extraRingCount; i++) {
+    const t = player.extraRingTimers[i] ?? -1
+    const found = checkRing(t, baseRingR)
+    if (found) return found
+  }
+  return null
+}
+
+function pickDodgeDirection(enemy: Enemy, player: Player, danger: DangerRing): { x: number; y: number } | null {
+  // Radial dodge: toward player if enemy is inside ring's reach (close side will be hit),
+  // away from player if enemy is outside ring's reach (far side will be hit).
+  // (Step 3 will add full 8-direction with scoring + perpendicular options.)
+  const dx = enemy.x - player.x
+  const dy = enemy.y - player.y
+  const len = Math.hypot(dx, dy)
+  if (len < 0.1) return { x: 1, y: 0 }
+  const awayX = dx / len, awayY = dy / len
+  const towardX = -awayX, towardY = -awayY
+  const insideReach = danger.dist < danger.peakR
+  const primary = insideReach ? { x: towardX, y: towardY } : { x: awayX, y: awayY }
+  const fallback = insideReach ? { x: awayX, y: awayY } : { x: towardX, y: towardY }
+  const tryDir = (d: { x: number; y: number }): boolean => {
+    const newX = enemy.x + d.x * enemy.dashDistance
+    const newY = enemy.y + d.y * enemy.dashDistance
+    const c = clampToArena(newX, newY, enemy.radius)
+    return Math.hypot(newX - c.x, newY - c.y) <= 10
+  }
+  if (tryDir(primary)) return primary
+  if (tryDir(fallback)) return fallback
+  return null
+}
+
+function updateDodge(enemy: Enemy, player: Player, dt: number): void {
+  const type = getEnemyType(enemy.typeName)
+  if (!type) return
+  // Tick charge timers — each slot recharges independently, like player dash
+  for (let i = 0; i < enemy.dodgeSlots.length; i++) {
+    if (enemy.dodgeSlots[i]! > 0) {
+      enemy.dodgeSlots[i]! -= dt
+      if (enemy.dodgeSlots[i]! < 0) enemy.dodgeSlots[i] = 0
+    }
+  }
+
+  // Skip trigger if mid-burst or no charges
+  if (enemy.dashTimer >= 0) return
+  const readySlot = enemy.dodgeSlots.findIndex(t => t <= 0)
+  if (readySlot < 0) return
+
+  const danger = shouldDodge(enemy, player)
+  if (!danger) return
+  const dir = pickDodgeDirection(enemy, player, danger)
+  if (!dir) return   // all directions walled — no dodge, no charge consumed
+
+  enemy.dashDirX = dir.x
+  enemy.dashDirY = dir.y
+  enemy.dashTimer = enemy.dashDuration
+  enemy.dashPath = [{ x: enemy.x, y: enemy.y }]
+  enemy.dodgeSlots[readySlot] = type.dodgeChargeTime ?? 1.5
 }
 
 export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: SpatialGrid): void {
@@ -406,7 +509,14 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     return
   }
 
-  switch (enemy.movePattern) {
+  // Dodge: if mid-burst, skip the move-pattern entirely. Burst movement
+  // controls position via shared applyDashMotion (same code as player dash).
+  if (enemy.dodge && enemy.dashTimer >= 0) {
+    applyDashMotion(enemy, dt, { speedMult: enemy.dashSpeedMult })
+    // Fall through to separation + arena clamp at the bottom of updateEnemy
+    // Skip the move-pattern switch by zeroing moveX/Y (already 0 by default).
+  } else {
+    switch (enemy.movePattern) {
     case 'pursue':
       // Move toward player, stop at sweet spot
       if (dist > sweetSpot + 10) {
@@ -504,6 +614,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
 
     case 'stationary':
       break
+    }
   }
 
   // Separation — for bounce enemies, reflect velocity on collision
@@ -568,12 +679,14 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     }
   }
 
-  // Apply chill slow
+  // Apply chill slow + integrate position. Skip when mid-dodge — applyDashMotion already moved us.
   const chillMult = 1 - enemy.chillStacks * CHILL_SLOW_PER_STACK
   enemy.vx = moveX * chillMult
   enemy.vy = moveY * chillMult
-  enemy.x += enemy.vx * dt
-  enemy.y += enemy.vy * dt
+  if (!(enemy.dodge && enemy.dashTimer >= 0)) {
+    enemy.x += enemy.vx * dt
+    enemy.y += enemy.vy * dt
+  }
 
   // Clamp to arena — bounce off walls
   const prevX = enemy.x
@@ -663,6 +776,9 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
       }
     }
   }
+
+  // Tick dodge state (charges/exhaustion) and check trigger AFTER all movement is settled
+  if (enemy.dodge) updateDodge(enemy, player, dt)
 }
 
 export const DEATH_DURATION = 0.3

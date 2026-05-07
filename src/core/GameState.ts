@@ -11,13 +11,16 @@ import { createCamera, ARENA_W, ARENA_H } from '../game/Arena.ts'
 import type { Camera } from '../game/Arena.ts'
 import { GRID_CELL_SIZE } from '../utils/constants.ts'
 
-export type GamePhase = 'title' | 'challenge_select' | 'playing' | 'upgrading' | 'shopping' | 'paused' | 'dead' | 'entering_name'
+export type GamePhase = 'title' | 'challenge_select' | 'playing' | 'upgrading' | 'shopping' | 'paused' | 'dead' | 'entering_name' | 'designer'
 
 const player: Player = createPlayer(ARENA_W / 2, ARENA_H / 2)
 const enemies: Enemy[] = []
 const grid = new SpatialGrid(GRID_CELL_SIZE)
 const camera: Camera = createCamera()
 let phase: GamePhase = 'title'
+let designerReturnPhase: GamePhase = 'title'
+let designerPrevArenaShape: string | null = null
+let inDesignerTestPlay = false
 let xpForNextLevel = 15
 let level = 1
 let runTimer = 0         // seconds elapsed
@@ -44,6 +47,20 @@ export function getRunBeatCount(): number { return runBeatCount }
 export function advanceRunTimer(dt: number): void { if (runTimerActive) runTimer += dt }
 export function completeRun(): void { runTimerActive = false; runComplete = true; runFinalTime = runTimer }
 
+export function enterDesigner(from: GamePhase): void {
+  designerReturnPhase = from
+  phase = 'designer'
+}
+export function exitDesigner(): void {
+  phase = designerReturnPhase
+}
+export function getDesignerReturnPhase(): GamePhase { return designerReturnPhase }
+export function isDesignerSafe(): boolean { return phase === 'designer' }
+export function setDesignerPrevArenaShape(s: string | null): void { designerPrevArenaShape = s }
+export function getDesignerPrevArenaShape(): string | null { return designerPrevArenaShape }
+export function setInDesignerTestPlay(b: boolean): void { inDesignerTestPlay = b }
+export function isInDesignerTestPlay(): boolean { return inDesignerTestPlay }
+
 export function checkLevelUp(): boolean {
   if (player.xp >= xpForNextLevel) {
     player.xp -= xpForNextLevel
@@ -55,7 +72,7 @@ export function checkLevelUp(): boolean {
 }
 
 /** Reset all game state for a new run */
-export function resetGameState(): void {
+export function resetGameState(targetPhase: GamePhase = 'playing'): void {
   resetPlayer(player)
   enemies.length = 0
   grid.clear()
@@ -64,7 +81,7 @@ export function resetGameState(): void {
   cam.y = ARENA_H / 2
   cam.targetX = ARENA_W / 2
   cam.targetY = ARENA_H / 2
-  phase = 'playing'
+  phase = targetPhase
   xpForNextLevel = 15
   level = 1
   runTimer = 0

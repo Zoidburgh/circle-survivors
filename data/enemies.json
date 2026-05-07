@@ -4,7 +4,7 @@
     {
       "name": "Enemy3",
       "color": "#ba68c8",
-      "hp": 5,
+      "hp": 6,
       "moveSpeed": 150,
       "radius": 60,
       "ringRadius": 120,
@@ -142,7 +142,7 @@
       "blink": true,
       "blinkBeats": 2,
       "volatile": true,
-      "volatileRange": 500,
+      "volatileRange": 400,
       "revenge": false,
       "revengeRings": 4,
       "revengeRadius": 120,
@@ -221,7 +221,7 @@
       "name": "Enemy7",
       "color": "#ffd740",
       "hp": 12,
-      "moveSpeed": 100,
+      "moveSpeed": 130,
       "radius": 130,
       "ringRadius": 130,
       "key": "7",
@@ -258,24 +258,6 @@
         },
         {
           "ringRadius": 270,
-          "sound": "rim",
-          "beats": [
-            0.5,
-            1.5,
-            2.5,
-            3.5,
-            4.5,
-            5.5,
-            6.5,
-            7.5
-          ],
-          "edgeMode": false,
-          "edgePoints": 3,
-          "edgeActive": 1,
-          "edgeSwitchBeats": 1
-        },
-        {
-          "ringRadius": 470,
           "sound": "rim",
           "beats": [
             0.5,
@@ -377,7 +359,7 @@
     },
     {
       "name": "Enemy9",
-      "color": "#4caf50",
+      "color": "#ef5350",
       "hp": 2,
       "moveSpeed": 50,
       "radius": 130,
@@ -463,11 +445,7 @@
             }
           ]
         }
-      ],
-      "isShrine": false,
-      "shrineSpawnEnemy": "",
-      "shrineXpCount": 3,
-      "shrineHpCount": 0
+      ]
     },
     {
       "name": "Enemy10",
@@ -911,7 +889,7 @@
         }
       ],
       "blocksRings": false,
-      "consume": true,
+      "consume": false,
       "magnet": false,
       "magnetRange": 200,
       "blink": false,
@@ -933,9 +911,9 @@
     },
     {
       "name": "Exploding",
-      "color": "#ffee58",
+      "color": "#d4a017",
       "hp": 3,
-      "moveSpeed": 440,
+      "moveSpeed": 400,
       "radius": 40,
       "ringRadius": 140,
       "key": "17",
@@ -972,7 +950,7 @@
         }
       ],
       "blocksRings": false,
-      "consume": true,
+      "consume": false,
       "magnet": false,
       "magnetRange": 200,
       "blink": false,
@@ -990,11 +968,7 @@
       "dropCount": 1,
       "summon": false,
       "summonNodes": 3,
-      "summonPhases": [],
-      "isShrine": false,
-      "shrineSpawnEnemy": "",
-      "shrineXpCount": 3,
-      "shrineHpCount": 0
+      "summonPhases": []
     },
     {
       "name": "Heavy_Totem",
@@ -1127,7 +1101,7 @@
       "blink": true,
       "blinkBeats": 2,
       "volatile": true,
-      "volatileRange": 300,
+      "volatileRange": 200,
       "revenge": false,
       "revengeRings": 4,
       "revengeRadius": 120,
@@ -1136,7 +1110,7 @@
       "dropType": "hp",
       "dropXp": 0,
       "dropHp": 100,
-      "dropCount": 2,
+      "dropCount": 5,
       "summon": false,
       "summonNodes": 3,
       "summonPhases": []
@@ -1459,6 +1433,81 @@
           "xpOrbs": 20
         }
       ]
+    },
+    {
+      "name": "Enemy27",
+      "color": "#ffeb3b",
+      "hp": 10,
+      "moveSpeed": 140,
+      "radius": 60,
+      "ringRadius": 140,
+      "key": "27",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0.5,
+        1.5,
+        2.5,
+        3.5,
+        4.5,
+        5.5,
+        6.5,
+        7.5
+      ],
+      "rings": [
+        {
+          "ringRadius": 140,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ],
+          "edgeMode": false,
+          "edgePoints": 3,
+          "edgeActive": 1,
+          "edgeSwitchBeats": 1
+        }
+      ],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "dodge": true,
+      "dodgeCharges": 3,
+      "dodgeChargeTime": 0.9,
+      "dodgeDistance": 200,
+      "dodgeSpeed": 0.6,
+      "movePattern": "zigzag",
+      "totemSpawn": "",
+      "dropType": "xp",
+      "dropXp": 100,
+      "dropHp": 0,
+      "dropCount": 1,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": [],
+      "isShrine": false,
+      "shrineSpawnEnemy": "",
+      "shrineXpCount": 0,
+      "shrineHpCount": 0,
+      "shrinePhases": [
+        {
+          "xpOrbs": 3
+        }
+      ]
     }
   ],
   "challenges": [
@@ -1495,8 +1544,8 @@
       "enemies": [
         {
           "typeName": "Enemy9",
-          "x": 345,
-          "y": 544.8300968657295
+          "x": 266.20750456863107,
+          "y": 490.16414756319057
         }
       ],
       "order": 10

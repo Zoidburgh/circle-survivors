@@ -2,8 +2,9 @@
 
 import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
 import type { EnemyType } from '../entities/EnemyTypes.ts'
-import { getCamera } from '../core/GameState.ts'
-import type { Camera } from '../game/Arena.ts'
+import { getCamera, getPhase, getPlayer } from '../core/GameState.ts'
+import { setArenaShape, clampToArena } from '../game/Arena.ts'
+import type { ArenaShape, Camera } from '../game/Arena.ts'
 import defaultData from '../../data/enemies.json'
 
 export interface ChallengeEnemy {
@@ -29,7 +30,7 @@ let placeMode = false
 let placeTypeName = ''
 let placingEnemies: ChallengeEnemy[] = []
 let selectedPlacementIdx = -1
-let challengeName = 'Challenge 1'
+let challengeName = 'new_challenge'
 let challengeArena: Challenge['arenaShape'] = 'circle'
 
 export function isPlaceMode(): boolean { return placeMode }
@@ -66,7 +67,15 @@ export function exitPlaceMode(): void {
 }
 
 export function setChallengeName(name: string): void { challengeName = name }
-export function setChallengeArena(shape: Challenge['arenaShape']): void { challengeArena = shape }
+export function setChallengeArena(shape: Challenge['arenaShape']): void {
+  challengeArena = shape
+  if (getPhase() === 'designer') {
+    setArenaShape(shape as ArenaShape)
+    const p = getPlayer()
+    const c = clampToArena(p.x, p.y, p.hitRadius)
+    p.x = c.x; p.y = c.y
+  }
+}
 
 export function placeEnemy(screenX: number, screenY: number): void {
   const cam = getCamera()
@@ -102,6 +111,10 @@ export function selectPlacement(screenX: number, screenY: number): boolean {
   return false
 }
 
+export function clearSelection(): void {
+  selectedPlacementIdx = -1
+}
+
 export function moveSelectedPlacement(screenX: number, screenY: number): void {
   if (selectedPlacementIdx < 0) return
   const cam = getCamera()
@@ -127,7 +140,7 @@ export function loadChallenge(name: string): void {
   if (!c) return
   activeChallenge = c
   challengeName = c.name
-  challengeArena = c.arenaShape
+  setChallengeArena(c.arenaShape)
   placingEnemies = c.enemies.map(e => ({ ...e }))
 }
 

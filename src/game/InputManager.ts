@@ -6,6 +6,7 @@ let mousePos: Vec2 = vec2(0, 0)
 let leftClick = false
 let rightClick = false
 let leftClickConsumed = false
+let suppressNextLeftClick = false
 let rightClickConsumed = false
 let spacePressed = false
 let spaceConsumed = false
@@ -43,7 +44,11 @@ export function init(canvas: HTMLCanvasElement): void {
     mousePos = vec2(e.clientX, e.clientY)
   })
   canvas.addEventListener('mousedown', e => {
-    if (e.button === 0) { leftClick = true; leftClickConsumed = false }
+    if (e.button === 0) {
+      leftClick = true
+      leftClickConsumed = suppressNextLeftClick  // pre-consume if suppressed
+      suppressNextLeftClick = false
+    }
     if (e.button === 2) { rightClick = true; rightClickConsumed = false }
   })
   canvas.addEventListener('mouseup', e => {
@@ -65,6 +70,11 @@ export function isKeyDown(key: string): boolean {
 
 export function getMousePos(): Vec2 {
   return mousePos
+}
+
+/** Pre-consume the next left-click (e.g. when click is for UI/placement, not for game action). */
+export function suppressLeftClick(): void {
+  suppressNextLeftClick = true
 }
 
 export function consumeLeftClick(): boolean {

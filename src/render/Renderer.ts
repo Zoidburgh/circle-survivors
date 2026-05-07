@@ -1642,8 +1642,8 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfEnd('R_TOTAL')
   perfFlush()
 
-  // Perf overlay — dev only
-  if (__DEV__) {
+  // Perf overlay — dev only, gated
+  if (__DEV__ && debugOverlayVisible) {
     const perf = perfDisplay
     const perfKeys = Object.keys(perf)
     if (perfKeys.length > 0) {
@@ -7184,6 +7184,10 @@ let spawnPanelVisible = false
 export function toggleSpawnPanel(): void { spawnPanelVisible = !spawnPanelVisible }
 export function isSpawnPanelVisible(): boolean { return spawnPanelVisible }
 
+let debugOverlayVisible = false
+export function toggleDebugOverlay(): void { debugOverlayVisible = !debugOverlayVisible }
+export function isDebugOverlayVisible(): boolean { return debugOverlayVisible }
+
 function drawSpawnPanel(): void {
   if (!spawnPanelVisible) { spawnPanelRects.length = 0; return }
   const panelX = 10
@@ -7240,7 +7244,7 @@ function drawSpawnPanel(): void {
 }
 
 function drawChallengePlacements(): void {
-  if (!isPlaceMode()) return
+  if (getPhase() !== 'designer') return
   const placements = getPlacingEnemies()
   const selected = getSelectedPlacement()
   for (let i = 0; i < placements.length; i++) {
@@ -7313,7 +7317,14 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
   const loopPos = getLoopPosition()
   const loopLen = getLoopLength()
   if (__DEV__) {
-    ctx.fillText(`FPS: ${fps}`, x, 20)
+    // FPS always shown — small, top right
+    ctx.font = '11px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.45)'
+    ctx.fillText(`${fps} fps`, width - 50, 16)
+    ctx.font = '12px monospace'
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.6)'
+  }
+  if (__DEV__ && debugOverlayVisible) {
     ctx.fillText(`HP: ${player.hp}/${player.maxHp}`, x, 36)
     ctx.fillText(`Enemies: ${enemies.filter(e => e.alive).length}`, x, 52)
     ctx.fillText(`XP: ${player.xp}`, x, 68)

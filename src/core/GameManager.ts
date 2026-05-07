@@ -7,10 +7,10 @@ import type { Enemy } from '../entities/Enemy.ts'
 import { advanceGlobalTime } from './RhythmClock.ts'
 import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
 import { advancePatternClock } from '../audio/PatternClock.ts'
-import { getPlayer, getEnemies, getGrid, getCamera, getPhase, setPhase, getXpForNextLevel, startRunTimer, advanceRunTimer, isRunTimerActive, isRunComplete, completeRun, getRunTimer } from './GameState.ts'
+import { getPlayer, getEnemies, getGrid, getCamera, getPhase, setPhase, getXpForNextLevel, startRunTimer, advanceRunTimer, isRunTimerActive, isRunComplete, completeRun, getRunTimer, isInDesignerTestPlay } from './GameState.ts'
 import { updateOrbs, cleanupOrbs, getOrbs, spawnOrb, collectOrb } from '../entities/XPOrb.ts'
 import type { XPOrb } from '../entities/XPOrb.ts'
-import { updateCamera, clampToArena, getArenaShape, setArenaShape } from '../game/Arena.ts'
+import { updateCamera, clampToArena, getArenaShape, setArenaShape, findClearSpawnPos } from '../game/Arena.ts'
 import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils/constants.ts'
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on, emit } from './EventBus.ts'
@@ -45,37 +45,6 @@ interface PendingExplosion {
 const pendingExplosions: PendingExplosion[] = []
 
 /** Find a spawn position that doesn't overlap immovable enemies or the player */
-function findClearSpawnPos(x: number, y: number, radius: number, enemies: Enemy[], player: { x: number; y: number }): { x: number; y: number } {
-  let sx = x, sy = y
-  for (let pass = 0; pass < 3; pass++) {
-    for (const enemy of enemies) {
-      if (!enemy.alive || enemy.dying) continue
-      if (!enemy.immovable) continue
-      const dx = sx - enemy.x
-      const dy = sy - enemy.y
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      const minDist = radius + enemy.radius + 2
-      if (dist < minDist && dist > 0.1) {
-        const overlap = minDist - dist
-        sx += (dx / dist) * overlap
-        sy += (dy / dist) * overlap
-      }
-    }
-    // Also avoid player
-    const pdx = sx - player.x
-    const pdy = sy - player.y
-    const pDist = Math.sqrt(pdx * pdx + pdy * pdy)
-    const pMin = radius + PLAYER_RADIUS + 2
-    if (pDist < pMin && pDist > 0.1) {
-      const overlap = pMin - pDist
-      sx += (pdx / pDist) * overlap
-      sy += (pdy / pDist) * overlap
-    }
-  }
-  const clamped = clampToArena(sx, sy, radius)
-  return clamped
-}
-
 on('totem:spawn', (totemEnemy: Enemy) => {
   // Grim Patron tracking — 10+ totem spawns in 10s
   if (!grimPatronFired) {
@@ -815,9 +784,101 @@ export function resetPendingEffects(): void {
   grimPatronFired = false
 }
 
+function updateDesigner(dt: number): void {
+  tickAudioHealth()
+  advanceGlobalTime(dt)
+  advancePatternClock(dt)
+  Input.flush()
+  const player = getPlayer()
+  const cam = getCamera()
+  const enemies = getEnemies()
+  const grid = getGrid()
+  updatePlayer(player, dt)
+  // Tick spawn-test enemies so they animate, fire rings, etc. Damage to player is gated by isDesignerSafe().
+  grid.clear()
+  for (const e of enemies) {
+    if (e.designerEphemeral && e.alive) grid.insert(e)
+  }
+  for (const e of enemies) {
+    if (!e.designerEphemeral) continue
+    if (e.dying) updateDeath(e, dt)
+    else if (e.alive) updateEnemy(e, player, dt, grid)
+  }
+  // Enemy-vs-enemy separation (mirrors the play-mode pass at ~line 1580, ephemerals only)
+  for (const enemy of enemies) {
+    if (!enemy.designerEphemeral || !enemy.alive || enemy.dying) continue
+    const nearby = grid.query(enemy)
+    for (const other of nearby) {
+      if (other === enemy || !('hp' in other)) continue
+      const oe = other as Enemy
+      if (!oe.alive || oe.dying) continue
+      const minDist = enemy.radius + oe.radius
+      const dx = enemy.x - oe.x
+      const dy = enemy.y - oe.y
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      if (dist < minDist && dist > 0.1) {
+        const nx = dx / dist
+        const ny = dy / dist
+        const overlap = (minDist - dist) * 0.5
+        if (!enemy.immovable) { enemy.x += nx * overlap; enemy.y += ny * overlap }
+        if (!oe.immovable)    { oe.x -= nx * overlap;     oe.y -= ny * overlap     }
+      }
+    }
+    const ec = clampToArena(enemy.x, enemy.y, enemy.radius)
+    enemy.x = ec.x; enemy.y = ec.y
+  }
+  // Player-vs-enemy push (mirrors line 1736)
+  for (const enemy of enemies) {
+    if (!enemy.designerEphemeral || !enemy.alive || enemy.dying || enemy.isShrine) continue
+    const minDist = enemy.radius + player.hitRadius
+    const dx = player.x - enemy.x
+    const dy = player.y - enemy.y
+    const dist = Math.sqrt(dx * dx + dy * dy)
+    if (dist < minDist && dist > 0.1) {
+      const overlap = minDist - dist
+      const nx = dx / dist
+      const ny = dy / dist
+      if (enemy.immovable) {
+        enemy.x -= nx * overlap * 0.15
+        enemy.y -= ny * overlap * 0.15
+        player.x += nx * overlap * 0.85
+        player.y += ny * overlap * 0.85
+        const ec = clampToArena(enemy.x, enemy.y, enemy.radius)
+        enemy.x = ec.x; enemy.y = ec.y
+      } else {
+        player.x += nx * overlap * 0.2
+        player.y += ny * overlap * 0.2
+        enemy.x -= nx * overlap * 0.8
+        enemy.y -= ny * overlap * 0.8
+      }
+    }
+  }
+  const pc = clampToArena(player.x, player.y, player.hitRadius)
+  player.x = pc.x; player.y = pc.y
+  // Drop dead/cleaned ephemerals
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e = enemies[i]!
+    if (e.designerEphemeral && !e.alive && !e.dying) enemies.splice(i, 1)
+  }
+  const dir = Input.getMovementDir()
+  updateCamera(cam, player.x, player.y, dir.x, dir.y, Renderer.getLogicalSize().w, Renderer.getLogicalSize().h, dt)
+  updatePreviewEnemy(dt)
+}
+
+export function clearDesignerEphemerals(): void {
+  const enemies = getEnemies()
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    if (enemies[i]!.designerEphemeral) enemies.splice(i, 1)
+  }
+}
+
 export function update(dt: number): void {
   const phase = getPhase()
 
+  if (phase === 'designer') {
+    updateDesigner(dt)
+    return
+  }
   if (phase === 'title' || phase === 'dead' || phase === 'challenge_select' || phase === 'paused' || phase === 'entering_name') {
     advancePatternClock(dt)
     return
@@ -1754,7 +1815,7 @@ export function update(dt: number): void {
       playVictoryFanfare()
       completeRun()
       const ch = getActiveChallenge()
-      if (ch) {
+      if (ch && !isInDesignerTestPlay()) {
         fetchOnlineScores(ch.name)  // preload global scores immediately
         const scores = getScoresForChallenge(ch.name, 100)
         const qualifies = scores.length < 100 || getRunTimer() < scores[scores.length - 1]!.time
@@ -1790,6 +1851,11 @@ export function render(alpha: number): void {
   }
   if (getPhase() === 'challenge_select') {
     Renderer.drawChallengeSelect(renderDt)
+    Renderer.drawIrisTransition(renderDt)
+    return
+  }
+  if (getPhase() === 'designer') {
+    Renderer.render(player, enemies, alpha, fps, renderDt, cam)
     Renderer.drawIrisTransition(renderDt)
     return
   }
