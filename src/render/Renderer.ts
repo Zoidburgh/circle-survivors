@@ -4,7 +4,8 @@ import type { Enemy } from '../entities/Enemy.ts'
 import { getRingOrigins } from '../entities/Enemy.ts'
 import type { Ring } from '../entities/Ring.ts'
 import { getRingExpansion, getRingAlpha, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
-import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
+import { ENEMY_TYPES, getEnemyType } from '../entities/EnemyTypes.ts'
+import { complementColor } from '../utils/math.ts'
 import { getPattern, getLoopPosition, getLoopLength } from '../audio/PatternClock.ts'
 import { getPreviewEnemy } from '../game/EnemyDesigner.ts'
 import type { Camera } from '../game/Arena.ts'
@@ -5224,6 +5225,171 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   }
 
   if (enemy.blink && enemy.blinkPreview > 0) ctx.globalAlpha = 1
+
+  // Dodge trail — fading silhouettes along dashPath while mid-burst (mirrors player afterimage).
+  // Trail color = body tinted toward the orb's complement color so it reads as "energy" not just shadow.
+  if (enemy.dodge && enemy.dashTimer >= 0 && enemy.dashPath.length > 1) {
+    const [tdr, tdg, tdb] = complementColor(enemy.cr, enemy.cg, enemy.cb)
+    const tr = Math.round(enemy.cr * 0.55 + tdr * 0.45)
+    const tg = Math.round(enemy.cg * 0.55 + tdg * 0.45)
+    const tb = Math.round(enemy.cb * 0.55 + tdb * 0.45)
+    const trailLen = enemy.dashPath.length
+    for (let i = 0; i < trailLen; i++) {
+      const p = enemy.dashPath[i]!
+      const t = i / Math.max(1, trailLen - 1)   // 0 = oldest, 1 = newest
+      const alpha = 0.02 + t * 0.10              // older = fainter, kept faint so it reads as ghost not body
+      const tx = p.x - camX
+      const ty = p.y - camY
+      ctx.beginPath()
+      ctx.arc(tx, ty, r, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${tr}, ${tg}, ${tb}, ${alpha})`
+      ctx.fill()
+    }
+  }
+
+  // Dodge charge orbit dots — same visual language as player dash slots, scaled with enemy size.
+  // Floor dot size at the player's 8.6 so small enemies still show readable dots.
+  // Dot color is the COMPLEMENT of the enemy body — like player blue / dots green — so they pop.
+  if (enemy.dodge && enemy.alive && !enemy.dying && enemy.dodgeSlots.length > 0) {
+    const type = getEnemyType(enemy.typeName)
+    const chargeTime = type?.dodgeChargeTime ?? 1.5
+    const orbitR = r   // dot center sits on body edge, mirroring player's drawRadius orbit
+    const orbitSpeed = performance.now() / 800
+    const dotR = Math.max(8.6, r * 0.18)
+    const burstScale = Math.max(0.4, r * 0.04)   // particle size scale for consume/ready bursts
+    const [dr, dg, db] = complementColor(enemy.cr, enemy.cg, enemy.cb)
+    for (let i = 0; i < enemy.dodgeSlots.length; i++) {
+      const angle = orbitSpeed + (Math.PI * 2 * i) / enemy.dodgeSlots.length
+      const dx = sx + Math.cos(angle) * orbitR
+      const dy = sy + Math.sin(angle) * orbitR
+      const wx = enemy.x + Math.cos(angle) * orbitR    // world coords for particle spawning
+      const wy = enemy.y + Math.sin(angle) * orbitR
+      const timer = enemy.dodgeSlots[i]!
+
+      // Consume burst — fires when slot was just consumed (mirrors player's dash-slot consume,
+      // scaled smaller and tinted with the complement color)
+      if (enemy.dodgeJustConsumed[i]) {
+        enemy.dodgeJustConsumed[i] = false
+        const dashAngle = Math.atan2(enemy.dashDirY, enemy.dashDirX)
+        const backAngle = dashAngle + Math.PI
+        for (let p = 0; p < 25; p++) {
+          const a = backAngle + (Math.random() - 0.5) * 1.3
+          const speed = 250 + Math.random() * 300
+          spawnParticle(wx, wy,
+            Math.cos(a) * speed + (Math.random() - 0.5) * 50,
+            Math.sin(a) * speed + (Math.random() - 0.5) * 50,
+            dr, dg, db, 0.25 + Math.random() * 0.15, burstScale * (3 + Math.random() * 2))
+        }
+        for (let p = 0; p < 6; p++) {
+          const a = backAngle + (Math.random() - 0.5) * 0.8
+          const speed = 380 + Math.random() * 250
+          spawnParticle(wx, wy,
+            Math.cos(a) * speed, Math.sin(a) * speed,
+            220, 255, 230, 0.18 + Math.random() * 0.12, burstScale * (1.5 + Math.random() * 1.2))
+        }
+      }
+
+      // Ready converge — kicks off the spiral+shockwave overlay (which tracks the orbit each frame).
+      // Outward "punch" pop spawns from the orbit position; short-lived so the lag is invisible.
+      if (enemy.dodgeJustReady[i]) {
+        enemy.dodgeJustReady[i] = false
+        enemy.dodgeReadyFlash[i] = 0.6
+        for (let p = 0; p < 8; p++) {
+          const a = (p / 8) * Math.PI * 2
+          spawnParticle(wx, wy,
+            Math.cos(a) * 75, Math.sin(a) * 75,
+            200, 255, 210, 0.18, burstScale * 2.8)
+        }
+      }
+
+      if (timer <= 0) {
+        // Ready — filled complement-color dot with subtle beat-pulsing glow (mirrors player's ready state)
+        const glowAlpha = 0.12 + globalBeatPulse * 0.15
+        const glowR = dotR * (1.65 + globalBeatPulse * 0.35)
+        ctx.beginPath()
+        ctx.arc(dx, dy, glowR, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${dr}, ${dg}, ${db}, ${glowAlpha})`
+        ctx.fill()
+        ctx.beginPath()
+        ctx.arc(dx, dy, dotR, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${dr}, ${dg}, ${db}, 0.95)`
+        ctx.fill()
+        ctx.strokeStyle = `rgba(${dr}, ${dg}, ${db}, 0.6)`
+        ctx.lineWidth = 1.5
+        ctx.stroke()
+      } else {
+        // Recharging — black bg + white pie fill (mirrors player's recharge animation)
+        const fill = 1 - (timer / chargeTime)
+        ctx.beginPath()
+        ctx.arc(dx, dy, dotR, 0, Math.PI * 2)
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'
+        ctx.fill()
+        if (fill > 0) {
+          ctx.beginPath()
+          ctx.moveTo(dx, dy)
+          ctx.arc(dx, dy, dotR, -Math.PI / 2, -Math.PI / 2 + fill * Math.PI * 2)
+          ctx.closePath()
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.7)'
+          ctx.fill()
+        }
+      }
+    }
+
+    // Ready flash overlay — spiral converge → shockwave, follows the orbiting dot.
+    // Same structure as player at Renderer.ts:3320-3380, scaled smaller and complement-tinted.
+    const flashDuration = 0.6
+    const flashScale = Math.max(0.45, r * 0.022)   // overall radii scale with enemy size
+    for (let i = 0; i < enemy.dodgeReadyFlash.length; i++) {
+      const ft = enemy.dodgeReadyFlash[i]!
+      if (ft <= 0) continue
+      enemy.dodgeReadyFlash[i] = ft - frameDt
+      const fAngle = orbitSpeed + (Math.PI * 2 * i) / enemy.dodgeSlots.length
+      const fx = sx + Math.cos(fAngle) * orbitR
+      const fy = sy + Math.sin(fAngle) * orbitR
+      const t = 1 - (ft / flashDuration)   // 0→1 progress
+      if (t < 0.5) {
+        // Phase 1: spiral converge
+        const spiralT = t / 0.5
+        const outerR = 112 * flashScale * (1 - spiralT * spiralT)
+        const spiralRot = spiralT * Math.PI * 2
+        ctx.beginPath()
+        ctx.arc(fx, fy, outerR, 0, Math.PI * 2)
+        ctx.strokeStyle = `rgba(${dr}, ${dg}, ${db}, ${0.4 + spiralT * 0.3})`
+        ctx.lineWidth = (2 + spiralT * 1.5)
+        ctx.stroke()
+        const count = 4
+        for (let s = 0; s < count; s++) {
+          const a = (s / count) * Math.PI * 2 + spiralRot
+          const px = fx + Math.cos(a) * outerR
+          const py = fy + Math.sin(a) * outerR
+          const dotSize = (5 + spiralT * 4) * flashScale
+          // Dim complement → white-hot as they converge
+          const tr = Math.floor(dr + spiralT * (255 - dr))
+          const tg = Math.floor(dg + spiralT * (255 - dg))
+          const tb = Math.floor(db + spiralT * (255 - db))
+          ctx.beginPath()
+          ctx.arc(px, py, dotSize, 0, Math.PI * 2)
+          ctx.fillStyle = `rgba(${tr}, ${tg}, ${tb}, ${0.6 + spiralT * 0.35})`
+          ctx.fill()
+        }
+      } else {
+        // Phase 2: shockwave ring
+        const shockT = (t - 0.5) / 0.5
+        const ringR = (18 + shockT * 68) * flashScale
+        ctx.beginPath()
+        ctx.arc(fx, fy, ringR, 0, Math.PI * 2)
+        ctx.strokeStyle = `rgba(${dr}, ${dg}, ${db}, ${(1 - shockT) * 0.7})`
+        ctx.lineWidth = 3 * (1 - shockT)
+        ctx.stroke()
+        if (shockT < 0.4) {
+          ctx.beginPath()
+          ctx.arc(fx, fy, 26 * flashScale * (1 - shockT), 0, Math.PI * 2)
+          ctx.fillStyle = `rgba(220, 255, 230, ${(1 - shockT * 2.5) * 0.6})`
+          ctx.fill()
+        }
+      }
+    }
+  }
 }
 
 function drawDesignerPreview(player: Player): void {

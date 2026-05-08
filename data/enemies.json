@@ -1437,10 +1437,10 @@
     {
       "name": "Enemy27",
       "color": "#ffeb3b",
-      "hp": 10,
+      "hp": 4,
       "moveSpeed": 140,
-      "radius": 60,
-      "ringRadius": 140,
+      "radius": 90,
+      "ringRadius": 130,
       "key": "27",
       "role": "rim",
       "sound": "rim",
@@ -1456,7 +1456,25 @@
       ],
       "rings": [
         {
-          "ringRadius": 140,
+          "ringRadius": 130,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ],
+          "edgeMode": false,
+          "edgePoints": 3,
+          "edgeActive": 1,
+          "edgeSwitchBeats": 1
+        },
+        {
+          "ringRadius": 345,
           "sound": "rim",
           "beats": [
             0.5,
@@ -1487,9 +1505,9 @@
       "revengeRadius": 120,
       "dodge": true,
       "dodgeCharges": 3,
-      "dodgeChargeTime": 0.9,
-      "dodgeDistance": 200,
-      "dodgeSpeed": 0.6,
+      "dodgeChargeTime": 4.6,
+      "dodgeDistance": 780,
+      "dodgeSpeed": 0.3,
       "movePattern": "zigzag",
       "totemSpawn": "",
       "dropType": "xp",

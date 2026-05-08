@@ -114,6 +114,7 @@ function returnFromRun(): void {
     const prevReturn = getDesignerReturnPhase()
     resetGameState('designer')
     enterDesigner(prevReturn)
+    setActiveChallenge(null)   // designer doesn't run a challenge — clear so toasts don't fire
     setArenaShape(getChallengeArena() as ArenaShape)
     const p = getPlayer()
     const c = clampToArena(p.x, p.y, p.hitRadius)
@@ -259,6 +260,7 @@ window.addEventListener('keydown', e => {
       const c = clampToArena(p.x, p.y, p.hitRadius)
       p.x = c.x; p.y = c.y
       enterDesigner(getPhase())
+      setActiveChallenge(null)   // designer doesn't run a challenge — clear so toasts don't fire
       return
     }
   }

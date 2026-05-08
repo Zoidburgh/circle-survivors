@@ -8,7 +8,7 @@ import { advanceGlobalTime } from './RhythmClock.ts'
 import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
 import { advancePatternClock } from '../audio/PatternClock.ts'
 import { getPlayer, getEnemies, getGrid, getCamera, getPhase, setPhase, getXpForNextLevel, startRunTimer, advanceRunTimer, isRunTimerActive, isRunComplete, completeRun, getRunTimer, isInDesignerTestPlay } from './GameState.ts'
-import { updateOrbs, cleanupOrbs, getOrbs, spawnOrb, collectOrb } from '../entities/XPOrb.ts'
+import { updateOrbs, cleanupOrbs, getOrbs, spawnOrb, collectOrb, resetOrbs } from '../entities/XPOrb.ts'
 import type { XPOrb } from '../entities/XPOrb.ts'
 import { updateCamera, clampToArena, getArenaShape, setArenaShape, findClearSpawnPos } from '../game/Arena.ts'
 import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils/constants.ts'
@@ -794,19 +794,45 @@ function updateDesigner(dt: number): void {
   const enemies = getEnemies()
   const grid = getGrid()
   updatePlayer(player, dt)
-  // Tick spawn-test enemies so they animate, fire rings, etc. Damage to player is gated by isDesignerSafe().
+  // Tick all alive enemies (spawn-test ephemerals AND any children they summon — totems,
+  // shrines, summoners. Without this, summoned children stay frozen at spawn radius 1 = "tiny specs").
+  // Player can take damage normally — but won't die because death check is gated to phase 'playing'.
   grid.clear()
   for (const e of enemies) {
-    if (e.designerEphemeral && e.alive) grid.insert(e)
+    if (e.alive) grid.insert(e)
+  }
+  for (const orb of getOrbs()) {
+    if (orb.alive && !orb.dying) grid.insert(orb)
   }
   for (const e of enemies) {
-    if (!e.designerEphemeral) continue
     if (e.dying) updateDeath(e, dt)
     else if (e.alive) updateEnemy(e, player, dt, grid)
   }
-  // Enemy-vs-enemy separation (mirrors the play-mode pass at ~line 1580, ephemerals only)
+  // Ritual nodes (orbiting nodes around summoners) — without this, summoner nodes are frozen.
+  updateRitualNodes(dt)
+  // Tick orbs (grow-in, animations). Player pushes orbs aside on contact — collection happens
+  // via the ring sweep (HitDetection's player:beat handler), same as real game.
+  updateOrbs(dt)
+  for (const orb of getOrbs()) {
+    if (!orb.alive || orb.dying) continue
+    const pdx = orb.x - player.x
+    const pdy = orb.y - player.y
+    const pDist = Math.sqrt(pdx * pdx + pdy * pdy)
+    const pMin = orb.radius + player.hitRadius
+    if (pDist < pMin && pDist > 0.1) {
+      const overlap = pMin - pDist
+      const nx = pdx / pDist
+      const ny = pdy / pDist
+      orb.x += nx * overlap * 0.85
+      orb.y += ny * overlap * 0.85
+      player.x -= nx * overlap * 0.15
+      player.y -= ny * overlap * 0.15
+    }
+  }
+  cleanupOrbs()
+  // Enemy-vs-enemy separation
   for (const enemy of enemies) {
-    if (!enemy.designerEphemeral || !enemy.alive || enemy.dying) continue
+    if (!enemy.alive || enemy.dying) continue
     const nearby = grid.query(enemy)
     for (const other of nearby) {
       if (other === enemy || !('hp' in other)) continue
@@ -819,9 +845,27 @@ function updateDesigner(dt: number): void {
       if (dist < minDist && dist > 0.1) {
         const nx = dx / dist
         const ny = dy / dist
-        const overlap = (minDist - dist) * 0.5
-        if (!enemy.immovable) { enemy.x += nx * overlap; enemy.y += ny * overlap }
-        if (!oe.immovable)    { oe.x -= nx * overlap;     oe.y -= ny * overlap     }
+        const overlap = minDist - dist
+        // Mirror real-game asymmetric mass: dasher plows normal (80/20).
+        if (oe.immovable) {
+          if (!enemy.immovable) { enemy.x += nx * overlap; enemy.y += ny * overlap }
+        } else if (enemy.immovable) {
+          oe.x -= nx * overlap; oe.y -= ny * overlap
+        } else {
+          const aDashing = enemy.dodge && enemy.dashTimer >= 0
+          const bDashing = oe.dodge && oe.dashTimer >= 0
+          if (aDashing && !bDashing) {
+            enemy.x += nx * overlap * 0.05; enemy.y += ny * overlap * 0.05
+            oe.x    -= nx * overlap * 0.95; oe.y    -= ny * overlap * 0.95
+          } else if (!aDashing && bDashing) {
+            enemy.x += nx * overlap * 0.95; enemy.y += ny * overlap * 0.95
+            oe.x    -= nx * overlap * 0.05; oe.y    -= ny * overlap * 0.05
+          } else {
+            const half = overlap * 0.5
+            enemy.x += nx * half; enemy.y += ny * half
+            oe.x    -= nx * half; oe.y    -= ny * half
+          }
+        }
       }
     }
     const ec = clampToArena(enemy.x, enemy.y, enemy.radius)
@@ -829,7 +873,7 @@ function updateDesigner(dt: number): void {
   }
   // Player-vs-enemy push (mirrors line 1736)
   for (const enemy of enemies) {
-    if (!enemy.designerEphemeral || !enemy.alive || enemy.dying || enemy.isShrine) continue
+    if (!enemy.alive || enemy.dying || enemy.isShrine) continue
     const minDist = enemy.radius + player.hitRadius
     const dx = player.x - enemy.x
     const dy = player.y - enemy.y
@@ -845,6 +889,11 @@ function updateDesigner(dt: number): void {
         player.y += ny * overlap * 0.85
         const ec = clampToArena(enemy.x, enemy.y, enemy.radius)
         enemy.x = ec.x; enemy.y = ec.y
+      } else if (enemy.dodge && enemy.dashTimer >= 0) {
+        enemy.x -= nx * overlap * 0.05
+        enemy.y -= ny * overlap * 0.05
+        player.x += nx * overlap * 0.95
+        player.y += ny * overlap * 0.95
       } else {
         player.x += nx * overlap * 0.2
         player.y += ny * overlap * 0.2
@@ -855,10 +904,10 @@ function updateDesigner(dt: number): void {
   }
   const pc = clampToArena(player.x, player.y, player.hitRadius)
   player.x = pc.x; player.y = pc.y
-  // Drop dead/cleaned ephemerals
+  // Drop dead/cleaned enemies (ephemerals + their offspring)
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i]!
-    if (e.designerEphemeral && !e.alive && !e.dying) enemies.splice(i, 1)
+    if (!e.alive && !e.dying) enemies.splice(i, 1)
   }
   const dir = Input.getMovementDir()
   updateCamera(cam, player.x, player.y, dir.x, dir.y, Renderer.getLogicalSize().w, Renderer.getLogicalSize().h, dt)
@@ -866,10 +915,11 @@ function updateDesigner(dt: number): void {
 }
 
 export function clearDesignerEphemerals(): void {
+  // Wipe all enemies (ephemeral spawn-test + any children they summoned) + orbs they dropped.
+  // The designer scene should be empty unless the user re-spawns.
   const enemies = getEnemies()
-  for (let i = enemies.length - 1; i >= 0; i--) {
-    if (enemies[i]!.designerEphemeral) enemies.splice(i, 1)
-  }
+  enemies.length = 0
+  resetOrbs()
 }
 
 export function update(dt: number): void {
@@ -1633,10 +1683,10 @@ export function update(dt: number): void {
             oe.y -= ny * overlap * 0.5
           } else {
             // Immovable barely moves (10%), other takes the rest (90%)
-            enemy.x += nx * overlap * 0.1
-            enemy.y += ny * overlap * 0.1
-            oe.x -= nx * overlap * 0.9
-            oe.y -= ny * overlap * 0.9
+            enemy.x += nx * overlap * 0.05
+            enemy.y += ny * overlap * 0.05
+            oe.x -= nx * overlap * 0.95
+            oe.y -= ny * overlap * 0.95
             // Reflect bounce velocity off immovable
             if (oe.movePattern === 'bounce') {
               const bnx = -nx  // normal points from oe toward immovable
@@ -1684,11 +1734,29 @@ export function update(dt: number): void {
               }
             }
           } else {
-            const overlap = (minDist - dist) * 0.5
-            enemy.x += nx * overlap
-            enemy.y += ny * overlap
-            oe.x -= nx * overlap
-            oe.y -= ny * overlap
+            // Dashing enemy gets heavy "dasher mass" — plows through normals (90/10 in dasher's favor).
+            // Higher than player's 80/20 because the dash is short — needs less per-frame friction
+            // to traverse a clump of enemies in a 0.2s burst.
+            const aDashing = enemy.dodge && enemy.dashTimer >= 0
+            const bDashing = oe.dodge && oe.dashTimer >= 0
+            const overlap = minDist - dist
+            if (aDashing && !bDashing) {
+              enemy.x += nx * overlap * 0.05
+              enemy.y += ny * overlap * 0.05
+              oe.x    -= nx * overlap * 0.95
+              oe.y    -= ny * overlap * 0.95
+            } else if (!aDashing && bDashing) {
+              enemy.x += nx * overlap * 0.95
+              enemy.y += ny * overlap * 0.95
+              oe.x    -= nx * overlap * 0.05
+              oe.y    -= ny * overlap * 0.05
+            } else {
+              const half = overlap * 0.5
+              enemy.x += nx * half
+              enemy.y += ny * half
+              oe.x    -= nx * half
+              oe.y    -= ny * half
+            }
           }
         }
       }
@@ -1775,6 +1843,12 @@ export function update(dt: number): void {
           const ec = clampToArena(enemy.x, enemy.y, enemy.radius)
           enemy.x = ec.x
           enemy.y = ec.y
+        } else if (enemy.dodge && enemy.dashTimer >= 0) {
+          // Dashing enemy plows the player (90/10 — same heavy "dasher mass" as enemy-vs-enemy)
+          enemy.x -= nx * overlap * 0.05
+          enemy.y -= ny * overlap * 0.05
+          player.x += nx * overlap * 0.95
+          player.y += ny * overlap * 0.95
         } else {
           // Player is heavier than normal enemies
           player.x += nx * overlap * 0.2

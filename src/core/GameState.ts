@@ -55,7 +55,6 @@ export function exitDesigner(): void {
   phase = designerReturnPhase
 }
 export function getDesignerReturnPhase(): GamePhase { return designerReturnPhase }
-export function isDesignerSafe(): boolean { return phase === 'designer' }
 export function setDesignerPrevArenaShape(s: string | null): void { designerPrevArenaShape = s }
 export function getDesignerPrevArenaShape(): string | null { return designerPrevArenaShape }
 export function setInDesignerTestPlay(b: boolean): void { inDesignerTestPlay = b }

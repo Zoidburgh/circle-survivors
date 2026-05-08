@@ -3,7 +3,7 @@ import { createRing } from './Ring.ts'
 import { ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { shouldFire, getBeatInterval, getLoopPosition } from '../audio/PatternClock.ts'
 import { playWindup } from '../audio/AudioEngine.ts'
-import { isRunTimerActive, isRunComplete, startRunTimer } from '../core/GameState.ts'
+import { isRunTimerActive, isRunComplete, startRunTimer, getPhase } from '../core/GameState.ts'
 import { showToast } from '../render/Renderer.ts'
 import { applyDashMotion } from './DashMotion.ts'
 
@@ -128,6 +128,9 @@ export interface Enemy {
   // Dodge trait — same field names/semantics as Player.dash* so shared helpers work on both
   dodge: boolean
   dodgeSlots: number[]            // per-slot recharge timer (0 = ready, >0 = recharging)
+  dodgeJustConsumed: boolean[]    // transient — set when slot consumed, cleared by Renderer after burst
+  dodgeJustReady: boolean[]       // transient — set when slot finishes recharging, cleared by Renderer
+  dodgeReadyFlash: number[]       // per-slot flash timer (0 = inactive, >0 = spiral/shockwave overlay)
   dashTimer: number               // -1 = idle, >0 = mid-burst (mirrors player.dashTimer)
   dashDirX: number
   dashDirY: number
@@ -262,6 +265,9 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     // Dodge trait (no behavior yet — Step 2 wires the trigger)
     dodge: type.dodge ?? false,
     dodgeSlots: type.dodge ? Array(type.dodgeCharges ?? 2).fill(0) : [],
+    dodgeJustConsumed: type.dodge ? Array(type.dodgeCharges ?? 2).fill(false) : [],
+    dodgeJustReady: type.dodge ? Array(type.dodgeCharges ?? 2).fill(false) : [],
+    dodgeReadyFlash: type.dodge ? Array(type.dodgeCharges ?? 2).fill(0) : [],
     dashTimer: -1,
     dashDirX: 0,
     dashDirY: 0,
@@ -296,7 +302,7 @@ function shouldDodge(enemy: Enemy, player: Player): DangerRing | null {
   const checkRing = (timer: number, r: number): DangerRing | null => {
     if (timer < 0) return null
     const pct = timer / ATTACK_EXPAND_TIME
-    if (pct < 0.75 || pct > 0.9) return null
+    if (pct < 0.5 || pct > 0.85) return null   // earlier window so burst peaks before ring peak
     const dist = Math.hypot(enemy.x - player.x, enemy.y - player.y)
     if (Math.abs(dist - r) > band) return null
     return { peakR: r, dist }
@@ -311,38 +317,59 @@ function shouldDodge(enemy: Enemy, player: Player): DangerRing | null {
   return null
 }
 
-function pickDodgeDirection(enemy: Enemy, player: Player, danger: DangerRing): { x: number; y: number } | null {
-  // Radial dodge: toward player if enemy is inside ring's reach (close side will be hit),
-  // away from player if enemy is outside ring's reach (far side will be hit).
-  // (Step 3 will add full 8-direction with scoring + perpendicular options.)
-  const dx = enemy.x - player.x
-  const dy = enemy.y - player.y
-  const len = Math.hypot(dx, dy)
-  if (len < 0.1) return { x: 1, y: 0 }
-  const awayX = dx / len, awayY = dy / len
-  const towardX = -awayX, towardY = -awayY
-  const insideReach = danger.dist < danger.peakR
-  const primary = insideReach ? { x: towardX, y: towardY } : { x: awayX, y: awayY }
-  const fallback = insideReach ? { x: awayX, y: awayY } : { x: towardX, y: towardY }
-  const tryDir = (d: { x: number; y: number }): boolean => {
-    const newX = enemy.x + d.x * enemy.dashDistance
-    const newY = enemy.y + d.y * enemy.dashDistance
-    const c = clampToArena(newX, newY, enemy.radius)
-    return Math.hypot(newX - c.x, newY - c.y) <= 10
+function pickDodgeDirection(enemy: Enemy, player: Player, danger: DangerRing, grid: SpatialGrid): { x: number; y: number } | null {
+  // Score 8 candidates at 45° around the enemy. Score = distance from ring path at peak (safer = bigger).
+  // Heavy bonus for staying on the same side of the ring band as where you started — avoids
+  // pointless leapfrog dodges that cross through the danger zone.
+  // Hard-skip walls AND nearby immovable enemies (treated like soft walls).
+  let baseAngle = Math.atan2(enemy.y - player.y, enemy.x - player.x)
+  if (danger.dist < danger.peakR) baseAngle += Math.PI
+  const startedInside = danger.dist < danger.peakR
+  const nearby = grid.query(enemy)
+  const heavies: { x: number; y: number; r: number }[] = []
+  for (const o of nearby) {
+    if (!('hp' in o)) continue
+    const oe = o as Enemy
+    if (oe === enemy || !oe.alive || oe.dying || !oe.immovable) continue
+    heavies.push({ x: oe.x, y: oe.y, r: oe.radius })
   }
-  if (tryDir(primary)) return primary
-  if (tryDir(fallback)) return fallback
-  return null
+  const candidates: { x: number; y: number; score: number }[] = []
+  for (let i = 0; i < 8; i++) {
+    const angle = baseAngle + (i * Math.PI / 4)
+    const dx = Math.cos(angle)
+    const dy = Math.sin(angle)
+    const newX = enemy.x + dx * enemy.dashDistance
+    const newY = enemy.y + dy * enemy.dashDistance
+    const c = clampToArena(newX, newY, enemy.radius)
+    if (Math.hypot(newX - c.x, newY - c.y) > 10) continue   // wall — skip
+    // Heavy avoidance: skip if landing inside any immovable's hitbox + small buffer.
+    let blockedByHeavy = false
+    for (const h of heavies) {
+      if (Math.hypot(newX - h.x, newY - h.y) < h.r + enemy.radius + 5) { blockedByHeavy = true; break }
+    }
+    if (blockedByHeavy) continue
+    const newDist = Math.hypot(newX - player.x, newY - player.y)
+    let score = Math.abs(newDist - danger.peakR)
+    const newInside = newDist < danger.peakR
+    if (startedInside === newInside) score += 115   // strong same-side bias
+    candidates.push({ x: dx, y: dy, score })
+  }
+  if (candidates.length === 0) return null   // all blocked — no dodge, no charge consumed
+  candidates.sort((a, b) => b.score - a.score)
+  return { x: candidates[0]!.x, y: candidates[0]!.y }
 }
 
-function updateDodge(enemy: Enemy, player: Player, dt: number): void {
+function updateDodge(enemy: Enemy, player: Player, dt: number, grid: SpatialGrid): void {
   const type = getEnemyType(enemy.typeName)
   if (!type) return
   // Tick charge timers — each slot recharges independently, like player dash
   for (let i = 0; i < enemy.dodgeSlots.length; i++) {
     if (enemy.dodgeSlots[i]! > 0) {
       enemy.dodgeSlots[i]! -= dt
-      if (enemy.dodgeSlots[i]! < 0) enemy.dodgeSlots[i] = 0
+      if (enemy.dodgeSlots[i]! <= 0) {
+        enemy.dodgeSlots[i] = 0
+        enemy.dodgeJustReady[i] = true   // Renderer fires the converge animation, then clears
+      }
     }
   }
 
@@ -353,7 +380,7 @@ function updateDodge(enemy: Enemy, player: Player, dt: number): void {
 
   const danger = shouldDodge(enemy, player)
   if (!danger) return
-  const dir = pickDodgeDirection(enemy, player, danger)
+  const dir = pickDodgeDirection(enemy, player, danger, grid)
   if (!dir) return   // all directions walled — no dodge, no charge consumed
 
   enemy.dashDirX = dir.x
@@ -361,6 +388,7 @@ function updateDodge(enemy: Enemy, player: Player, dt: number): void {
   enemy.dashTimer = enemy.dashDuration
   enemy.dashPath = [{ x: enemy.x, y: enemy.y }]
   enemy.dodgeSlots[readySlot] = type.dodgeChargeTime ?? 1.5
+  enemy.dodgeJustConsumed[readySlot] = true   // Renderer fires the consume burst, then clears
 }
 
 export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: SpatialGrid): void {
@@ -646,8 +674,11 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     }
   }
 
-  // Don't overlap player — bounce off player too (shrines let player walk through)
-  if (enemy.isShrine) { /* skip player push */ } else {
+  // Don't overlap player — bounce off player too (shrines let player walk through).
+  // Mid-dash dashers SKIP this — let the main player-vs-enemy pass handle them with the
+  // asymmetric "dasher mass" rule, otherwise they get instantly bounced off and never plow.
+  const isDashing = enemy.dodge && enemy.dashTimer >= 0
+  if (enemy.isShrine || isDashing) { /* skip player push */ } else {
   const pMinDist = enemy.radius + PLAYER_RADIUS
   const pDx = enemy.x - player.x
   const pDy = enemy.y - player.y
@@ -666,7 +697,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
       }
     }
   }
-  } // end shrine player-push skip
+  } // end shrine/dasher player-push skip
 
   // Preserve bounce speed — reflections can degrade magnitude over time
   if (isBounce) {
@@ -778,7 +809,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   }
 
   // Tick dodge state (charges/exhaustion) and check trigger AFTER all movement is settled
-  if (enemy.dodge) updateDodge(enemy, player, dt)
+  if (enemy.dodge) updateDodge(enemy, player, dt, grid)
 }
 
 export const DEATH_DURATION = 0.3
@@ -810,7 +841,7 @@ export function rollDrop(enemy: Enemy): 'xp' | 'hp' | null {
 
 export function damageEnemy(enemy: Enemy, amount: number): void {
   if (enemy.dying || enemy.isShrine) return
-  if (!isRunTimerActive() && !isRunComplete()) startRunTimer()
+  if (!isRunTimerActive() && !isRunComplete() && getPhase() === 'playing') startRunTimer()
   // Track hits on stationary or revenge enemies
   if (enemy.immovable || enemy.revenge) {
     const now = performance.now() / 1000
