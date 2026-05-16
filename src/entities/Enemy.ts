@@ -2,7 +2,7 @@ import type { Ring } from './Ring.ts'
 import { createRing } from './Ring.ts'
 import { ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { shouldFire, getBeatInterval, getLoopPosition } from '../audio/PatternClock.ts'
-import { playWindup } from '../audio/AudioEngine.ts'
+import { playWindup, playEnemyDodge, playEnemyShieldBreak, playEnemyShieldRestore, startEnemyShieldFuseBurn, stopEnemyShieldFuseBurn } from '../audio/AudioEngine.ts'
 import { isRunTimerActive, isRunComplete, startRunTimer, getPhase } from '../core/GameState.ts'
 import { showToast } from '../render/Renderer.ts'
 import { applyDashMotion } from './DashMotion.ts'
@@ -16,7 +16,7 @@ export function tickLeaveToastCD(dt: number): void {
 export function resetLeaveToastCD(): void { leaveToastGlobalCD = 0; revengeToastGlobalCD = 0 }
 import { clampToArena, getArenaShape, ARENA_CX, ARENA_CY } from '../game/Arena.ts'
 import { emit } from '../core/EventBus.ts'
-import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC } from '../utils/constants.ts'
+import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC, SHIELD_BREAK_FLASH } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import type { Player } from './Player.ts'
 import type { EnemyType, MovePattern, SummonPhase, ShrinePhase } from './EnemyTypes.ts'
@@ -138,6 +138,15 @@ export interface Enemy {
   dashDistance: number            // total burst distance (used by sine-curve speed calc)
   dashSpeedMult: number           // user-tunable burst speed multiplier (default 1.0)
   dashPath: { x: number; y: number }[]   // for afterimage (mirrors player.dashPath)
+  // Shield trait — same field names/semantics as Player.shield* so shared helpers work on both
+  shield: boolean
+  shieldCharges: number
+  shieldMaxCharges: number        // hardcoded 1 (matches player)
+  shieldRechargeTimer: number     // -1 = charged, >0 = recharging
+  shieldBreakFlash: number        // visual break effect timer
+  shieldRechargeTime: number      // = type.shieldRechargeTime
+  shieldJustRestored: boolean     // transient — set when shield refills, cleared by Renderer after burst
+  shieldActivateTimer: number     // >0 = bright outer ring fades over this duration (activation glow)
 }
 
 /** Get the world positions a ring fires from (center or edge offsets) */
@@ -275,6 +284,15 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     dashDistance: type.dodgeDistance ?? 100,
     dashSpeedMult: type.dodgeSpeed ?? 1,
     dashPath: [],
+    // Shield trait (no behavior yet — Step 2 wires absorb logic)
+    shield: type.shield ?? false,
+    shieldCharges: type.shield ? 1 : 0,
+    shieldMaxCharges: 1,
+    shieldRechargeTimer: -1,
+    shieldBreakFlash: 0,
+    shieldRechargeTime: type.shieldRechargeTime ?? 4,
+    shieldJustRestored: false,
+    shieldActivateTimer: 0,
   }
   // Shrines: skip spawn animation, pushable by enemies
   if (e.isShrine) {
@@ -302,7 +320,7 @@ function shouldDodge(enemy: Enemy, player: Player): DangerRing | null {
   const checkRing = (timer: number, r: number): DangerRing | null => {
     if (timer < 0) return null
     const pct = timer / ATTACK_EXPAND_TIME
-    if (pct < 0.5 || pct > 0.85) return null   // earlier window so burst peaks before ring peak
+    if (pct < 0.45 || pct > 0.85) return null   // earlier window so burst peaks before ring peak
     const dist = Math.hypot(enemy.x - player.x, enemy.y - player.y)
     if (Math.abs(dist - r) > band) return null
     return { peakR: r, dist }
@@ -389,6 +407,7 @@ function updateDodge(enemy: Enemy, player: Player, dt: number, grid: SpatialGrid
   enemy.dashPath = [{ x: enemy.x, y: enemy.y }]
   enemy.dodgeSlots[readySlot] = type.dodgeChargeTime ?? 1.5
   enemy.dodgeJustConsumed[readySlot] = true   // Renderer fires the consume burst, then clears
+  playEnemyDodge()
 }
 
 export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: SpatialGrid): void {
@@ -422,6 +441,23 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     if (enemy.chillDecayTimer >= CHILL_STACK_DECAY_TIME * decayMult) {
       enemy.chillStacks--
       enemy.chillDecayTimer = 0
+    }
+  }
+
+  // Shield: tick break flash + recharge timer + activate glow (mirrors Player.updatePlayer:228-238)
+  if (enemy.shield) {
+    if (enemy.shieldBreakFlash > 0) enemy.shieldBreakFlash -= dt
+    if (enemy.shieldActivateTimer > 0) enemy.shieldActivateTimer -= dt
+    if (enemy.shieldRechargeTimer > 0) {
+      enemy.shieldRechargeTimer -= dt
+      if (enemy.shieldRechargeTimer <= 0) {
+        enemy.shieldRechargeTimer = -1
+        enemy.shieldCharges = Math.min(enemy.shieldCharges + 1, enemy.shieldMaxCharges)
+        enemy.shieldJustRestored = true
+        enemy.shieldActivateTimer = 0.55
+        playEnemyShieldRestore()
+        stopEnemyShieldFuseBurn()
+      }
     }
   }
 
@@ -864,11 +900,27 @@ export function damageEnemy(enemy: Enemy, amount: number): void {
       }
     }
   }
+  // Shield absorb — same model as Player.hurtPlayer (no HP loss, breaks the shield, kicks recharge)
+  if (enemy.shield && enemy.shieldCharges > 0) {
+    enemy.shieldCharges--
+    enemy.shieldBreakFlash = SHIELD_BREAK_FLASH
+    enemy.hitFlash = HIT_FLASH_DURATION
+    enemy.shieldRechargeTimer = enemy.shieldRechargeTime
+    playEnemyShieldBreak()
+    startEnemyShieldFuseBurn(enemy.shieldRechargeTime)
+    return
+  }
   enemy.hp -= amount
   enemy.hitFlash = HIT_FLASH_DURATION
+  // Reset shield recharge on HP damage (mirrors Player.hurtPlayer:217-220) — restart fuse audio too
+  if (enemy.shield && enemy.shieldRechargeTimer > 0) {
+    enemy.shieldRechargeTimer = enemy.shieldRechargeTime
+    startEnemyShieldFuseBurn(enemy.shieldRechargeTime)
+  }
   if (enemy.hp <= 0) {
     enemy.dying = true
     enemy.deathTimer = 0
+    if (enemy.shield && enemy.shieldRechargeTimer > 0) stopEnemyShieldFuseBurn()
     emit('enemy:killed', enemy)
   }
 }

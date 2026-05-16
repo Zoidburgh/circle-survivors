@@ -813,7 +813,8 @@ function updateDesigner(dt: number): void {
   // Tick orbs (grow-in, animations). Player pushes orbs aside on contact — collection happens
   // via the ring sweep (HitDetection's player:beat handler), same as real game.
   updateOrbs(dt)
-  for (const orb of getOrbs()) {
+  const orbs = getOrbs()
+  for (const orb of orbs) {
     if (!orb.alive || orb.dying) continue
     const pdx = orb.x - player.x
     const pdy = orb.y - player.y
@@ -828,6 +829,37 @@ function updateDesigner(dt: number): void {
       player.x -= nx * overlap * 0.15
       player.y -= ny * overlap * 0.15
     }
+  }
+  // Orb separation (grid-accelerated, mirrors real-game pass at GameManager.ts:1787)
+  for (const orb of orbs) {
+    if (!orb.alive || orb.dying) continue
+    const nearby = grid.query(orb)
+    for (const other of nearby) {
+      if (other === orb) continue
+      const isEnemy = 'hp' in other
+      const minDist = orb.radius + other.radius
+      const dx = orb.x - other.x
+      const dy = orb.y - other.y
+      const dist = Math.sqrt(dx * dx + dy * dy)
+      if (dist < minDist && dist > 0.1) {
+        const nx = dx / dist
+        const ny = dy / dist
+        const overlap = (minDist - dist) * 0.5
+        orb.x += nx * overlap
+        orb.y += ny * overlap
+        if (!isEnemy) {
+          const otherOrb = other as typeof orb
+          otherOrb.x -= nx * overlap
+          otherOrb.y -= ny * overlap
+        } else {
+          const oe = other as Enemy
+          if (!oe.immovable) { oe.x -= nx * overlap; oe.y -= ny * overlap }
+        }
+      }
+    }
+    const oc = clampToArena(orb.x, orb.y, orb.radius)
+    orb.x = oc.x
+    orb.y = oc.y
   }
   cleanupOrbs()
   // Enemy-vs-enemy separation

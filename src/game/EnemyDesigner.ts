@@ -257,6 +257,8 @@ export interface PreviewEnemy {
   dodgeChargeTime: number
   dodgeDistance: number
   dodgeSpeed: number
+  shield: boolean
+  shieldRechargeTime: number
   totemSpawn: string
   isShrine: boolean
   shrineSpawnEnemy: string
@@ -814,6 +816,10 @@ function addEnemyForm(existing?: DesignedEnemy): void {
             <span style="color:#4FC3F7;font:11px monospace;">Dodge</span>
           </label>
           <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input id="ed-shield-${id}" type="checkbox" ${existing?.shield ? 'checked' : ''}>
+            <span style="color:#00DCFF;font:11px monospace;">Shield</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
             <input id="ed-summon-${id}" type="checkbox" ${existing?.summon ? 'checked' : ''}>
             <span style="color:#FFD740;font:11px monospace;">Summon</span>
           </label>
@@ -851,6 +857,10 @@ function addEnemyForm(existing?: DesignedEnemy): void {
             <div style="flex:1;min-width:80px;"><span style="color:#4FC3F7;font:9px monospace;">Dist: <span id="ed-dodge-dist-val-${id}">${existing?.dodgeDistance ?? 100}</span></span><input id="ed-dodge-dist-${id}" type="range" min="40" max="1000" step="10" value="${existing?.dodgeDistance ?? 100}" style="width:100%;"></div>
             <div style="flex:1;min-width:80px;"><span style="color:#4FC3F7;font:9px monospace;">Speed: <span id="ed-dodge-speed-val-${id}">${existing?.dodgeSpeed ?? 1}</span>x</span><input id="ed-dodge-speed-${id}" type="range" min="0.3" max="3" step="0.1" value="${existing?.dodgeSpeed ?? 1}" style="width:100%;"></div>
           </div>
+        </div>
+        <div id="ed-shield-wrap-${id}" style="margin-top:4px;display:${existing?.shield ? 'block' : 'none'};">
+          <span style="color:#00DCFF;font:9px monospace;">Recharge: <span id="ed-shield-recharge-val-${id}">${existing?.shieldRechargeTime ?? 4}</span>s</span>
+          <input id="ed-shield-recharge-${id}" type="range" min="1" max="20" step="0.5" value="${existing?.shieldRechargeTime ?? 4}" style="width:100%;display:block;">
         </div>
         <div id="ed-summon-wrap-${id}" style="margin-top:4px;display:${existing?.summon ? 'block' : 'none'};">
           <div style="display:flex;gap:6px;align-items:center;">
@@ -1134,6 +1144,16 @@ function addEnemyForm(existing?: DesignedEnemy): void {
   dodgeDistInput.addEventListener('input', () => { dodgeDistVal.textContent = dodgeDistInput.value })
   dodgeSpeedInput.addEventListener('input', () => { dodgeSpeedVal.textContent = dodgeSpeedInput.value })
 
+  // Shield checkbox toggles recharge slider
+  const shieldCheckbox = body.querySelector(`#ed-shield-${id}`) as HTMLInputElement
+  const shieldWrap = body.querySelector(`#ed-shield-wrap-${id}`) as HTMLDivElement
+  const shieldRechargeInput = body.querySelector(`#ed-shield-recharge-${id}`) as HTMLInputElement
+  const shieldRechargeVal = body.querySelector(`#ed-shield-recharge-val-${id}`) as HTMLSpanElement
+  shieldCheckbox.addEventListener('change', () => {
+    shieldWrap.style.display = shieldCheckbox.checked ? 'block' : 'none'
+  })
+  shieldRechargeInput.addEventListener('input', () => { shieldRechargeVal.textContent = shieldRechargeInput.value })
+
   // Summon tag wiring
   const summonCheckbox = body.querySelector(`#ed-summon-${id}`) as HTMLInputElement
   const summonWrap = body.querySelector(`#ed-summon-wrap-${id}`) as HTMLDivElement
@@ -1309,6 +1329,8 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       dodgeChargeTime: form.dodgeChargeTime ?? 1.5,
       dodgeDistance: form.dodgeDistance ?? 100,
       dodgeSpeed: form.dodgeSpeed ?? 1,
+      shield: form.shield ?? false,
+      shieldRechargeTime: form.shieldRechargeTime ?? 4,
       totemSpawn: form.totemSpawn ?? '',
       isShrine: form.isShrine ?? false,
       shrineSpawnEnemy: form.shrineSpawnEnemy ?? '',
@@ -1360,6 +1382,8 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const dodgeChargeTime = parseFloat((div.querySelector(`#ed-dodge-cd-${id}`) as HTMLInputElement).value) || 1.5
     const dodgeDistance = parseInt((div.querySelector(`#ed-dodge-dist-${id}`) as HTMLInputElement).value) || 100
     const dodgeSpeed = parseFloat((div.querySelector(`#ed-dodge-speed-${id}`) as HTMLInputElement).value) || 1
+    const shield = (div.querySelector(`#ed-shield-${id}`) as HTMLInputElement).checked
+    const shieldRechargeTime = parseFloat((div.querySelector(`#ed-shield-recharge-${id}`) as HTMLInputElement).value) || 4
     const totemSpawn = (div.querySelector(`#ed-totem-${id}`) as HTMLInputElement).value.trim()
     const summon = (div.querySelector(`#ed-summon-${id}`) as HTMLInputElement).checked
     const summonNodes = parseInt((div.querySelector(`#ed-summon-nodes-${id}`) as HTMLInputElement).value) || 3
@@ -1395,7 +1419,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
     const finalHp = isShrine && shrinePhases.length > 0 ? shrinePhases.length : hp
-    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, dodge, dodgeCharges, dodgeChargeTime, dodgeDistance, dodgeSpeed, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
+    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, dodge, dodgeCharges, dodgeChargeTime, dodgeDistance, dodgeSpeed, shield, shieldRechargeTime, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
   }
 
 

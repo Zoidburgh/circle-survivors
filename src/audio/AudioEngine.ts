@@ -422,6 +422,71 @@ export function startShieldFuseBurn(duration: number): void {
   fuseBurnNodes = { gain, sources: [noise, hum as unknown as AudioBufferSourceNode] }
 }
 
+// Enemy shield fuse — higher pitch than player's. One global instance — newest start
+// replaces old. Same crackle + rising hum vocabulary, just shifted up.
+let enemyFuseBurnNodes: { gain: GainNode; sources: AudioBufferSourceNode[] } | null = null
+
+export function startEnemyShieldFuseBurn(duration: number): void {
+  ensureContext()
+  stopEnemyShieldFuseBurn()
+  const c = ctx!
+  const t = c.currentTime
+  const bufLen = 2
+  const buf = c.createBuffer(1, Math.floor(c.sampleRate * bufLen), c.sampleRate)
+  const data = buf.getChannelData(0)
+  for (let i = 0; i < data.length; i++) {
+    data[i] = (Math.random() * 2 - 1) * (Math.random() < 0.05 ? 0.8 : 0.2)
+  }
+  const noise = c.createBufferSource()
+  noise.buffer = buf
+  noise.loop = true
+  const filter = c.createBiquadFilter()
+  filter.type = 'bandpass'
+  filter.Q.value = 3
+  // Higher than player's 800→2500→4000
+  filter.frequency.setValueAtTime(1500, t)
+  filter.frequency.exponentialRampToValueAtTime(4500, t + duration * 0.8)
+  filter.frequency.exponentialRampToValueAtTime(7000, t + duration)
+  const gain = c.createGain()
+  gain.gain.setValueAtTime(0.001, t)
+  gain.gain.linearRampToValueAtTime(rVol(0.06), t + 0.5)
+  gain.gain.linearRampToValueAtTime(rVol(0.12), t + duration * 0.5)
+  gain.gain.linearRampToValueAtTime(rVol(0.20), t + duration)
+  noise.connect(filter)
+  filter.connect(gain)
+  gain.connect(reverbInput)
+  noise.start(t)
+  noise.stop(t + duration + 0.5)
+
+  // Higher hum than player's 120→300 — uses a triangle for a more "electric" feel
+  const hum = c.createOscillator()
+  const humGain = c.createGain()
+  hum.type = 'triangle'
+  hum.frequency.setValueAtTime(rPitch(280), t)
+  hum.frequency.exponentialRampToValueAtTime(rPitch(640), t + duration)
+  humGain.gain.setValueAtTime(0.001, t)
+  humGain.gain.linearRampToValueAtTime(rVol(0.04), t + 0.5)
+  humGain.gain.linearRampToValueAtTime(rVol(0.10), t + duration * 0.5)
+  humGain.gain.linearRampToValueAtTime(rVol(0.16), t + duration)
+  hum.connect(humGain)
+  humGain.connect(master)
+  hum.start(t)
+  hum.stop(t + duration + 0.5)
+
+  enemyFuseBurnNodes = { gain, sources: [noise, hum as unknown as AudioBufferSourceNode] }
+}
+
+export function stopEnemyShieldFuseBurn(): void {
+  if (enemyFuseBurnNodes) {
+    try {
+      enemyFuseBurnNodes.gain.gain.cancelScheduledValues(0)
+      enemyFuseBurnNodes.gain.gain.setValueAtTime(0, 0)
+      for (const s of enemyFuseBurnNodes.sources) try { s.stop() } catch {}
+    } catch {}
+    enemyFuseBurnNodes = null
+  }
+}
+
 export function stopShieldFuseBurn(): void {
   if (fuseBurnNodes) {
     try {
@@ -431,6 +496,53 @@ export function stopShieldFuseBurn(): void {
     } catch {}
     fuseBurnNodes = null
   }
+}
+
+// Throttled enemy shield events — distinct from player's so you can hear who's affected.
+let lastEnemyShieldBreakTime = 0
+let lastEnemyShieldRestoreTime = 0
+export function playEnemyShieldBreak(): void {
+  ensureContext()
+  const t = ctx!.currentTime
+  if (t - lastEnemyShieldBreakTime < 0.06) return
+  lastEnemyShieldBreakTime = t
+  playShieldBreak()
+}
+// Enemy shield restore — "powering up and online" feel, distinct from player's deep sweep.
+// Rising sine harmonics (no noise click) — soft attack, sustained shimmer, slow release.
+export function playEnemyShieldRestore(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  if (t - lastEnemyShieldRestoreTime < 0.06) return
+  lastEnemyShieldRestoreTime = t
+
+  const dur = 0.45
+  // Rising fundamental — feels like power building
+  const o1 = c.createOscillator()
+  o1.type = 'sine'
+  o1.frequency.setValueAtTime(rPitch(500), t)
+  o1.frequency.exponentialRampToValueAtTime(rPitch(900), t + 0.25)
+  o1.frequency.exponentialRampToValueAtTime(rPitch(880), t + dur)   // settles into sustain
+  // Octave shimmer — sweetens the top
+  const o2 = c.createOscillator()
+  o2.type = 'sine'
+  o2.frequency.setValueAtTime(rPitch(1000), t)
+  o2.frequency.exponentialRampToValueAtTime(rPitch(1800), t + 0.25)
+  o2.frequency.exponentialRampToValueAtTime(rPitch(1760), t + dur)
+  // Soft attack, peak around the "settle" moment, slow release
+  const g = c.createGain()
+  g.gain.setValueAtTime(0.001, t)
+  g.gain.linearRampToValueAtTime(rVol(0.18), t + 0.18)   // ramp up over 180ms (no click)
+  g.gain.linearRampToValueAtTime(rVol(0.20), t + 0.28)   // brief sustain at peak
+  g.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  o1.connect(g)
+  o2.connect(g)
+  g.connect(reverbInput)   // reverb adds the "hum coming online" room feel
+  o1.start(t)
+  o2.start(t)
+  o1.stop(t + dur)
+  o2.stop(t + dur)
 }
 
 export function playShieldBreak(): void {
@@ -1001,6 +1113,37 @@ export function playDashReady(): void {
   popGain.connect(master)
   pop.start(t)
   pop.stop(t + 0.08)
+}
+
+// Enemy dodge — short whoosh: filtered noise sweeping down. Distinct from player's dash
+// (which is breathy sine). Throttled so swarms of dodgers don't blow out audio.
+let lastEnemyDodgeTime = 0
+export function playEnemyDodge(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  if (t - lastEnemyDodgeTime < 0.04) return   // throttle: max ~25 dodges/sec audible
+  lastEnemyDodgeTime = t
+  const dur = 0.18
+  const buf = c.createBuffer(1, Math.floor(c.sampleRate * dur), c.sampleRate)
+  const data = buf.getChannelData(0)
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1
+  const noise = c.createBufferSource()
+  noise.buffer = buf
+  const filter = c.createBiquadFilter()
+  filter.type = 'bandpass'
+  filter.Q.value = 2
+  filter.frequency.setValueAtTime(2200, t)
+  filter.frequency.exponentialRampToValueAtTime(550, t + dur)
+  const gain = c.createGain()
+  gain.gain.setValueAtTime(0.001, t)
+  gain.gain.linearRampToValueAtTime(rVol(0.22), t + 0.02)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  noise.connect(filter)
+  filter.connect(gain)
+  gain.connect(master)
+  noise.start(t)
+  noise.stop(t + dur)
 }
 
 export function playDash(): void {

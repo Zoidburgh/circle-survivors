@@ -1246,7 +1246,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfStart('R_TOTAL')
   lastDt = dt
   frameDt = dt
-  if (getPhase() === 'playing') gameTimeMs += dt * 1000
+  if (getPhase() === 'playing' || getPhase() === 'designer') gameTimeMs += dt * 1000
 
   if (cam) {
     camX = cam.x - width / 2
@@ -1376,6 +1376,44 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     drawEnemy(enemy, player)
   }
   perfEnd('e_bodies')
+
+  // Dodge trails — rendered AFTER all enemy bodies so the trail layers on top of any body
+  // (otherwise enemies drawn later in the loop cover the dasher's silhouettes). Particles
+  // are also spawned here for the same reason — the spawn-then-render is one-frame-correct.
+  for (const enemy of enemies) {
+    if (!enemy.dodge || enemy.dashTimer < 0 || !enemy.alive || enemy.dying) continue
+    const r = enemy.radius
+    // Dash trail uses player's dash green for unified visual language
+    const tdr = 100, tdg = 255, tdb = 120
+    if (enemy.dashPath.length > 1) {
+      const tr = Math.round(enemy.cr * 0.55 + tdr * 0.45)
+      const tg = Math.round(enemy.cg * 0.55 + tdg * 0.45)
+      const tb = Math.round(enemy.cb * 0.55 + tdb * 0.45)
+      const trailLen = enemy.dashPath.length
+      for (let i = 0; i < trailLen; i++) {
+        const p = enemy.dashPath[i]!
+        const t = i / Math.max(1, trailLen - 1)
+        const alpha = 0.02 + t * 0.10
+        ctx.beginPath()
+        ctx.arc(p.x - camX, p.y - camY, r, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${tr}, ${tg}, ${tb}, ${alpha})`
+        ctx.fill()
+      }
+    }
+    if (enemy.dashTimer > 0) {
+      const partScale = Math.max(1.5, r * 0.06)
+      const count = r >= 60 ? 3 : 2
+      for (let i = 0; i < count; i++) {
+        const a = Math.random() * Math.PI * 2
+        const px = enemy.x + Math.cos(a) * r * (0.5 + Math.random() * 0.5)
+        const py = enemy.y + Math.sin(a) * r * (0.5 + Math.random() * 0.5)
+        spawnParticle(px, py,
+          -enemy.dashDirX * 30 + (Math.random() - 0.5) * 20,
+          -enemy.dashDirY * 30 + (Math.random() - 0.5) * 20,
+          tdr, tdg, tdb, 0.35, partScale)
+      }
+    }
+  }
 
   // Dash sweep band — follows curved dash path
   {
@@ -1572,6 +1610,13 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     ctx.fillStyle = `rgba(255, 255, 255, ${whiteAlpha})`
     ctx.fill()
 
+    // Red danger fill — covers the whole AOE hitbox, signals "this hurt enemies"
+    // (matches the sweep dash's red-tint language at Renderer.ts:1495-1517)
+    ctx.beginPath()
+    ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(255, 40, 40, ${t * t * 0.42})`
+    ctx.fill()
+
     // Gold shockwave expanding to fill attack range
     const shockExpand = Math.min((1 - t) * 3, 1)
     const shockR = beatDashRadius * shockExpand
@@ -1585,17 +1630,18 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       ctx.stroke()
     }
 
-    // Cyan border glow at exact hitbox edge
+    // Bright red danger edge at the hitbox boundary — sweep-dash vocab
     ctx.beginPath()
     ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(0, 255, 255, ${t * 0.15})`
-    ctx.lineWidth = 8 * t
+    ctx.strokeStyle = `rgba(255, 60, 60, ${t * 0.78})`
+    ctx.lineWidth = 3 * t + 1.5
     ctx.stroke()
-    // Cyan border crisp
+
+    // Cyan border glow at exact hitbox edge (kept for crisp shape definition)
     ctx.beginPath()
     ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(0, 255, 255, ${t * 0.7})`
-    ctx.lineWidth = 2 * t + 1
+    ctx.strokeStyle = `rgba(0, 255, 255, ${t * 0.12})`
+    ctx.lineWidth = 8 * t
     ctx.stroke()
 
     // Initial burst particles on first frame
@@ -1607,7 +1653,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
           beatDashX + Math.cos(pa) * dist,
           beatDashY + Math.sin(pa) * dist,
           Math.cos(pa) * 60, Math.sin(pa) * 60,
-          0, 230, 255, 0.25 + Math.random() * 0.15, 7 + Math.random() * 5)
+          0, 230, 255, 0.18 + Math.random() * 0.10, 7 + Math.random() * 5)
       }
     }
 
@@ -1625,7 +1671,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
         spawnParticle(px, py,
           Math.cos(outA) * speed, Math.sin(outA) * speed - 15,
           isBlueP ? 0 : 255, isBlueP ? 200 + Math.floor(Math.random() * 55) : 180 + Math.floor(Math.random() * 60), isBlueP ? 255 : 20 + Math.floor(Math.random() * 40),
-          0.2 + Math.random() * 0.15, 4 + Math.random() * 3)
+          0.14 + Math.random() * 0.10, 4 + Math.random() * 3)
       }
     }
   }
@@ -2716,6 +2762,26 @@ function drawPlayer(player: Player): void {
       ctx.stroke()
     }
 
+    // Persistent scan glare — pink band ping-ponging top↔bottom, beat-synced
+    // (1 beat top→bottom, next beat bottom→top — full cycle = 2 beats).
+    {
+      const cycle = (getLoopPosition() * 2) % 2        // 0→2 over 1 beat (double-time)
+      const scanT = cycle < 1 ? cycle : 2 - cycle      // ping-pong 0→1→0
+      const scanY = sy - drawRadius + scanT * drawRadius * 2
+      const bandH = drawRadius * 0.55
+      ctx.save()
+      ctx.beginPath()
+      ctx.arc(sx, sy, drawRadius, 0, Math.PI * 2)
+      ctx.clip()
+      const grad = ctx.createLinearGradient(sx, scanY - bandH, sx, scanY + bandH)
+      grad.addColorStop(0, 'rgba(255, 50, 200, 0)')
+      grad.addColorStop(0.5, 'rgba(255, 200, 250, 0.28)')
+      grad.addColorStop(1, 'rgba(255, 50, 200, 0)')
+      ctx.fillStyle = grad
+      ctx.fillRect(sx - drawRadius, scanY - bandH, drawRadius * 2, bandH * 2)
+      ctx.restore()
+    }
+
     // Core energy ring
     ctx.beginPath()
     ctx.arc(sx, sy, drawRadius, 0, Math.PI * 2)
@@ -3299,20 +3365,27 @@ function drawPlayer(player: Player): void {
       ctx.lineWidth = 1.5
       ctx.stroke()
     } else {
-      // Charging — white pie in place
+      // Charging — bright white pie on dark backing (NOT green — green = ready)
       const fill = 1 - (timer / (player.dashChargeTime * player.modifiers.dashChargeMult))
+      // Dark backing
       ctx.beginPath()
       ctx.arc(dotX, dotY, 8.6, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)'
       ctx.fill()
       if (fill > 0) {
         ctx.beginPath()
         ctx.moveTo(dotX, dotY)
         ctx.arc(dotX, dotY, 8.6, -Math.PI / 2, -Math.PI / 2 + fill * Math.PI * 2)
         ctx.closePath()
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.7)'
+        ctx.fillStyle = `rgba(255, 255, 255, ${0.85 + fill * 0.1})`
         ctx.fill()
       }
+      // White outline ring for shape definition
+      ctx.beginPath()
+      ctx.arc(dotX, dotY, 8.6, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 255, 255, 0.5)`
+      ctx.lineWidth = 1.2
+      ctx.stroke()
     }
   }
   prevDashSlots = player.dashSlots.map(t => t)
@@ -4041,8 +4114,9 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   }
   ctx.fill()
 
-  // Hit particles — burst from the pie edge, intensity scales with damage fraction + enemy size
-  if (enemy.hitFlash > HIT_FLASH_DURATION - 0.02) {
+  // Hit particles — burst from the pie edge, intensity scales with damage fraction + enemy size.
+  // Skip when a shield break is happening this frame — the shield shockwave is the hit feedback.
+  if (enemy.hitFlash > HIT_FLASH_DURATION - 0.02 && enemy.shieldBreakFlash <= 0) {
     const hitFraction = damageFraction  // fraction of maxHp dealt
     const dmgIntensity = Math.min(Math.max(hitFraction / 0.20, 1), 4)  // 1x at <=20%, up to 4x at 80%+
     const sizeBonus = Math.min(r / 44, 3)  // bigger enemies = more blood (up to 3x)
@@ -5226,26 +5300,227 @@ function drawEnemy(enemy: Enemy, player: Player): void {
 
   if (enemy.blink && enemy.blinkPreview > 0) ctx.globalAlpha = 1
 
-  // Dodge trail — fading silhouettes along dashPath while mid-burst (mirrors player afterimage).
-  // Trail color = body tinted toward the orb's complement color so it reads as "energy" not just shadow.
-  if (enemy.dodge && enemy.dashTimer >= 0 && enemy.dashPath.length > 1) {
-    const [tdr, tdg, tdb] = complementColor(enemy.cr, enemy.cg, enemy.cb)
-    const tr = Math.round(enemy.cr * 0.55 + tdr * 0.45)
-    const tg = Math.round(enemy.cg * 0.55 + tdg * 0.45)
-    const tb = Math.round(enemy.cb * 0.55 + tdb * 0.45)
-    const trailLen = enemy.dashPath.length
-    for (let i = 0; i < trailLen; i++) {
-      const p = enemy.dashPath[i]!
-      const t = i / Math.max(1, trailLen - 1)   // 0 = oldest, 1 = newest
-      const alpha = 0.02 + t * 0.10              // older = fainter, kept faint so it reads as ghost not body
-      const tx = p.x - camX
-      const ty = p.y - camY
+  // Shield visuals — distinct cyan visual language (player shield is pink). Mirrors the
+  // shape of Renderer.ts:2742-3019 (passive ring, fuse-style recharge arc, break shards).
+  // Color: bright electric cyan = "defensive". Constant across all enemy shields for
+  // unified visual language.
+  if (enemy.shield && enemy.alive && !enemy.dying) {
+    const sr = r
+    const SR = 0, SG = 220, SB = 255   // shield base color (cyan)
+    if (enemy.shieldCharges > 0) {
+      // Active shield — pulsing cyan ring + ambient sparks
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 300)
+      const fastPulse = 0.5 + 0.5 * Math.sin(performance.now() / 120)
+      // Activation flash — bright outer ring fading over ~0.55s after restore
+      if (enemy.shieldActivateTimer > 0) {
+        const af = enemy.shieldActivateTimer / 0.55   // 1→0
+        ctx.beginPath()
+        ctx.arc(sx, sy, sr + 1, 0, Math.PI * 2)
+        ctx.strokeStyle = `rgba(200, 245, 255, ${af * 0.55})`
+        ctx.lineWidth = 5 + af * 4
+        ctx.stroke()
+      }
       ctx.beginPath()
-      ctx.arc(tx, ty, r, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${tr}, ${tg}, ${tb}, ${alpha})`
+      ctx.arc(sx, sy, sr, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(${SR}, ${SG}, ${SB}, ${0.85 + fastPulse * 0.15})`
+      ctx.lineWidth = 4.5 + pulse * 0.6
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(sx, sy, sr - 0.7, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(180, 240, 255, ${0.3 + fastPulse * 0.15})`
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+      // Persistent scan glare — same as player, in cyan, beat-synced ping-pong
+      {
+        const cycle = (getLoopPosition() * 2) % 2        // 0→2 over 1 beat (double-time)
+        const scanT = cycle < 1 ? cycle : 2 - cycle      // ping-pong 0→1→0
+        const scanY = sy - sr + scanT * sr * 2
+        const bandH = sr * 0.55
+        ctx.save()
+        ctx.beginPath()
+        ctx.arc(sx, sy, sr, 0, Math.PI * 2)
+        ctx.clip()
+        const grad = ctx.createLinearGradient(sx, scanY - bandH, sx, scanY + bandH)
+        grad.addColorStop(0, `rgba(${SR}, ${SG}, ${SB}, 0)`)
+        grad.addColorStop(0.5, 'rgba(180, 245, 255, 0.28)')
+        grad.addColorStop(1, `rgba(${SR}, ${SG}, ${SB}, 0)`)
+        ctx.fillStyle = grad
+        ctx.fillRect(sx - sr, scanY - bandH, sr * 2, bandH * 2)
+        ctx.restore()
+      }
+      const sparkBudget = Math.max(1, Math.floor(r * 0.04))
+      const sparkCount = globalBeatPulse > 0.5 ? sparkBudget * 2 : sparkBudget
+      for (let s = 0; s < sparkCount; s++) {
+        if (Math.random() < 0.6) {
+          const a = Math.random() * Math.PI * 2
+          const out = a + (Math.random() - 0.5) * 1.2
+          const speed = 40 + Math.random() * 60
+          spawnParticle(
+            enemy.x + Math.cos(a) * sr, enemy.y + Math.sin(a) * sr,
+            Math.cos(out) * speed, Math.sin(out) * speed,
+            100 + Math.floor(Math.random() * 100), 230, 255,
+            0.14 + Math.random() * 0.1, Math.max(1.5, r * 0.05))
+        }
+      }
+    } else if (enemy.shieldRechargeTimer > 0) {
+      // Recharging — fuse-style: arc fills counterclockwise from top + leading tip glow + sparks
+      // (matches player shield fuse direction)
+      const progress = 1 - (enemy.shieldRechargeTimer / enemy.shieldRechargeTime)
+      const pulseRate = 1500 - progress * 1300   // 1500ms early → 200ms near completion
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / pulseRate * Math.PI)
+      // Filling arc — counterclockwise (true flag, matches player at Renderer.ts:2827)
+      ctx.beginPath()
+      ctx.arc(sx, sy, sr, -Math.PI / 2, -Math.PI / 2 - progress * Math.PI * 2, true)
+      const ag = Math.round(SG + pulse * 35)
+      const ab = Math.round(SB)
+      ctx.strokeStyle = `rgba(80, ${ag}, ${ab}, ${0.6 + progress * 0.3 + pulse * 0.1})`
+      ctx.lineWidth = 2.5 + progress * 1.5 + pulse * 0.5
+      ctx.stroke()
+      if (progress > 0.2) {
+        ctx.beginPath()
+        ctx.arc(sx, sy, sr + 1, -Math.PI / 2, -Math.PI / 2 - progress * Math.PI * 2, true)
+        ctx.strokeStyle = `rgba(${SR}, ${SG}, ${SB}, ${progress * 0.2})`
+        ctx.lineWidth = 2 + progress * 3
+        ctx.stroke()
+      }
+      // Leading tip — fuse glow + sparks (counterclockwise = subtract from start angle)
+      const tipAngle = -Math.PI / 2 - progress * Math.PI * 2
+      const tipX = sx + Math.cos(tipAngle) * sr
+      const tipY = sy + Math.sin(tipAngle) * sr
+      const tipGlowR = (3 + progress * 8) * Math.max(1, r / 40)
+      ctx.beginPath()
+      ctx.arc(tipX, tipY, tipGlowR, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(150, 240, 255, ${0.2 + progress * 0.4})`
       ctx.fill()
+      // Spark trail off the tip — more as it approaches completion
+      const sparkCount = Math.floor(1 + progress * 3)
+      for (let s = 0; s < sparkCount; s++) {
+        if (Math.random() < 0.25 + progress * 0.5) {
+          const sparkAngle = tipAngle + (Math.random() - 0.5) * 1.5
+          const speed = (40 + Math.random() * 70) * (1 + progress * 0.5)
+          const sparkSize = (3 + Math.random() * 2) * Math.max(0.6, r * 0.04)
+          spawnParticle(
+            enemy.x + Math.cos(tipAngle) * sr,
+            enemy.y + Math.sin(tipAngle) * sr,
+            Math.cos(sparkAngle) * speed, Math.sin(sparkAngle) * speed,
+            100 + Math.floor(Math.random() * 100), 230, 255,
+            0.18 + Math.random() * 0.1, sparkSize)
+        }
+      }
+    }
+    // Break shockwave + shard burst (one-shot on the first frame of break)
+    if (enemy.shieldBreakFlash > 0) {
+      const bt = enemy.shieldBreakFlash / SHIELD_BREAK_FLASH
+      const shockR = sr + (1 - bt) * 180
+      ctx.beginPath()
+      ctx.arc(sx, sy, shockR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(${SR}, ${SG}, ${SB}, ${bt * bt * 0.6})`
+      ctx.lineWidth = 5 * bt + 1
+      ctx.stroke()
+      const innerR = sr + (1 - bt) * 80
+      ctx.beginPath()
+      ctx.arc(sx, sy, innerR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(200, 245, 255, ${bt * 0.4})`
+      ctx.lineWidth = 3 * bt
+      ctx.stroke()
+      if (bt > 0.7) {
+        ctx.beginPath()
+        ctx.arc(sx, sy, sr + 2, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(150, 240, 255, ${(bt - 0.7) * 2})`
+        ctx.fill()
+      }
+      // Shard burst — only on the first frame (when breakFlash is at max)
+      if (bt > 0.95) {
+        const partScale = Math.max(2, r * 0.1)
+        const shardCount = Math.floor(18 + r * 0.2)
+        for (let i = 0; i < shardCount; i++) {
+          const angle = (i / shardCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
+          const px = enemy.x + Math.cos(angle) * sr
+          const py = enemy.y + Math.sin(angle) * sr
+          const speed = 700 + Math.random() * 500
+          spawnParticle(px, py,
+            Math.cos(angle) * speed + (Math.random() - 0.5) * 100,
+            Math.sin(angle) * speed + (Math.random() - 0.5) * 100,
+            80 + Math.floor(Math.random() * 80), 220, 255,
+            0.24 + Math.random() * 0.16, partScale * (0.8 + Math.random() * 0.6))
+        }
+        // White-hot core sparks
+        for (let i = 0; i < 8; i++) {
+          const angle = Math.random() * Math.PI * 2
+          const px = enemy.x + Math.cos(angle) * sr * 0.5
+          const py = enemy.y + Math.sin(angle) * sr * 0.5
+          const speed = 800 + Math.random() * 500
+          spawnParticle(px, py,
+            Math.cos(angle) * speed, Math.sin(angle) * speed,
+            230, 250, 255, 0.22 + Math.random() * 0.12, partScale * 0.6)
+        }
+      }
+    }
+    // Restore — small outward "punch" from the top + the spiral converge overlay handles the rest
+    if (enemy.shieldJustRestored) {
+      enemy.shieldJustRestored = false
+      const partScale = Math.max(1.5, r * 0.08)
+      ctx.beginPath()
+      ctx.arc(sx, sy, sr + 1, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(200, 245, 255, 0.5)`
+      ctx.lineWidth = 5
+      ctx.stroke()
+      const topX = enemy.x, topY = enemy.y - sr
+      for (let p = 0; p < 8; p++) {
+        const a = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 0.8
+        const speed = 80 + Math.random() * 110
+        spawnParticle(topX, topY, Math.cos(a) * speed, Math.sin(a) * speed,
+          150 + Math.floor(Math.random() * 80), 230, 255,
+          0.18 + Math.random() * 0.12, partScale)
+      }
+    }
+    // Activation sweep — direct port of player's shieldActivateSweep (Renderer.ts:3108-3152),
+    // recolored cyan. Two vertical gradient bands sweep top↓ and bottom↑ through the body.
+    if (enemy.shieldActivateTimer > 0) {
+      const sweepDur = 0.55
+      const sweepT = 1 - (enemy.shieldActivateTimer / sweepDur)   // 0→1
+      const sweepY = sy - sr + sweepT * sr * 2          // top to bottom
+      const sweepY2 = sy + sr - sweepT * sr * 2         // bottom to top
+      const bandH = sr * 0.75
+      ctx.save()
+      // Clip to enemy body circle
+      ctx.beginPath()
+      ctx.arc(sx, sy, sr + 1, 0, Math.PI * 2)
+      ctx.clip()
+      const fadeA = 1 - sweepT * 0.5
+      // Top→bottom band
+      const bandGrad = ctx.createLinearGradient(sx, sweepY - bandH, sx, sweepY + bandH)
+      bandGrad.addColorStop(0, `rgba(${SR}, ${SG}, ${SB}, 0)`)
+      bandGrad.addColorStop(0.3, `rgba(100, 235, 255, ${0.75 * fadeA})`)
+      bandGrad.addColorStop(0.5, `rgba(220, 250, 255, ${0.9 * fadeA})`)
+      bandGrad.addColorStop(0.7, `rgba(100, 235, 255, ${0.75 * fadeA})`)
+      bandGrad.addColorStop(1, `rgba(${SR}, ${SG}, ${SB}, 0)`)
+      ctx.fillStyle = bandGrad
+      ctx.fillRect(sx - sr, sweepY - bandH, sr * 2, bandH * 2)
+      // Bottom→top band
+      const bandGrad2 = ctx.createLinearGradient(sx, sweepY2 - bandH, sx, sweepY2 + bandH)
+      bandGrad2.addColorStop(0, `rgba(${SR}, ${SG}, ${SB}, 0)`)
+      bandGrad2.addColorStop(0.3, `rgba(100, 235, 255, ${0.75 * fadeA})`)
+      bandGrad2.addColorStop(0.5, `rgba(220, 250, 255, ${0.9 * fadeA})`)
+      bandGrad2.addColorStop(0.7, `rgba(100, 235, 255, ${0.75 * fadeA})`)
+      bandGrad2.addColorStop(1, `rgba(${SR}, ${SG}, ${SB}, 0)`)
+      ctx.fillStyle = bandGrad2
+      ctx.fillRect(sx - sr, sweepY2 - bandH, sr * 2, bandH * 2)
+      // Sharp leading edge lines
+      ctx.beginPath()
+      ctx.moveTo(sx - sr, sweepY)
+      ctx.lineTo(sx + sr, sweepY)
+      ctx.moveTo(sx - sr, sweepY2)
+      ctx.lineTo(sx + sr, sweepY2)
+      ctx.strokeStyle = `rgba(220, 250, 255, ${0.9 * (1 - sweepT * 0.6)})`
+      ctx.lineWidth = 2
+      ctx.stroke()
+      ctx.restore()
     }
   }
+
+  // (Dodge trail silhouettes + trail particles are rendered in a separate pass after all
+  //  enemy bodies — see drawDodgeTrails — so they layer on top of every enemy's body.)
 
   // Dodge charge orbit dots — same visual language as player dash slots, scaled with enemy size.
   // Floor dot size at the player's 8.6 so small enemies still show readable dots.
@@ -5257,7 +5532,8 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     const orbitSpeed = performance.now() / 800
     const dotR = Math.max(8.6, r * 0.18)
     const burstScale = Math.max(0.4, r * 0.04)   // particle size scale for consume/ready bursts
-    const [dr, dg, db] = complementColor(enemy.cr, enemy.cg, enemy.cb)
+    // Use player's dash green for all dodge visuals — unified visual language
+    const dr = 100, dg = 255, db = 120
     for (let i = 0; i < enemy.dodgeSlots.length; i++) {
       const angle = orbitSpeed + (Math.PI * 2 * i) / enemy.dodgeSlots.length
       const dx = sx + Math.cos(angle) * orbitR
@@ -5303,9 +5579,9 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       }
 
       if (timer <= 0) {
-        // Ready — filled complement-color dot with subtle beat-pulsing glow (mirrors player's ready state)
-        const glowAlpha = 0.12 + globalBeatPulse * 0.15
-        const glowR = dotR * (1.65 + globalBeatPulse * 0.35)
+        // Ready — green dot with beat-pulsing glow (same vocab as player dash slot)
+        const glowAlpha = 0.18 + globalBeatPulse * 0.18
+        const glowR = dotR * (1.8 + globalBeatPulse * 0.35)
         ctx.beginPath()
         ctx.arc(dx, dy, glowR, 0, Math.PI * 2)
         ctx.fillStyle = `rgba(${dr}, ${dg}, ${db}, ${glowAlpha})`
@@ -5317,21 +5593,35 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         ctx.strokeStyle = `rgba(${dr}, ${dg}, ${db}, 0.6)`
         ctx.lineWidth = 1.5
         ctx.stroke()
+        // Trail particles behind orbiting dot — same as player at Renderer.ts:3274-3283
+        if (Math.random() < 0.7) {
+          const spread = orbitR * 0.15
+          spawnParticle(
+            wx + (Math.random() - 0.5) * spread,
+            wy + (Math.random() - 0.5) * spread,
+            (Math.random() - 0.5) * 12, (Math.random() - 0.5) * 12,
+            dr, dg, db, 0.22 + Math.random() * 0.18, Math.max(1.5, dotR * 0.25))
+        }
       } else {
-        // Recharging — black bg + white pie fill (mirrors player's recharge animation)
+        // Recharging — bright white pie on dark backing (NOT green — green = ready)
         const fill = 1 - (timer / chargeTime)
         ctx.beginPath()
         ctx.arc(dx, dy, dotR, 0, Math.PI * 2)
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.4)'
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.55)'
         ctx.fill()
         if (fill > 0) {
           ctx.beginPath()
           ctx.moveTo(dx, dy)
           ctx.arc(dx, dy, dotR, -Math.PI / 2, -Math.PI / 2 + fill * Math.PI * 2)
           ctx.closePath()
-          ctx.fillStyle = 'rgba(255, 255, 255, 0.7)'
+          ctx.fillStyle = `rgba(255, 255, 255, ${0.85 + fill * 0.1})`
           ctx.fill()
         }
+        ctx.beginPath()
+        ctx.arc(dx, dy, dotR, 0, Math.PI * 2)
+        ctx.strokeStyle = `rgba(255, 255, 255, 0.5)`
+        ctx.lineWidth = 1.2
+        ctx.stroke()
       }
     }
 

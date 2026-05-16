@@ -42,6 +42,8 @@ export interface EnemyType {
   dodgeChargeTime?: number          // seconds to recharge one slot (default: 1.5)
   dodgeDistance?: number            // how far each dodge moves (default: 100)
   dodgeSpeed?: number               // burst speed multiplier (default: 1.0)
+  shield?: boolean                  // absorbs one hit per charge, recharges over time
+  shieldRechargeTime?: number       // seconds to recharge shield after break (default: 4)
   summon?: boolean                  // has orbiting ritual nodes, phased spawning
   summonNodes?: number              // how many nodes (3 = triangle, 5 = pentagon, default 3)
   summonPhases?: SummonPhase[]      // each phase = one completed sequence, spawns enemies
