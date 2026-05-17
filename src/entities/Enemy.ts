@@ -148,6 +148,8 @@ export interface Enemy {
   shieldJustRestored: boolean     // transient — set when shield refills, cleared by Renderer after burst
   shieldJustBroken: boolean       // transient — set on break, cleared by Renderer after shard burst (one-shot, immune to dt-tick race)
   shieldActivateTimer: number     // >0 = bright outer ring fades over this duration (activation glow)
+  beatDashFlash: number           // >0 = enemy was just hit by the beat-dash AOE; drives a yellow glow that stacks on top of the red hitFlash
+  beatDashJustHit: boolean        // transient — set on beat-dash hit, cleared by Renderer after spawning lightning bolts (one-shot, immune to dt-tick race)
 }
 
 /** Get the world positions a ring fires from (center or edge offsets) */
@@ -295,6 +297,8 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     shieldJustRestored: false,
     shieldJustBroken: false,
     shieldActivateTimer: 0,
+    beatDashFlash: 0,
+    beatDashJustHit: false,
   }
   // Shrines: skip spawn animation, pushable by enemies
   if (e.isShrine) {
@@ -434,6 +438,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   }
 
   if (enemy.hitFlash > 0) enemy.hitFlash -= dt
+  if (enemy.beatDashFlash > 0) enemy.beatDashFlash -= dt
   if (enemy.isShrine && enemy.shrineSummonTimer > 0) enemy.shrineSummonTimer -= dt
 
   // Chill stack decay

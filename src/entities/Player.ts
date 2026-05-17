@@ -237,9 +237,9 @@ export function updatePlayer(player: Player, dt: number): void {
     }
   }
 
-  // Smooth HP display — drain fast, fill smooth
+  // Smooth HP display — drain slow (so the red wedge is readable as damage feedback), fill smooth
   if (player.displayHp > player.hp) {
-    player.displayHp -= (player.displayHp - player.hp) * HP_DRAIN_SPEED * dt
+    player.displayHp -= (player.displayHp - player.hp) * (HP_DRAIN_SPEED * 0.65) * dt
     if (player.displayHp - player.hp < 0.01) player.displayHp = player.hp
   } else if (player.displayHp < player.hp) {
     player.displayHp += (player.hp - player.displayHp) * 6 * dt

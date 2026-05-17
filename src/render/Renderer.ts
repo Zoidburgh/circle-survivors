@@ -445,6 +445,119 @@ const deathRipples: DeathRipple[] = []
 
 const MAX_RIPPLES = 30
 
+// Beat-dash lightning bolts — short jagged streaks emanating from enemies hit by the AOE.
+// Points are stored in LOCAL space (relative to the enemy center at spawn) and a reference
+// to the originating enemy is kept so the bolts follow the enemy as it moves. If the enemy
+// dies, we fall back to the last-seen world position so the bolt fades in place.
+interface LightningBolt {
+  enemy: Enemy
+  pts: { x: number; y: number }[]
+  lastX: number; lastY: number
+  timer: number; lifetime: number; scale: number
+  fadeOffset: number   // ±shift to grow-end so strands stagger their fade start
+  flickerSeed: number  // per-bolt phase seed so flicker isn't synced across strands
+  angularVel: number   // rad/sec — bolt rotates around enemy center as it ages
+}
+const lightningBolts: LightningBolt[] = []
+const MAX_BOLTS = 60
+
+function spawnLightningBolt(enemy: Enemy, angle: number, length: number, scale: number): void {
+  if (lightningBolts.length >= MAX_BOLTS) return
+  const SEGMENTS = 8
+  const segLen = length / SEGMENTS
+  // Local-space points (origin = enemy center at spawn time)
+  const pts: { x: number; y: number }[] = [{ x: 0, y: 0 }]
+  for (let i = 1; i <= SEGMENTS; i++) {
+    const t = i / SEGMENTS
+    // Taper jitter — biggest in the middle, zero at start/end
+    const taper = Math.sin(t * Math.PI)
+    const jitter = (Math.random() - 0.5) * segLen * 0.9 * taper
+    const bx = Math.cos(angle) * segLen * i
+    const by = Math.sin(angle) * segLen * i
+    pts.push({
+      x: bx + Math.cos(angle + Math.PI / 2) * jitter,
+      y: by + Math.sin(angle + Math.PI / 2) * jitter,
+    })
+  }
+  lightningBolts.push({
+    enemy, pts,
+    lastX: enemy.x, lastY: enemy.y,
+    timer: 0, lifetime: 0.29 + Math.random() * 0.07, scale,
+    fadeOffset: -0.05 + Math.random() * 0.30,
+    flickerSeed: Math.random() * 100,
+    angularVel: (Math.random() - 0.5) * 11,  // ±~5.5 rad/s
+  })
+}
+
+function updateAndDrawLightningBolts(dt: number): void {
+  for (let i = lightningBolts.length - 1; i >= 0; i--) {
+    const b = lightningBolts[i]!
+    b.timer += dt
+    if (b.timer >= b.lifetime) {
+      lightningBolts[i] = lightningBolts[lightningBolts.length - 1]!
+      lightningBolts.pop()
+      continue
+    }
+    const t = b.timer / b.lifetime  // 0→1
+    // Two phases: rapid GROWTH from center (first ~35%) then fade to 0 (rest).
+    // Each bolt staggers its GROW_END via fadeOffset so the cluster dissolves organically
+    // rather than every strand dimming on the same frame.
+    const growEnd = Math.max(0.15, Math.min(0.7, 0.35 + b.fadeOffset))
+    const growLinear = Math.min(1, t / growEnd)
+    const growT = growLinear * growLinear * (3 - 2 * growLinear)   // smoothstep ease
+    const fadeLinear = t < growEnd ? 1 : 1 - (t - growEnd) / (1 - growEnd)
+    const fadeT = fadeLinear * fadeLinear * (3 - 2 * fadeLinear)   // smoothstep for stroke-width scaling
+    // Sine ease-out alpha + electric flicker that intensifies as the bolt dims.
+    // Flicker is a sum of two out-of-phase sines (per-bolt seed) — reads as discharge noise
+    // without burning CPU on per-frame randoms.
+    let alpha = Math.sin(fadeLinear * Math.PI * 0.5)
+    if (fadeLinear < 1) {
+      const flickAmp = 0.18 + 0.32 * (1 - fadeLinear)
+      const f1 = Math.sin(b.timer * 95 + b.flickerSeed)
+      const f2 = Math.sin(b.timer * 53 + b.flickerSeed * 1.7)
+      const flick = (f1 * 0.5 + f2 * 0.5) * 0.5 + 0.5   // 0..1
+      alpha *= (1 - flickAmp) + flickAmp * flick
+    }
+    // Anchor to the enemy's current world position; fall back to last-seen if dead/dying.
+    if (b.enemy.alive && !b.enemy.dying) { b.lastX = b.enemy.x; b.lastY = b.enemy.y }
+    const ax = b.lastX, ay = b.lastY
+    // Rotate the entire bolt around the enemy center over time.
+    const rot = b.timer * b.angularVel
+    const cr = Math.cos(rot), sr = Math.sin(rot)
+    const pts = b.pts
+    const totalSegs = pts.length - 1
+    const grownSegs = growT * totalSegs
+    const fullSegs = Math.floor(grownSegs)
+    const partialFrac = grownSegs - fullSegs
+    // Path is shared by both strokes — one beginPath, two strokes.
+    // Draw all completed segments + the in-progress segment lerped to its tip position.
+    const p0 = pts[0]!
+    ctx.beginPath()
+    ctx.moveTo(ax + (p0.x * cr - p0.y * sr) - camX, ay + (p0.x * sr + p0.y * cr) - camY)
+    for (let p = 1; p <= fullSegs; p++) {
+      const pt = pts[p]!
+      ctx.lineTo(ax + (pt.x * cr - pt.y * sr) - camX, ay + (pt.x * sr + pt.y * cr) - camY)
+    }
+    if (partialFrac > 0 && fullSegs < totalSegs) {
+      const pa = pts[fullSegs]!
+      const pb = pts[fullSegs + 1]!
+      const tipX = pa.x + (pb.x - pa.x) * partialFrac
+      const tipY = pa.y + (pb.y - pa.y) * partialFrac
+      ctx.lineTo(ax + (tipX * cr - tipY * sr) - camX, ay + (tipX * sr + tipY * cr) - camY)
+    }
+    // Fat yellow glow underneath — thickness scales with the originating enemy's size
+    ctx.strokeStyle = `rgba(255, 200, 60, ${alpha * 0.9})`
+    ctx.lineWidth = 4.5 * b.scale * (0.7 + fadeT * 0.3)
+    ctx.lineCap = 'round'
+    ctx.stroke()
+    // Hot white core on top
+    ctx.strokeStyle = `rgba(255, 255, 220, ${alpha})`
+    ctx.lineWidth = 1.4 * b.scale
+    ctx.stroke()
+  }
+  ctx.lineCap = 'butt'
+}
+
 // Orb absorb effects — stream from orb to player
 interface AbsorbEffect {
   originX: number; originY: number
@@ -1259,6 +1372,7 @@ function pillPath(cx: number, cy: number, halfW: number, r: number, ccw = false)
 export function resetRenderer(): void {
   particles.length = 0
   deathRipples.length = 0
+  lightningBolts.length = 0
   spawnEffects.length = 0
   absorbEffects.length = 0
   volatileExplosions.length = 0
@@ -1379,6 +1493,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   drawArenaBorder(player)
   perfStart('ripples')
   updateAndDrawDeathRipples(lastDt)
+  updateAndDrawLightningBolts(lastDt)
   perfEnd('ripples')
 
   // Clip rings and particles to arena bounds
@@ -2572,23 +2687,29 @@ function drawPlayer(player: Player): void {
   }
 
   // Glow aura — soft radial gradient behind player, pulses on beat.
-  // On hit, swap to red glow that punches brighter and fades with the flash.
+  // On hit, swap to red glow with more brightness held in the "past the body" band so
+  // the halo reads reliably outside the player (inner stops sit closer to body edge,
+  // and use `lighter` composite on hit to punch through whatever's underneath).
   {
     const beatPulse = globalBeatPulse
     const hitT = player.hitFlash > 0 ? player.hitFlash / HIT_FLASH_DURATION : 0
-    const glowRadius = baseRadius * (2.5 + beatPulse * 0.8 + hitT * 1.4)
-    const glowAlpha = 0.18 + beatPulse * 0.22 + hitT * 0.55
+    const glowRadius = baseRadius * (2.5 + beatPulse * 0.8 + hitT * 1.6)
+    const glowAlpha = 0.18 + beatPulse * 0.22 + hitT * 0.7
     const r = hitT > 0 ? 255 : 79
     const g = hitT > 0 ? Math.floor(50 + 145 * (1 - hitT)) : 195
     const b = hitT > 0 ? Math.floor(50 + 197 * (1 - hitT)) : 247
-    const grad = ctx.createRadialGradient(sx, sy, baseRadius * 0.3, sx, sy, glowRadius)
+    const innerR = hitT > 0 ? baseRadius * 0.55 : baseRadius * 0.3
+    const grad = ctx.createRadialGradient(sx, sy, innerR, sx, sy, glowRadius)
     grad.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${glowAlpha})`)
-    grad.addColorStop(0.4, `rgba(${r}, ${g}, ${b}, ${glowAlpha * 0.4})`)
+    grad.addColorStop(0.5, `rgba(${r}, ${g}, ${b}, ${glowAlpha * 0.55})`)
     grad.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`)
+    const prevComp = ctx.globalCompositeOperation
+    if (hitT > 0) ctx.globalCompositeOperation = 'lighter'
     ctx.beginPath()
     ctx.arc(sx, sy, glowRadius, 0, Math.PI * 2)
     ctx.fillStyle = grad
     ctx.fill()
+    ctx.globalCompositeOperation = prevComp
   }
 
   // Movement trail — clipped to arena
@@ -2732,13 +2853,13 @@ function drawPlayer(player: Player): void {
   }
 
   if (hpFraction > 0) {
-    // Red draining wedge
+    // Red draining wedge — same vocabulary as enemy red drain, brightened so it reads clearly
     if (hpFraction > actualPlayerHp) {
       const actualEnd = hpStart + actualPlayerHp * Math.PI * 2
       const redGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, drawRadius)
-      redGrad.addColorStop(0, 'rgba(255, 70, 70, 0.55)')
-      redGrad.addColorStop(0.7, 'rgba(255, 40, 40, 0.4)')
-      redGrad.addColorStop(1, 'rgba(140, 20, 20, 0.3)')
+      redGrad.addColorStop(0, 'rgba(255, 90, 90, 0.85)')
+      redGrad.addColorStop(0.7, 'rgba(255, 50, 50, 0.7)')
+      redGrad.addColorStop(1, 'rgba(220, 30, 30, 0.55)')
       ctx.beginPath()
       ctx.moveTo(sx, sy)
       ctx.arc(sx, sy, drawRadius, actualEnd, hpEnd)
@@ -4087,6 +4208,19 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     sy += (Math.random() - 0.5) * 2 * jitterStrength
   }
 
+  // Spawn lightning bolts on the first frame of beat-dash hit (one-shot, dt-race-immune).
+  // Done BEFORE the dying-branch return so killing-blow hits still spawn lightning.
+  if (enemy.beatDashJustHit) {
+    enemy.beatDashJustHit = false
+    const baseAngle = Math.random() * Math.PI * 2
+    const COUNT = 8
+    const boltScale = Math.min(2.5, Math.max(1, r / 22))
+    for (let i = 0; i < COUNT; i++) {
+      const angle = baseAngle + (i / COUNT) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
+      spawnLightningBolt(enemy, angle, r * (1.45 + Math.random() * 0.55), boltScale)
+    }
+  }
+
   // Death animation
   if (enemy.dying) {
     const dt = enemy.deathTimer
@@ -4197,6 +4331,24 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     grad.addColorStop(0, `rgba(255, 60, 50, ${a})`)
     grad.addColorStop(0.45, `rgba(255, 50, 40, ${a * 0.6})`)
     grad.addColorStop(1, 'rgba(255, 40, 30, 0)')
+    const prevComp = ctx.globalCompositeOperation
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.beginPath()
+    ctx.arc(sx, sy, glowR, 0, Math.PI * 2)
+    ctx.fillStyle = grad
+    ctx.fill()
+    ctx.globalCompositeOperation = prevComp
+  }
+  // Yellow glow halo when hit by the beat-dash AOE — stacks additively with the red glow
+  // so a sweep + beat-dash on the same frame reads as "extra hard hit". Same gradient shape.
+  if (enemy.beatDashFlash > 0) {
+    const flashT = enemy.beatDashFlash / HIT_FLASH_DURATION
+    const glowR = r * 1.3
+    const a = flashT * 0.9
+    const grad = ctx.createRadialGradient(sx, sy, r * 0.2, sx, sy, glowR)
+    grad.addColorStop(0, `rgba(255, 230, 90, ${a})`)
+    grad.addColorStop(0.45, `rgba(255, 200, 50, ${a * 0.65})`)
+    grad.addColorStop(1, 'rgba(255, 180, 30, 0)')
     const prevComp = ctx.globalCompositeOperation
     ctx.globalCompositeOperation = 'lighter'
     ctx.beginPath()
@@ -4533,14 +4685,28 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     ctx.fill()
   }
 
-  // Subtle red tint over the enemy — layered on top of the body, low alpha so the enemy
-  // color still reads through. Pairs with the red halo glow drawn under the body.
+  // Red tint over the enemy body — layered on top with `lighter` so it punches red
+  // through whatever the enemy color is. Pairs with the red halo glow drawn under.
   if (enemy.hitFlash > 0) {
     const flashT = enemy.hitFlash / HIT_FLASH_DURATION
+    const prevComp = ctx.globalCompositeOperation
+    ctx.globalCompositeOperation = 'lighter'
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(255, 60, 50, ${0.32 * flashT * flashT})`
+    ctx.fillStyle = `rgba(255, 50, 40, ${0.55 * flashT})`
     ctx.fill()
+    ctx.globalCompositeOperation = prevComp
+  }
+  // Yellow body tint when hit by beat-dash AOE — stacks with the red tint above.
+  if (enemy.beatDashFlash > 0) {
+    const flashT = enemy.beatDashFlash / HIT_FLASH_DURATION
+    const prevComp = ctx.globalCompositeOperation
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(255, 210, 60, ${0.55 * flashT})`
+    ctx.fill()
+    ctx.globalCompositeOperation = prevComp
   }
 
   // Chill overlay — blue tint (inside circle only)

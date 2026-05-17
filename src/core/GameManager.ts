@@ -468,6 +468,8 @@ on('player:beatDash', (player: Player) => {
       beatDashHitCount++
       const wasDying = enemy.dying
       damageEnemy(enemy, damage)
+      enemy.beatDashFlash = HIT_FLASH_DURATION
+      enemy.beatDashJustHit = true
       // Start run timer on first damage dealt
       if (!isRunTimerActive() && !isRunComplete()) {
         startRunTimer()
@@ -947,8 +949,12 @@ function updateDesigner(dt: number): void {
         const ny = dy / dist
         const overlap = minDist - dist
         // Mirror real-game asymmetric mass: dasher plows normal (80/20).
-        if (oe.immovable) {
-          if (!enemy.immovable) { enemy.x += nx * overlap; enemy.y += ny * overlap }
+        if (oe.immovable && enemy.immovable) {
+          // Both immovable — split the overlap evenly so they don't stack
+          enemy.x += nx * overlap * 0.5; enemy.y += ny * overlap * 0.5
+          oe.x    -= nx * overlap * 0.5; oe.y    -= ny * overlap * 0.5
+        } else if (oe.immovable) {
+          enemy.x += nx * overlap; enemy.y += ny * overlap
         } else if (enemy.immovable) {
           oe.x -= nx * overlap; oe.y -= ny * overlap
         } else {

@@ -222,7 +222,7 @@
       "color": "#ffd740",
       "hp": 12,
       "moveSpeed": 100,
-      "radius": 130,
+      "radius": 135,
       "ringRadius": 130,
       "key": "7",
       "role": "rim",
@@ -257,7 +257,7 @@
           "edgeSwitchBeats": 1
         },
         {
-          "ringRadius": 270,
+          "ringRadius": 255,
           "sound": "rim",
           "beats": [
             0.5,
@@ -304,6 +304,13 @@
       "revenge": false,
       "revengeRings": 4,
       "revengeRadius": 120,
+      "dodge": false,
+      "dodgeCharges": 2,
+      "dodgeChargeTime": 1.5,
+      "dodgeDistance": 100,
+      "dodgeSpeed": 1,
+      "shield": false,
+      "shieldRechargeTime": 4,
       "movePattern": "orbit",
       "totemSpawn": "",
       "dropType": "none",
@@ -312,7 +319,16 @@
       "dropCount": 1,
       "summon": false,
       "summonNodes": 3,
-      "summonPhases": []
+      "summonPhases": [],
+      "isShrine": false,
+      "shrineSpawnEnemy": "",
+      "shrineXpCount": 0,
+      "shrineHpCount": 0,
+      "shrinePhases": [
+        {
+          "xpOrbs": 3
+        }
+      ]
     },
     {
       "name": "Enemy8",
