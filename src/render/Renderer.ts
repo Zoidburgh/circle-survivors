@@ -54,6 +54,9 @@ interface Particle {
   lifetime: number
   size: number
   spinRate: number  // radians per second, 0 = default behavior
+  tintR: number     // -1 = no tint; otherwise blend target after 0.04s delay
+  tintG: number
+  tintB: number
 }
 
 const particles: Particle[] = []
@@ -127,6 +130,8 @@ let outerPulseIntensity = 0
 let dashReadyFlash: { slotIndex: number; timer: number; duration: number }[] = []
 let dashSweepIntensity = 0
 let beatDashFlash = 0       // countdown for beat dash shockwave visual
+let dashFailFlash = 0       // >0 = brief red flash on the recharging pies when dash attempted with no charge
+export function triggerDashFailFlash(): void { dashFailFlash = 0.25 }
 let beatDashX = 0
 let beatDashY = 0
 let beatDashRadius = 0
@@ -703,6 +708,25 @@ function updateAndDrawVolatileEffects(dt: number): void {
     const erG = Math.floor(ex.g * 0.4)
     const erB = Math.floor(ex.b * 0.4)
 
+    // Red area glow — radial gradient extending past the hitbox edge. Cheap (one fill per frame),
+    // additive composite so overlapping explosions accumulate brightness like real light.
+    {
+      const glowR = ex.range * 1.35
+      const glowAlpha = (1 - t) * (1 - t) * 0.78
+      const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, glowR)
+      grad.addColorStop(0, `rgba(255, 125, 70, ${Math.min(1, glowAlpha)})`)
+      grad.addColorStop(0.45, `rgba(255, 75, 40, ${glowAlpha * 0.78})`)
+      grad.addColorStop(0.85, `rgba(255, 45, 30, ${glowAlpha * 0.27})`)
+      grad.addColorStop(1, 'rgba(255, 40, 30, 0)')
+      const prevComp = ctx.globalCompositeOperation
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.beginPath()
+      ctx.arc(sx, sy, glowR, 0, Math.PI * 2)
+      ctx.fillStyle = grad
+      ctx.fill()
+      ctx.globalCompositeOperation = prevComp
+    }
+
     // White-hot flash — fills most of blast zone, fast fade
     if (t < 0.45) {
       const centerT = t / 0.45
@@ -907,7 +931,7 @@ function spawnDeathRipples(x: number, y: number, radius: number, color: string):
     deathRipples.push({
       x, y, r, g, b,
       startRadius: radius,
-      maxRadius: radius + (290 + i * 155) * sizeScale,
+      maxRadius: radius + (110 + i * 65) * sizeScale,
       timer: 0,
       delay: i * 0.042,
       duration: 0.21 + i * 0.053,
@@ -950,11 +974,12 @@ function spawnParticle(
   vx: number, vy: number,
   r: number, g: number, b: number,
   lifetime: number, size: number,
-  spinRate = 0
+  spinRate = 0,
+  tintR = -1, tintG = 0, tintB = 0
 ): void {
   if (particles.length >= MAX_PARTICLES) return
   if (getPhase() === 'entering_name') return  // block game particles on name entry screen
-  particles.push({ x, y, vx, vy, r, g, b, life: 0, lifetime, size, spinRate })
+  particles.push({ x, y, vx, vy, r, g, b, life: 0, lifetime, size, spinRate, tintR, tintG, tintB })
 }
 
 export function triggerBeatDashFlash(x: number, y: number, radius: number): void {
@@ -1031,10 +1056,44 @@ function updateParticles(dt: number): void {
   }
 }
 
+// Pre-rendered glow sprites for tinted particles — cached once, drawImage'd at runtime.
+// Each sprite is a heavily-blurred circular blob (shape doesn't matter when blurred). Drawn
+// UNDER the particle's sharp body. Massive perf win over per-frame shadowBlur.
+function makeGlowSprite(r: number, g: number, b: number): HTMLCanvasElement {
+  const blurRadius = 40
+  const innerR = 5
+  const total = (innerR + blurRadius) * 2 + 4
+  const c = document.createElement('canvas')
+  c.width = total
+  c.height = total
+  const sctx = c.getContext('2d')!
+  sctx.translate(total / 2, total / 2)
+  sctx.fillStyle = `rgb(${r}, ${g}, ${b})`
+  sctx.shadowColor = `rgba(${r}, ${g}, ${b}, 1)`
+  sctx.shadowBlur = blurRadius
+  // 5 draws bake a denser halo into the sprite (paid once, free at runtime)
+  for (let i = 0; i < 5; i++) {
+    sctx.beginPath()
+    sctx.arc(0, 0, innerR, 0, Math.PI * 2)
+    sctx.fill()
+  }
+  return c
+}
+// Lazy cache keyed by RGB — first time each color is requested, sprite is rendered
+const glowSpriteCache = new Map<number, HTMLCanvasElement>()
+function getGlowSprite(r: number, g: number, b: number): HTMLCanvasElement {
+  // Pack 8-bit RGB into one int (faster + smaller key than a string)
+  const key = (r << 16) | (g << 8) | b
+  let s = glowSpriteCache.get(key)
+  if (!s) { s = makeGlowSprite(r, g, b); glowSpriteCache.set(key, s) }
+  return s
+}
+
 function drawParticles(): void {
   for (const p of particles) {
     const t = 1 - p.life
-    const alpha = Math.min(1, t * 1.6)  // bright early, smooth fade
+    // bright early, sine ease-out tail (smoother than linear)
+    const alpha = Math.sin(Math.min(1, t * 1.6) * Math.PI * 0.5)
     const sx = p.x - camX
     const sy = p.y - camY
     const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy)
@@ -1049,25 +1108,47 @@ function drawParticles(): void {
       dg = Math.floor(p.g * (1 - emberT * 0.5) + emberT * 80)
       db = Math.floor(p.b * (1 - emberT * 0.8))
     }
+    let tintBlend = 0
+    if (p.tintR >= 0) {
+      // Color tint — 0.1s delay then fast blend toward target (red or gold for ring explosions)
+      const delay = 0.1 / p.lifetime
+      tintBlend = Math.min(1, Math.max(0, p.life - delay) * 3.3)
+      dr = Math.round(p.r + (p.tintR - p.r) * tintBlend)
+      dg = Math.round(p.g + (p.tintG - p.g) * tintBlend)
+      db = Math.round(p.b + (p.tintB - p.b) * tintBlend)
+    }
     ctx.fillStyle = `rgba(${dr}, ${dg}, ${db}, ${alpha})`
     ctx.save()
     ctx.translate(sx, sy)
+    // Cached glow sprite UNDER the particle — fades in with tintBlend. drawImage is ~100× cheaper
+    // than per-frame shadowBlur. Drawn with `lighter` composite so overlapping glows add brightness
+    // (real-light behavior), making bursts pop without per-particle cost.
+    if (tintBlend > 0) {
+      const sprite = getGlowSprite(p.tintR, p.tintG, p.tintB)
+      const glowScale = Math.max(0.7, hs / 5) * (0.9 + tintBlend * 0.5)
+      const dim = sprite.width * glowScale
+      const prevAlpha = ctx.globalAlpha
+      const prevComp = ctx.globalCompositeOperation
+      ctx.globalAlpha = Math.min(1, alpha * tintBlend * 1.3)
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.drawImage(sprite, -dim / 2, -dim / 2, dim, dim)
+      ctx.globalAlpha = prevAlpha
+      ctx.globalCompositeOperation = prevComp
+    }
     if (speed > 60) {
-      // Fast particles → pointed diamond streaks in velocity direction
       const angle = Math.atan2(p.vy, p.vx)
       ctx.rotate(angle)
       const stretch = Math.min(speed / 80, 3)
-      const hw = hs * stretch * 2.25  // half width (long axis)
-      const hh = hs * 1.05            // half height (short axis, thicker)
+      const hw = hs * stretch * 2.25
+      const hh = hs * 1.05
       ctx.beginPath()
-      ctx.moveTo(-hw, 0)       // back point
-      ctx.lineTo(0, -hh)       // top
-      ctx.lineTo(hw, 0)        // front point
-      ctx.lineTo(0, hh)        // bottom
+      ctx.moveTo(-hw, 0)
+      ctx.lineTo(0, -hh)
+      ctx.lineTo(hw, 0)
+      ctx.lineTo(0, hh)
       ctx.closePath()
       ctx.fill()
     } else {
-      // Slow particles → normal spinning squares
       const spin = p.spinRate ? p.life * p.spinRate : p.life * 2.7 + (p.x * 0.01)
       ctx.rotate(spin)
       ctx.fillRect(-hs, -hs, p.size, p.size)
@@ -1566,6 +1647,94 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
 
   drawRitualNodes()
 
+  // Beat dash AOE flash — drawn BEFORE the player so the player visibly stands on top
+  if (beatDashFlash > 0) {
+    beatDashFlash -= lastDt
+    const t = beatDashFlash / 0.444  // 1→0
+    const bsx = beatDashX - camX
+    const bsy = beatDashY - camY
+    // White area flash — exact hitbox size, brighter initial
+    const whiteAlpha = t > 0.7 ? t * 0.3 : t * t * 0.15
+    ctx.beginPath()
+    ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(255, 255, 255, ${whiteAlpha})`
+    ctx.fill()
+    // Total-area gold glow flash — extends slightly past the hitbox edge
+    {
+      const glowR = beatDashRadius * 1.5
+      const grad = ctx.createRadialGradient(bsx, bsy, 0, bsx, bsy, glowR)
+      grad.addColorStop(0, `rgba(255, 240, 160, ${t * 0.85})`)
+      grad.addColorStop(0.38, `rgba(255, 215, 90, ${t * 0.55})`)
+      grad.addColorStop(0.85, `rgba(255, 190, 50, ${t * 0.18})`)
+      grad.addColorStop(1, `rgba(255, 180, 40, 0)`)
+      const prevComp = ctx.globalCompositeOperation
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.beginPath()
+      ctx.arc(bsx, bsy, glowR, 0, Math.PI * 2)
+      ctx.fillStyle = grad
+      ctx.fill()
+      ctx.globalCompositeOperation = prevComp
+    }
+    // Red danger fill
+    ctx.beginPath()
+    ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(255, 40, 40, ${t * t * 0.42})`
+    ctx.fill()
+    // Gold shockwave expanding to fill attack range
+    const shockExpand = Math.min((1 - t) * 3, 1)
+    const shockR = beatDashRadius * shockExpand
+    if (shockR > 2) {
+      ctx.beginPath()
+      ctx.arc(bsx, bsy, shockR, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 215, 64, ${t * t * 0.2})`
+      ctx.fill()
+      ctx.strokeStyle = `rgba(255, 200, 40, ${t * t * 0.6})`
+      ctx.lineWidth = 5 * t
+      ctx.stroke()
+    }
+    // Red danger edge
+    ctx.beginPath()
+    ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(255, 60, 60, ${t * 0.78})`
+    ctx.lineWidth = 3 * t + 1.5
+    ctx.stroke()
+    // Cyan border
+    ctx.beginPath()
+    ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(0, 255, 255, ${t * 0.12})`
+    ctx.lineWidth = 8 * t
+    ctx.stroke()
+    // Initial burst particles on first frame
+    if (beatDashFlash > 0.42) {
+      for (let p = 0; p < 8; p++) {
+        const pa = (p / 8) * Math.PI * 2 + Math.random() * 0.4
+        const dist = beatDashRadius * (0.3 + Math.random() * 0.7)
+        spawnParticle(
+          beatDashX + Math.cos(pa) * dist,
+          beatDashY + Math.sin(pa) * dist,
+          Math.cos(pa) * 60, Math.sin(pa) * 60,
+          0, 230, 255, 0.18 + Math.random() * 0.10, 7 + Math.random() * 5)
+      }
+    }
+    // Disintegration particles breaking off the edge
+    if (Math.random() < 0.6 + (1 - t) * 0.4) {
+      const count = Math.ceil(3 + (1 - t) * 4)
+      for (let p = 0; p < count; p++) {
+        const pa = Math.random() * Math.PI * 2
+        const dist = beatDashRadius * (0.6 + Math.random() * 0.4)
+        const px = beatDashX + Math.cos(pa) * dist
+        const py = beatDashY + Math.sin(pa) * dist
+        const speed = 20 + Math.random() * 40
+        const outA = pa + (Math.random() - 0.5) * 1.5
+        const isBlueP = Math.random() < 0.2
+        spawnParticle(px, py,
+          Math.cos(outA) * speed, Math.sin(outA) * speed - 15,
+          isBlueP ? 0 : 255, isBlueP ? 200 + Math.floor(Math.random() * 55) : 180 + Math.floor(Math.random() * 60), isBlueP ? 255 : 20 + Math.floor(Math.random() * 40),
+          0.14 + Math.random() * 0.10, 4 + Math.random() * 3)
+      }
+    }
+  }
+
   perfStart('player')
   drawPlayer(player)
   perfEnd('player')
@@ -1596,85 +1765,8 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   updateAndDrawRevengeRings(lastDt)
   perfEnd('e_rings_overlay')
 
-  // Beat dash shockwave — drawn on top of everything
-  if (beatDashFlash > 0) {
-    beatDashFlash -= lastDt
-    const t = beatDashFlash / 0.444  // 1→0
-    const bsx = beatDashX - camX
-    const bsy = beatDashY - camY
-
-    // White area flash — exact hitbox size, brighter initial
-    const whiteAlpha = t > 0.7 ? t * 0.3 : t * t * 0.15
-    ctx.beginPath()
-    ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(255, 255, 255, ${whiteAlpha})`
-    ctx.fill()
-
-    // Red danger fill — covers the whole AOE hitbox, signals "this hurt enemies"
-    // (matches the sweep dash's red-tint language at Renderer.ts:1495-1517)
-    ctx.beginPath()
-    ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(255, 40, 40, ${t * t * 0.42})`
-    ctx.fill()
-
-    // Gold shockwave expanding to fill attack range
-    const shockExpand = Math.min((1 - t) * 3, 1)
-    const shockR = beatDashRadius * shockExpand
-    if (shockR > 2) {
-      ctx.beginPath()
-      ctx.arc(bsx, bsy, shockR, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(255, 215, 64, ${t * t * 0.2})`
-      ctx.fill()
-      ctx.strokeStyle = `rgba(255, 200, 40, ${t * t * 0.6})`
-      ctx.lineWidth = 5 * t
-      ctx.stroke()
-    }
-
-    // Bright red danger edge at the hitbox boundary — sweep-dash vocab
-    ctx.beginPath()
-    ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(255, 60, 60, ${t * 0.78})`
-    ctx.lineWidth = 3 * t + 1.5
-    ctx.stroke()
-
-    // Cyan border glow at exact hitbox edge (kept for crisp shape definition)
-    ctx.beginPath()
-    ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(0, 255, 255, ${t * 0.12})`
-    ctx.lineWidth = 8 * t
-    ctx.stroke()
-
-    // Initial burst particles on first frame
-    if (beatDashFlash > 0.42) {
-      for (let p = 0; p < 8; p++) {
-        const pa = (p / 8) * Math.PI * 2 + Math.random() * 0.4
-        const dist = beatDashRadius * (0.3 + Math.random() * 0.7)
-        spawnParticle(
-          beatDashX + Math.cos(pa) * dist,
-          beatDashY + Math.sin(pa) * dist,
-          Math.cos(pa) * 60, Math.sin(pa) * 60,
-          0, 230, 255, 0.18 + Math.random() * 0.10, 7 + Math.random() * 5)
-      }
-    }
-
-    // Disintegration particles breaking off the edge
-    if (Math.random() < 0.6 + (1 - t) * 0.4) {
-      const count = Math.ceil(3 + (1 - t) * 4)  // more particles as it fades
-      for (let p = 0; p < count; p++) {
-        const pa = Math.random() * Math.PI * 2
-        const dist = beatDashRadius * (0.6 + Math.random() * 0.4)
-        const px = beatDashX + Math.cos(pa) * dist
-        const py = beatDashY + Math.sin(pa) * dist
-        const speed = 20 + Math.random() * 40
-        const outA = pa + (Math.random() - 0.5) * 1.5
-        const isBlueP = Math.random() < 0.2
-        spawnParticle(px, py,
-          Math.cos(outA) * speed, Math.sin(outA) * speed - 15,
-          isBlueP ? 0 : 255, isBlueP ? 200 + Math.floor(Math.random() * 55) : 180 + Math.floor(Math.random() * 60), isBlueP ? 255 : 20 + Math.floor(Math.random() * 40),
-          0.14 + Math.random() * 0.10, 4 + Math.random() * 3)
-      }
-    }
-  }
+  // Dash-fail flash timer (just decrements — read by pie render to tint red)
+  if (dashFailFlash > 0) { dashFailFlash -= lastDt; if (dashFailFlash < 0) dashFailFlash = 0 }
 
   updateAndDrawSpawnEffects(lastDt)
   updateAndDrawAbsorbEffects(lastDt, player)
@@ -2210,7 +2302,16 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
       const pr = isRed ? 255 : isWhite ? 255 : Math.min(255, ri + 100)
       const pg = isRed ? 60 + Math.floor(Math.random() * 40) : isWhite ? 255 : Math.min(255, gi + 60)
       const pb = isRed ? 50 + Math.floor(Math.random() * 30) : isWhite ? 255 : Math.min(255, bi + 60)
-      spawnParticle(px, py, vx, vy, pr, pg, pb, lt, sz)
+      // Tint target drives BOTH the color blend AND the glow halo color.
+      // Player ring particles tint to red or gold (sweep-dash combo).
+      // Enemy ring particles tint to their own color (no visible shift, but glow still fires).
+      const isPlayerRing = ring.owner === 'player'
+      const tintGold = Math.random() < 0.5
+      let tR: number, tG: number, tB: number
+      if (isRed) { tR = -1; tG = 0; tB = 0 }   // already pure red, skip
+      else if (isPlayerRing) { tR = 255; tG = tintGold ? 200 : 50; tB = tintGold ? 60 : 50 }
+      else { tR = pr; tG = pg; tB = pb }   // enemy: glow only, no color shift
+      spawnParticle(px, py, vx, vy, pr, pg, pb, lt, sz, 0, tR, tG, tB)
     }
   }
 
@@ -2232,12 +2333,16 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   ctx.lineWidth = lineW + 0.5
   drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
 
-  // White-gold flash at exact peak — bright, unmissable
+  // White-gold flash at exact peak — bright, unmissable (tuned up: extra wide halo + denser glow)
   if (showRedRing && pastPeak < 0.05) {
     const peakFlash = 1 - (pastPeak / 0.05)
-    // Wide hot glow
-    ctx.strokeStyle = `rgba(255, 220, 100, ${peakFlash * 0.5})`
-    ctx.lineWidth = lineW * 4
+    // Extra wide outer halo — softens the peak into the surrounding space
+    ctx.strokeStyle = `rgba(255, 230, 130, ${peakFlash * 0.22})`
+    ctx.lineWidth = lineW * 7
+    drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
+    // Wide hot glow (bumped alpha + slightly wider)
+    ctx.strokeStyle = `rgba(255, 220, 100, ${peakFlash * 0.65})`
+    ctx.lineWidth = lineW * 4.5
     drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
     // Bright white core ring
     ctx.strokeStyle = `rgba(255, 255, 255, ${peakFlash * 0.95})`
@@ -2411,6 +2516,19 @@ function drawXPOrbs(player: Player): void {
       const lx = sx - humpR * 0.9  // left hump center
       const rx = sx + humpR * 0.9  // right hump center
       const hy = cy - hs * 0.15    // hump center y
+      // Cached white glow sprite under the heart — large + low alpha so the bright sprite
+      // center disappears and only a soft halo remains around the heart shape.
+      {
+        const sprite = getGlowSprite(255, 255, 255)
+        const dim = hs * 7
+        const prevComp = ctx.globalCompositeOperation
+        const prevAlpha = ctx.globalAlpha
+        ctx.globalCompositeOperation = 'lighter'
+        ctx.globalAlpha = Math.min(1, 0.32 + orbBeat * 0.45)
+        ctx.drawImage(sprite, sx - dim / 2, cy - dim / 2, dim, dim)
+        ctx.globalAlpha = prevAlpha
+        ctx.globalCompositeOperation = prevComp
+      }
       ctx.beginPath()
       // Start at bottom tip
       ctx.moveTo(sx, cy + hs * 0.85)
@@ -2453,15 +2571,20 @@ function drawPlayer(player: Player): void {
     sy += (Math.random() - 0.5) * 2 * jitter
   }
 
-  // Glow aura — soft radial gradient behind player, pulses on beat
+  // Glow aura — soft radial gradient behind player, pulses on beat.
+  // On hit, swap to red glow that punches brighter and fades with the flash.
   {
     const beatPulse = globalBeatPulse
-    const glowRadius = baseRadius * (2.5 + beatPulse * 0.8)
-    const glowAlpha = 0.18 + beatPulse * 0.22
+    const hitT = player.hitFlash > 0 ? player.hitFlash / HIT_FLASH_DURATION : 0
+    const glowRadius = baseRadius * (2.5 + beatPulse * 0.8 + hitT * 1.4)
+    const glowAlpha = 0.18 + beatPulse * 0.22 + hitT * 0.55
+    const r = hitT > 0 ? 255 : 79
+    const g = hitT > 0 ? Math.floor(50 + 145 * (1 - hitT)) : 195
+    const b = hitT > 0 ? Math.floor(50 + 197 * (1 - hitT)) : 247
     const grad = ctx.createRadialGradient(sx, sy, baseRadius * 0.3, sx, sy, glowRadius)
-    grad.addColorStop(0, `rgba(79, 195, 247, ${glowAlpha})`)
-    grad.addColorStop(0.4, `rgba(79, 195, 247, ${glowAlpha * 0.4})`)
-    grad.addColorStop(1, 'rgba(79, 195, 247, 0)')
+    grad.addColorStop(0, `rgba(${r}, ${g}, ${b}, ${glowAlpha})`)
+    grad.addColorStop(0.4, `rgba(${r}, ${g}, ${b}, ${glowAlpha * 0.4})`)
+    grad.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`)
     ctx.beginPath()
     ctx.arc(sx, sy, glowRadius, 0, Math.PI * 2)
     ctx.fillStyle = grad
@@ -2514,7 +2637,7 @@ function drawPlayer(player: Player): void {
   if (player.hitFlash > 0) {
     const t = player.hitFlash / HIT_FLASH_DURATION // 1 = just hit, 0 = recovered
     const isDead = getPhase() === 'dead'
-    drawRadius = isDead ? baseRadius : baseRadius * (0.7 + 0.3 * (1 - t)) // no shrink on death
+    drawRadius = isDead ? baseRadius : baseRadius * (0.67 + 0.33 * (1 - t)) // no shrink on death
     fillColor = `rgba(255, ${Math.floor(30 + 225 * (1 - t))}, ${Math.floor(30 + 217 * (1 - t))}, ${0.2 + 0.5 * t})`
     strokeColor = `rgb(255, ${Math.floor(30 + 225 * (1 - t))}, ${Math.floor(30 + 217 * (1 - t))})`
   }
@@ -2657,6 +2780,23 @@ function drawPlayer(player: Player): void {
     }
     ctx.fill()
 
+    // Low HP beat pulse — when HP is at 30% or less, the remaining HP wedge flashes white
+    // on every beat. Uses a radial gradient (white center → faded edge) so it layers with
+    // the HP's existing radial-gradient texture instead of flattening it.
+    if (actualPlayerHp > 0 && actualPlayerHp <= 0.3 && globalBeatPulse > 0.02 && player.hitFlash <= 0) {
+      const a = Math.min(1, globalBeatPulse * 1.0)
+      const pulseGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, drawRadius)
+      pulseGrad.addColorStop(0, `rgba(255, 255, 255, ${a})`)
+      pulseGrad.addColorStop(0.35, `rgba(255, 255, 255, ${a * 0.85})`)
+      pulseGrad.addColorStop(1, `rgba(255, 255, 255, ${a * 0.5})`)
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.arc(sx, sy, drawRadius, hpStart, mainEnd)
+      ctx.closePath()
+      ctx.fillStyle = pulseGrad
+      ctx.fill()
+    }
+
     // Heal juice — glowing leading edge + particles when filling
     const healGap = actualPlayerHp - hpFraction
     if (healGap > 0.01) {
@@ -2743,6 +2883,20 @@ function drawPlayer(player: Player): void {
             : `rgba(230, 210, 255, ${segAlpha + 0.12})`
         ctx.lineWidth = isMissing ? (shielded ? 2 : 1) : shielded ? 2.5 : 1.5
         ctx.stroke()
+        // Hit flash — bright red overlay on every segment line (filled + missing).
+        // Uses 'lighter' so it punches over whatever color was drawn underneath.
+        if (player.hitFlash > 0) {
+          const hitT = player.hitFlash / HIT_FLASH_DURATION
+          const prevComp = ctx.globalCompositeOperation
+          ctx.globalCompositeOperation = 'lighter'
+          ctx.beginPath()
+          ctx.moveTo(ix, iy)
+          ctx.lineTo(ox, oy)
+          ctx.strokeStyle = `rgba(255, 40, 40, ${hitT * 0.95})`
+          ctx.lineWidth = 4.5
+          ctx.stroke()
+          ctx.globalCompositeOperation = prevComp
+        }
       }
     }
   }
@@ -3349,17 +3503,27 @@ function drawPlayer(player: Player): void {
           (Math.random() - 0.5) * 12, (Math.random() - 0.5) * 12,
           100, 255, 120, 0.22 + Math.random() * 0.18, 2.5 + Math.random() * 1.5)
       }
-      // Ready — green dot with beat-pulsing glow
-      const glowPulse = 0.12 + globalBeatPulse * 0.15
-      const dotR = 8.6 * bounce
-      const glowSize = (14 + globalBeatPulse * 4) * bounce
-      ctx.beginPath()
-      ctx.arc(dotX, dotY, glowSize, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(100, 255, 120, ${glowPulse * bounce})`
-      ctx.fill()
+      // Ready — green dot with radial-gradient body, swimming inner sparks, beat-pulsing core
+      const dotR = 11.87 * bounce
+      // D: Radial gradient body — bright center, slightly darker edge (glowing bead look)
+      const bodyGrad = ctx.createRadialGradient(dotX, dotY, 0, dotX, dotY, dotR)
+      if (bounce > 1.1) {
+        bodyGrad.addColorStop(0, 'rgba(240, 255, 245, 0.98)')
+        bodyGrad.addColorStop(1, 'rgba(180, 255, 200, 0.92)')
+      } else {
+        bodyGrad.addColorStop(0, 'rgba(180, 255, 200, 0.98)')
+        bodyGrad.addColorStop(1, 'rgba(80, 235, 100, 0.92)')
+      }
       ctx.beginPath()
       ctx.arc(dotX, dotY, dotR, 0, Math.PI * 2)
-      ctx.fillStyle = bounce > 1.1 ? `rgba(220, 255, 230, 0.95)` : 'rgba(100, 255, 120, 0.95)'
+      ctx.fillStyle = bodyGrad
+      ctx.fill()
+      // White-hot core pulse on top
+      const coreR = dotR * (0.45 + globalBeatPulse * 1.65)
+      const coreAlpha = 0.55 + globalBeatPulse * 0.45
+      ctx.beginPath()
+      ctx.arc(dotX, dotY, coreR, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(170, 255, 190, ${coreAlpha})`
       ctx.fill()
       ctx.strokeStyle = 'rgba(100, 255, 120, 0.6)'
       ctx.lineWidth = 1.5
@@ -3367,22 +3531,30 @@ function drawPlayer(player: Player): void {
     } else {
       // Charging — bright white pie on dark backing (NOT green — green = ready)
       const fill = 1 - (timer / (player.dashChargeTime * player.modifiers.dashChargeMult))
-      // Dark backing
+      const pieR = 11.87   // 10.32 * 1.15 — 15% bigger than the ready dot for visibility
       ctx.beginPath()
-      ctx.arc(dotX, dotY, 8.6, 0, Math.PI * 2)
+      ctx.arc(dotX, dotY, pieR, 0, Math.PI * 2)
       ctx.fillStyle = 'rgba(0, 0, 0, 0.55)'
       ctx.fill()
       if (fill > 0) {
         ctx.beginPath()
         ctx.moveTo(dotX, dotY)
-        ctx.arc(dotX, dotY, 8.6, -Math.PI / 2, -Math.PI / 2 + fill * Math.PI * 2)
+        ctx.arc(dotX, dotY, pieR, -Math.PI / 2, -Math.PI / 2 + fill * Math.PI * 2)
         ctx.closePath()
-        ctx.fillStyle = `rgba(255, 255, 255, ${0.85 + fill * 0.1})`
+        // Flash red when player tried to dash with no charges (triggered from Player.ts)
+        if (dashFailFlash > 0) {
+          const fa = dashFailFlash / 0.25   // 1→0
+          const fr = 255
+          const fg = Math.round(255 - 255 * fa)
+          const fb = Math.round(255 - 255 * fa)
+          ctx.fillStyle = `rgba(${fr}, ${fg}, ${fb}, 1)`
+        } else {
+          ctx.fillStyle = 'rgba(255, 255, 255, 1)'
+        }
         ctx.fill()
       }
-      // White outline ring for shape definition
       ctx.beginPath()
-      ctx.arc(dotX, dotY, 8.6, 0, Math.PI * 2)
+      ctx.arc(dotX, dotY, pieR, 0, Math.PI * 2)
       ctx.strokeStyle = `rgba(255, 255, 255, 0.5)`
       ctx.lineWidth = 1.2
       ctx.stroke()
@@ -4012,18 +4184,26 @@ function drawEnemy(enemy: Enemy, player: Player): void {
 
   const hpFraction = enemy.displayHp / enemy.maxHp
   const damageFraction = player.damage * player.modifiers.damageMult / enemy.maxHp
-  const afterHitFraction = Math.max(0, hpFraction - damageFraction)
   const startAngle = -Math.PI / 2
   const endAngle = startAngle + hpFraction * Math.PI * 2
-  const afterHitEnd = startAngle + afterHitFraction * Math.PI * 2
 
-  // White flash on hit — drawn under pie so blood/drain show on top
+  // Red glow halo on hit — radial gradient extends past enemy edge (matches player hit glow).
+  // Drawn under pie/body so the enemy color still reads; only a red halo spills past the edge.
   if (enemy.hitFlash > 0) {
     const flashT = enemy.hitFlash / HIT_FLASH_DURATION
+    const glowR = r * 1.3
+    const a = flashT * 0.85
+    const grad = ctx.createRadialGradient(sx, sy, r * 0.2, sx, sy, glowR)
+    grad.addColorStop(0, `rgba(255, 60, 50, ${a})`)
+    grad.addColorStop(0.45, `rgba(255, 50, 40, ${a * 0.6})`)
+    grad.addColorStop(1, 'rgba(255, 40, 30, 0)')
+    const prevComp = ctx.globalCompositeOperation
+    ctx.globalCompositeOperation = 'lighter'
     ctx.beginPath()
-    ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(255, 255, 255, ${0.95 * flashT})`
+    ctx.arc(sx, sy, glowR, 0, Math.PI * 2)
+    ctx.fillStyle = grad
     ctx.fill()
+    ctx.globalCompositeOperation = prevComp
   }
 
   // Background — solid fill
@@ -4353,33 +4533,13 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     ctx.fill()
   }
 
-  // Damage preview
-  if (ringOverEnemy && afterHitFraction < hpFraction) {
-    if (afterHitFraction <= 0) {
-      const t = (performance.now() % 180) / 180
-      const pulse = t < 0.5 ? 2 * t * t : 1 - 2 * (1 - t) * (1 - t)
-      ctx.beginPath()
-      ctx.moveTo(sx, sy)
-      ctx.arc(sx, sy, r, startAngle, endAngle)
-      ctx.closePath()
-      ctx.fillStyle = `rgba(0, 0, 0, ${0.5 * pulse})`
-      ctx.fill()
-    } else {
-      ctx.beginPath()
-      ctx.moveTo(sx, sy)
-      ctx.arc(sx, sy, r, afterHitEnd, endAngle)
-      ctx.closePath()
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.19)'
-      ctx.fill()
-    }
-  }
-
-  // White flash overlay on top — visible over pie fill
+  // Subtle red tint over the enemy — layered on top of the body, low alpha so the enemy
+  // color still reads through. Pairs with the red halo glow drawn under the body.
   if (enemy.hitFlash > 0) {
     const flashT = enemy.hitFlash / HIT_FLASH_DURATION
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(255, 255, 255, ${0.4 * flashT * flashT})`
+    ctx.fillStyle = `rgba(255, 60, 50, ${0.32 * flashT * flashT})`
     ctx.fill()
   }
 
@@ -5429,8 +5589,11 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         ctx.fillStyle = `rgba(150, 240, 255, ${(bt - 0.7) * 2})`
         ctx.fill()
       }
-      // Shard burst — only on the first frame (when breakFlash is at max)
-      if (bt > 0.95) {
+      // Shard burst — one-shot on the frame the shield breaks. Uses a transient flag
+      // instead of `bt > 0.95` because updateEnemy ticks shieldBreakFlash down by dt
+      // before render, so on first render bt is already ~0.917 at 60fps and shards never fired.
+      if (enemy.shieldJustBroken) {
+        enemy.shieldJustBroken = false
         const partScale = Math.max(2, r * 0.1)
         const shardCount = Math.floor(18 + r * 0.2)
         for (let i = 0; i < shardCount; i++) {
@@ -5530,7 +5693,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     const chargeTime = type?.dodgeChargeTime ?? 1.5
     const orbitR = r   // dot center sits on body edge, mirroring player's drawRadius orbit
     const orbitSpeed = performance.now() / 800
-    const dotR = Math.max(8.6, r * 0.18)
+    const dotR = Math.max(10.32, r * 0.216)   // 20% larger than before (was 8.6 / r*0.18)
     const burstScale = Math.max(0.4, r * 0.04)   // particle size scale for consume/ready bursts
     // Use player's dash green for all dodge visuals — unified visual language
     const dr = 100, dg = 255, db = 120
@@ -5579,46 +5742,57 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       }
 
       if (timer <= 0) {
-        // Ready — green dot with beat-pulsing glow (same vocab as player dash slot)
-        const glowAlpha = 0.18 + globalBeatPulse * 0.18
-        const glowR = dotR * (1.8 + globalBeatPulse * 0.35)
+        // Ready — radial gradient bead + swimming inner sparks + beat-pulsing core
+        const readyR = dotR * 1.15
+        // D: Radial gradient body
+        const edgeR = Math.max(0, dr - 40)
+        const edgeG = Math.max(0, dg - 40)
+        const edgeB = Math.max(0, db - 40)
+        const cr = Math.min(255, dr + 70)
+        const cg = Math.min(255, dg + 70)
+        const cb = Math.min(255, db + 70)
+        const bodyGrad = ctx.createRadialGradient(dx, dy, 0, dx, dy, readyR)
+        bodyGrad.addColorStop(0, `rgba(${cr}, ${cg}, ${cb}, 0.98)`)
+        bodyGrad.addColorStop(1, `rgba(${edgeR}, ${edgeG}, ${edgeB}, 0.92)`)
         ctx.beginPath()
-        ctx.arc(dx, dy, glowR, 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(${dr}, ${dg}, ${db}, ${glowAlpha})`
+        ctx.arc(dx, dy, readyR, 0, Math.PI * 2)
+        ctx.fillStyle = bodyGrad
         ctx.fill()
+        const coreR = readyR * (0.45 + globalBeatPulse * 1.65)
+        const coreAlpha = 0.55 + globalBeatPulse * 0.45
         ctx.beginPath()
-        ctx.arc(dx, dy, dotR, 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(${dr}, ${dg}, ${db}, 0.95)`
+        ctx.arc(dx, dy, coreR, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${coreAlpha})`
         ctx.fill()
         ctx.strokeStyle = `rgba(${dr}, ${dg}, ${db}, 0.6)`
         ctx.lineWidth = 1.5
         ctx.stroke()
-        // Trail particles behind orbiting dot — same as player at Renderer.ts:3274-3283
         if (Math.random() < 0.7) {
           const spread = orbitR * 0.15
           spawnParticle(
             wx + (Math.random() - 0.5) * spread,
             wy + (Math.random() - 0.5) * spread,
             (Math.random() - 0.5) * 12, (Math.random() - 0.5) * 12,
-            dr, dg, db, 0.22 + Math.random() * 0.18, Math.max(1.5, dotR * 0.25))
+            dr, dg, db, 0.22 + Math.random() * 0.18, Math.max(1.5, readyR * 0.25))
         }
       } else {
-        // Recharging — bright white pie on dark backing (NOT green — green = ready)
+        // Recharging — cream pie on dark backing (15% bigger than ready dot for visibility)
         const fill = 1 - (timer / chargeTime)
+        const pieR = dotR * 1.15
         ctx.beginPath()
-        ctx.arc(dx, dy, dotR, 0, Math.PI * 2)
+        ctx.arc(dx, dy, pieR, 0, Math.PI * 2)
         ctx.fillStyle = 'rgba(0, 0, 0, 0.55)'
         ctx.fill()
         if (fill > 0) {
           ctx.beginPath()
           ctx.moveTo(dx, dy)
-          ctx.arc(dx, dy, dotR, -Math.PI / 2, -Math.PI / 2 + fill * Math.PI * 2)
+          ctx.arc(dx, dy, pieR, -Math.PI / 2, -Math.PI / 2 + fill * Math.PI * 2)
           ctx.closePath()
-          ctx.fillStyle = `rgba(255, 255, 255, ${0.85 + fill * 0.1})`
+          ctx.fillStyle = 'rgba(255, 255, 255, 1)'
           ctx.fill()
         }
         ctx.beginPath()
-        ctx.arc(dx, dy, dotR, 0, Math.PI * 2)
+        ctx.arc(dx, dy, pieR, 0, Math.PI * 2)
         ctx.strokeStyle = `rgba(255, 255, 255, 0.5)`
         ctx.lineWidth = 1.2
         ctx.stroke()

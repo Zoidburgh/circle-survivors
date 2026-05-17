@@ -146,6 +146,7 @@ export interface Enemy {
   shieldBreakFlash: number        // visual break effect timer
   shieldRechargeTime: number      // = type.shieldRechargeTime
   shieldJustRestored: boolean     // transient — set when shield refills, cleared by Renderer after burst
+  shieldJustBroken: boolean       // transient — set on break, cleared by Renderer after shard burst (one-shot, immune to dt-tick race)
   shieldActivateTimer: number     // >0 = bright outer ring fades over this duration (activation glow)
 }
 
@@ -292,6 +293,7 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     shieldBreakFlash: 0,
     shieldRechargeTime: type.shieldRechargeTime ?? 4,
     shieldJustRestored: false,
+    shieldJustBroken: false,
     shieldActivateTimer: 0,
   }
   // Shrines: skip spawn animation, pushable by enemies
@@ -904,6 +906,7 @@ export function damageEnemy(enemy: Enemy, amount: number): void {
   if (enemy.shield && enemy.shieldCharges > 0) {
     enemy.shieldCharges--
     enemy.shieldBreakFlash = SHIELD_BREAK_FLASH
+    enemy.shieldJustBroken = true
     enemy.hitFlash = HIT_FLASH_DURATION
     enemy.shieldRechargeTimer = enemy.shieldRechargeTime
     playEnemyShieldBreak()

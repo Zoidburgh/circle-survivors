@@ -5,7 +5,7 @@ import { shouldFire } from '../audio/PatternClock.ts'
 import * as Input from '../game/InputManager.ts'
 import { emit } from '../core/EventBus.ts'
 import { playDash, playWindup } from '../audio/AudioEngine.ts'
-import { showToast } from '../render/Renderer.ts'
+import { showToast, triggerDashFailFlash } from '../render/Renderer.ts'
 
 let dashCDToastFired = false
 let dashCDBeginner = false
@@ -391,7 +391,9 @@ export function updatePlayer(player: Player, dt: number): void {
   if (Input.consumeLeftClick() || Input.consumeSpace()) {
     const readySlot = player.dashSlots.findIndex(t => t <= 0)
     if (readySlot < 0) {
-      // No dash available — notify on beginner only
+      // No dash available — flash the pies red as visual feedback
+      triggerDashFailFlash()
+      // Notify on beginner only
       if (!dashCDToastFired && dashCDBeginner) {
         dashCDToastFired = true
         showToast('DASH on CD!', { y: 0.14, duration: 1.5, size: 42, id: 'dash_cd', color: [0, 200, 255], style: 'glow', glowWords: ['DASH', 'CD!'], glowColor: [100, 255, 120] })

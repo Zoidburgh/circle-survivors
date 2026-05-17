@@ -163,6 +163,72 @@ on('enemy:revenge', (enemy: Enemy) => {
   pendingRevenges.push({ origins, radius: enemy.revengeRadius, damage: enemy.damage, timer: 0, expandTime, consume: enemy.consume, enemy })
 })
 
+function processVolatileExplosions(player: ReturnType<typeof getPlayer>, enemies: Enemy[], dt: number): void {
+  for (let i = pendingExplosions.length - 1; i >= 0; i--) {
+    const exp = pendingExplosions[i]!
+    exp.timer += dt
+    if (!exp.soundPlayed) {
+      exp.soundPlayed = true
+      playVolatileExplosion()
+    }
+    if (exp.timer >= BEAT_SEC && getActiveChallenge()?.name === 'Beginner Challenge') {
+      showToast('BOOM!', { y: 0.14, duration: 1.0, size: 56, id: 'boom', color: [255, 120, 30], style: 'combo' })
+    }
+    if (exp.timer >= BEAT_SEC) {
+      if (!boomBoomPowFired) {
+        const now = challengeElapsed
+        explosionTimes.push(now)
+        while (explosionTimes.length > 0 && explosionTimes[0]! < now - 3) explosionTimes.shift()
+        if (explosionTimes.length >= 5) {
+          boomBoomPowFired = true
+          showToast('BOOM BOOM POW!', { y: 0.14, duration: 1.5, size: 46, id: 'boom_pow', color: [255, 120, 30], style: 'combo' })
+        }
+      }
+      for (const enemy of enemies) {
+        if (!enemy.alive || enemy.dying || enemy.summon) continue
+        const dx = enemy.x - exp.x
+        const dy = enemy.y - exp.y
+        const hitRange = exp.range + enemy.radius
+        const inRange = dx * dx + dy * dy <= hitRange * hitRange
+        let destInRange = false
+        if (enemy.blink && enemy.blinkPreview > 0) {
+          const gdx = enemy.blinkGhostX - exp.x
+          const gdy = enemy.blinkGhostY - exp.y
+          destInRange = gdx * gdx + gdy * gdy <= hitRange * hitRange
+        }
+        if (inRange || destInRange) {
+          const wasDying = enemy.dying
+          damageEnemy(enemy, 1)
+          if (!isRunTimerActive() && !isRunComplete()) {
+            startRunTimer()
+          }
+          if (enemy.revenge) {
+            emit('enemy:revenge', enemy)
+          }
+          if (enemy.totemSpawn) {
+            emit('totem:spawn', enemy)
+          }
+          if (enemy.dying && !wasDying) {
+            spawnDrops(enemy, 1, spawnOrb)
+            explosionKillTimes.push(challengeElapsed)
+          }
+        }
+      }
+      const pdx = player.x - exp.x
+      const pdy = player.y - exp.y
+      const playerHitRange = exp.range + player.hitRadius
+      if (pdx * pdx + pdy * pdy <= playerHitRange * playerHitRange) {
+        if (hurtPlayer(player, 1)) playPlayerHit()
+      }
+      addVolatileExplosion(exp.x, exp.y, exp.range, exp.r, exp.g, exp.b)
+      Renderer.spawnVolatileParticles(exp.x, exp.y, exp.range, exp.r, exp.g, exp.b)
+      pendingExplosions[i] = pendingExplosions[pendingExplosions.length - 1]!
+      pendingExplosions.pop()
+    }
+  }
+  setPendingExplosions(pendingExplosions)
+}
+
 // Queue volatile explosion on death
 on('enemy:killed', () => {
   recentKills++
@@ -804,6 +870,8 @@ function updateDesigner(dt: number): void {
   for (const orb of getOrbs()) {
     if (orb.alive && !orb.dying) grid.insert(orb)
   }
+  // Process queued volatile explosions so designer-spawned exploders actually detonate
+  processVolatileExplosions(player, enemies, dt)
   for (const e of enemies) {
     if (e.dying) updateDeath(e, dt)
     else if (e.alive) updateEnemy(e, player, dt, grid)
@@ -1550,82 +1618,7 @@ export function update(dt: number): void {
 
   // Process volatile explosions BEFORE enemy updates (so positions match player ring hits)
   perfStart('u_enemies')
-  for (let i = pendingExplosions.length - 1; i >= 0; i--) {
-    const exp = pendingExplosions[i]!
-    exp.timer += dt
-    // Start hiss sound at beginning of buildup (enemy death)
-    if (!exp.soundPlayed) {
-      exp.soundPlayed = true
-      playVolatileExplosion()
-    }
-    // Detonate after exactly 1 second — BOOM toast fires on every explosion in Beginner
-    if (exp.timer >= BEAT_SEC && getActiveChallenge()?.name === 'Beginner Challenge') {
-      showToast('BOOM!', { y: 0.14, duration: 1.0, size: 56, id: 'boom', color: [255, 120, 30], style: 'combo' })
-    }
-    if (exp.timer >= BEAT_SEC) {
-      // Track explosion for BOOM BOOM POW
-      if (!boomBoomPowFired) {
-        const now = challengeElapsed
-        explosionTimes.push(now)
-        while (explosionTimes.length > 0 && explosionTimes[0]! < now - 3) explosionTimes.shift()
-        if (explosionTimes.length >= 5) {
-          boomBoomPowFired = true
-          showToast('BOOM BOOM POW!', { y: 0.14, duration: 1.5, size: 46, id: 'boom_pow', color: [255, 120, 30], style: 'combo' })
-        }
-      }
-      // Damage all enemies in range (check current pos + blink destination)
-      for (const enemy of enemies) {
-        if (!enemy.alive || enemy.dying || enemy.summon) continue
-        const dx = enemy.x - exp.x
-        const dy = enemy.y - exp.y
-        const hitRange = exp.range + enemy.radius  // include enemy body
-        const inRange = dx * dx + dy * dy <= hitRange * hitRange
-        // Also check blink destination if mid-phase
-        let destInRange = false
-        if (enemy.blink && enemy.blinkPreview > 0) {
-          const gdx = enemy.blinkGhostX - exp.x
-          const gdy = enemy.blinkGhostY - exp.y
-          destInRange = gdx * gdx + gdy * gdy <= hitRange * hitRange
-        }
-        if (inRange || destInRange) {
-          const wasDying = enemy.dying
-          damageEnemy(enemy, 1)
-          // Start run timer on first damage dealt
-          if (!isRunTimerActive() && !isRunComplete()) {
-            startRunTimer()
-          }
-          // Trigger revenge ring if hit enemy has revenge tag (including killing blow)
-          if (enemy.revenge) {
-            emit('enemy:revenge', enemy)
-          }
-          // Totem: spawn enemy on hit
-          if (enemy.totemSpawn) {
-            emit('totem:spawn', enemy)
-          }
-          // Spawn orbs if killed by explosion
-          if (enemy.dying && !wasDying) {
-            spawnDrops(enemy, 1, spawnOrb)
-            explosionKillTimes.push(challengeElapsed)
-          }
-        }
-      }
-      // Damage player if in range
-      const pdx = player.x - exp.x
-      const pdy = player.y - exp.y
-      const playerHitRange = exp.range + player.hitRadius
-      if (pdx * pdx + pdy * pdy <= playerHitRange * playerHitRange) {
-        if (hurtPlayer(player, 1)) playPlayerHit()
-      }
-      // Visual explosion + particles spread across blast circle
-      addVolatileExplosion(exp.x, exp.y, exp.range, exp.r, exp.g, exp.b)
-      Renderer.spawnVolatileParticles(exp.x, exp.y, exp.range, exp.r, exp.g, exp.b)
-      // Remove
-      pendingExplosions[i] = pendingExplosions[pendingExplosions.length - 1]!
-      pendingExplosions.pop()
-    }
-  }
-  // Pass pending to renderer for buildup visuals
-  setPendingExplosions(pendingExplosions)
+  processVolatileExplosions(player, enemies, dt)
 
   // MASS EXTINCTION EVENT — 10+ enemies killed by explosions within a 5s window
   if (!massExtinctionFired && explosionKillTimes.length > 0) {
