@@ -12,6 +12,7 @@ let dashCDBeginner = false
 export function resetDashCDToast(beginner = false): void { dashCDToastFired = false; dashCDBeginner = beginner }
 import { clampToArena, ARENA_W, ARENA_H, getArenaShape, ARENA_CX, ARENA_CY, ARENA_RADIUS } from '../game/Arena.ts'
 import { applyDashMotion } from './DashMotion.ts'
+import { hasBonus } from '../game/UpgradeManager.ts'
 import {
   PLAYER_SPEED,
   PLAYER_TEMPO,
@@ -24,6 +25,7 @@ import {
   SHIELD_MAX_CHARGES,
   SHIELD_RECHARGE_TIME,
   SHIELD_BREAK_FLASH,
+  BEAT_SEC,
 } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import { COLOR_PLAYER } from '../utils/constants.ts'
@@ -32,6 +34,10 @@ const DASH_DISTANCE = 413
 const DASH_DURATION = 0.6
 export const DASH_CHARGE_TIME = 3.0  // seconds to regen one charge
 export const DASH_MAX_CHARGES = 2
+// Echo Step (anchor-recall) — half-beat ghost-traversal back to the previously dropped anchor.
+// Tuned to half a beat so the recall lands on the half-subdivision after the dash beat,
+// keeping the rhythm grid clean (dash on beat → arrive on the off-beat).
+export const RECALL_DURATION = BEAT_SEC * 0.5
 
 export interface PlayerModifiers {
   speedMult: number
@@ -75,6 +81,19 @@ export interface Player {
   dashTimer: number
   dashDirX: number
   dashDirY: number
+  dashChainBoost: number  // per-dash distance multiplier (1.0 normal, 2.0 when chained with Slipstream)
+                          // — set on dash start, applied multiplicatively on top of modifiers.dashDistanceMult
+  // Echo Step state — beat-dash leapfrog mechanic. Anchor is the last spot the player beat-dashed
+  // from; the NEXT beat-dash consumes it (ghost-traverse back) and drops a new anchor at the
+  // new beat-dash spot. recallTimer >= 0 means a traversal is in progress (invuln + locked input).
+  anchorX: number
+  anchorY: number
+  anchorActive: boolean
+  recallTimer: number          // -1 = not recalling, else counts down from RECALL_DURATION
+  recallFromX: number
+  recallFromY: number
+  recallToX: number
+  recallToY: number
   dashMaxCharges: number
   dashSlots: number[]  // per-slot timer: 0 = ready, >0 = charging (counts down)
   trail: { x: number; y: number }[]
@@ -118,6 +137,9 @@ export function createPlayer(x: number, y: number): Player {
     dashTimer: -1,
     dashDirX: 0,
     dashDirY: 0,
+    dashChainBoost: 1.0,
+    anchorX: 0, anchorY: 0, anchorActive: false,
+    recallTimer: -1, recallFromX: 0, recallFromY: 0, recallToX: 0, recallToY: 0,
     dashMaxCharges: DASH_MAX_CHARGES,
     dashSlots: Array(DASH_MAX_CHARGES).fill(0),
     trail: [],
@@ -160,6 +182,9 @@ export function resetPlayer(player: Player): void {
   player.dashTimer = -1
   player.dashDirX = 0
   player.dashDirY = 0
+  player.dashChainBoost = 1.0
+  player.anchorActive = false
+  player.recallTimer = -1
   player.dashMaxCharges = DASH_MAX_CHARGES
   player.dashSlots = Array(DASH_MAX_CHARGES).fill(0)
   player.trail = []
@@ -195,6 +220,9 @@ const DAMAGE_COOLDOWN = 0.1  // seconds of immunity after taking a hit
 /** Try to deal damage to the player. Returns true if a hit was registered. */
 export function hurtPlayer(player: Player, amount: number): boolean {
   if (player.damageCooldown > 0) return false
+  // Echo Step recall traversal — player is mid-warp, completely invulnerable. Mirrors
+  // ghost-dash's gate but unconditional (the upgrade IS the invuln window).
+  if (player.recallTimer >= 0) return false
 
   // Shield absorb — no HP loss
   if (player.shieldCharges > 0) {
@@ -261,11 +289,27 @@ export function updatePlayer(player: Player, dt: number): void {
   player.prevX = player.x
   player.prevY = player.y
 
-  // Dash movement
-  if (player.dashTimer >= 0) {
+  // Echo Step recall traversal — supersedes dash motion + normal movement input. Ease-out
+  // lerp so the player decelerates into the anchor, and damage is gated off via hurtPlayer.
+  if (player.recallTimer >= 0) {
+    player.recallTimer -= dt
+    if (player.recallTimer <= 0) {
+      player.x = player.recallToX
+      player.y = player.recallToY
+      player.recallTimer = -1
+    } else {
+      const t = 1 - player.recallTimer / RECALL_DURATION  // 0 → 1
+      const eased = 1 - (1 - t) * (1 - t)
+      player.x = player.recallFromX + (player.recallToX - player.recallFromX) * eased
+      player.y = player.recallFromY + (player.recallToY - player.recallFromY) * eased
+    }
+  } else if (player.dashTimer >= 0) {
     applyDashMotion(player, dt, {
       steerInput: Input.getMovementDir(),
-      distanceMult: player.modifiers.dashDistanceMult,
+      // Multiplicative stacking: Long Dash and any other future +dashDistanceMult upgrades
+      // live in modifiers.dashDistanceMult; Slipstream's chain bonus sits in dashChainBoost.
+      // Compounding them means each upgrade keeps its full proportional effect on the others.
+      distanceMult: player.modifiers.dashDistanceMult * player.dashChainBoost,
       speedMult: player.modifiers.speedMult,
     })
   } else {
@@ -389,6 +433,11 @@ export function updatePlayer(player: Player, dt: number): void {
 
   // Dash input — need a charge AND not mid-dash
   if (Input.consumeLeftClick() || Input.consumeSpace()) {
+    // Echo Step: ignore dash input mid-recall; the player is in a locked warp.
+    if (player.recallTimer >= 0) {
+      Input.consumeRightClick()
+      return
+    }
     const readySlot = player.dashSlots.findIndex(t => t <= 0)
     if (readySlot < 0) {
       // No dash available — flash the pies red as visual feedback
@@ -410,6 +459,13 @@ export function updatePlayer(player: Player, dt: number): void {
         }
       }
       const onBeatDash = nearPeak || extraNearPeak
+
+      // Slipstream chain boost — read BEFORE we overwrite dashTimer below. A new dash
+      // initiated while the previous one is still active "drafts" off it for +100% distance.
+      // The boost stays set for the whole new dash (it's used by applyDashMotion every frame),
+      // and gets re-evaluated on the next initiation.
+      const isChainingDash = player.dashTimer >= 0
+      player.dashChainBoost = (isChainingDash && hasBonus('chainDash')) ? 2.0 : 1.0
 
       player.dashDirX = Math.cos(player.facingAngle)
       player.dashDirY = Math.sin(player.facingAngle)

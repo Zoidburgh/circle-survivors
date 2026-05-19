@@ -27,6 +27,10 @@ export interface UpgradeBonus {
   shieldRechargeMult?: number  // negative = faster recharge
   shieldMaxCharges?: number    // +1 shield charge per stack
   noShield?: boolean           // tradeoff: removes shield entirely
+  aftershock?: boolean         // beat dash detonates on next beat (telegraphed)
+  chainDash?: boolean          // dashing while still mid-dash gives the new dash +100% distance
+  anchorRecall?: boolean       // Echo Step — beat dash leapfrogs to previous anchor + drops a new one
+  chillZone?: boolean          // Chill Zone — beat dash places a 2× radius 50% slow field; next beat-dash freezes-in-place anyone still in the old zone
 }
 
 export interface ActiveUpgrade {

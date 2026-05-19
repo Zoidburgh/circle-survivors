@@ -445,27 +445,27 @@ const deathRipples: DeathRipple[] = []
 
 const MAX_RIPPLES = 30
 
-// Beat-dash lightning bolts — short jagged streaks emanating from enemies hit by the AOE.
-// Points are stored in LOCAL space (relative to the enemy center at spawn) and a reference
-// to the originating enemy is kept so the bolts follow the enemy as it moves. If the enemy
-// dies, we fall back to the last-seen world position so the bolt fades in place.
+// Beat-dash lightning bolts — short jagged streaks emanating from enemies hit by the AOE,
+// and from the AOE center itself so the spread reads as radiating outward.
+// Points are stored in LOCAL space (relative to the origin at spawn). When `enemy` is set,
+// the bolt follows the enemy; if the enemy dies, we fall back to the last-seen world position.
+// When `enemy` is null, the bolt stays pinned to its static spawn position (used for the
+// AOE-center burst, which is anchored to where the player was at dash time).
 interface LightningBolt {
-  enemy: Enemy
+  enemy: Enemy | null
   pts: { x: number; y: number }[]
   lastX: number; lastY: number
   timer: number; lifetime: number; scale: number
   fadeOffset: number   // ±shift to grow-end so strands stagger their fade start
   flickerSeed: number  // per-bolt phase seed so flicker isn't synced across strands
-  angularVel: number   // rad/sec — bolt rotates around enemy center as it ages
+  angularVel: number   // rad/sec — bolt rotates around its origin as it ages
 }
 const lightningBolts: LightningBolt[] = []
-const MAX_BOLTS = 60
+const MAX_BOLTS = 90
 
-function spawnLightningBolt(enemy: Enemy, angle: number, length: number, scale: number): void {
-  if (lightningBolts.length >= MAX_BOLTS) return
+function buildBoltPoints(angle: number, length: number): { x: number; y: number }[] {
   const SEGMENTS = 8
   const segLen = length / SEGMENTS
-  // Local-space points (origin = enemy center at spawn time)
   const pts: { x: number; y: number }[] = [{ x: 0, y: 0 }]
   for (let i = 1; i <= SEGMENTS; i++) {
     const t = i / SEGMENTS
@@ -479,13 +479,32 @@ function spawnLightningBolt(enemy: Enemy, angle: number, length: number, scale: 
       y: by + Math.sin(angle + Math.PI / 2) * jitter,
     })
   }
+  return pts
+}
+
+function spawnLightningBolt(enemy: Enemy, angle: number, length: number, scale: number): void {
+  if (lightningBolts.length >= MAX_BOLTS) return
   lightningBolts.push({
-    enemy, pts,
+    enemy, pts: buildBoltPoints(angle, length),
     lastX: enemy.x, lastY: enemy.y,
     timer: 0, lifetime: 0.29 + Math.random() * 0.07, scale,
     fadeOffset: -0.05 + Math.random() * 0.30,
     flickerSeed: Math.random() * 100,
     angularVel: (Math.random() - 0.5) * 11,  // ±~5.5 rad/s
+  })
+}
+
+// Static-origin variant for the beat-dash AOE center — bolt is pinned to (x, y) for its
+// full lifetime so the "source" of the lightning sits where the player dashed from.
+function spawnStaticLightningBolt(x: number, y: number, angle: number, length: number, scale: number, lifetime: number): void {
+  if (lightningBolts.length >= MAX_BOLTS) return
+  lightningBolts.push({
+    enemy: null, pts: buildBoltPoints(angle, length),
+    lastX: x, lastY: y,
+    timer: 0, lifetime, scale,
+    fadeOffset: -0.05 + Math.random() * 0.30,
+    flickerSeed: Math.random() * 100,
+    angularVel: (Math.random() - 0.5) * 11,
   })
 }
 
@@ -519,7 +538,8 @@ function updateAndDrawLightningBolts(dt: number): void {
       alpha *= (1 - flickAmp) + flickAmp * flick
     }
     // Anchor to the enemy's current world position; fall back to last-seen if dead/dying.
-    if (b.enemy.alive && !b.enemy.dying) { b.lastX = b.enemy.x; b.lastY = b.enemy.y }
+    // Static-origin bolts (enemy = null) keep their initial lastX/lastY untouched.
+    if (b.enemy && b.enemy.alive && !b.enemy.dying) { b.lastX = b.enemy.x; b.lastY = b.enemy.y }
     const ax = b.lastX, ay = b.lastY
     // Rotate the entire bolt around the enemy center over time.
     const rot = b.timer * b.angularVel
@@ -545,14 +565,20 @@ function updateAndDrawLightningBolts(dt: number): void {
       const tipY = pa.y + (pb.y - pa.y) * partialFrac
       ctx.lineTo(ax + (tipX * cr - tipY * sr) - camX, ay + (tipX * sr + tipY * cr) - camY)
     }
-    // Fat yellow glow underneath — thickness scales with the originating enemy's size
-    ctx.strokeStyle = `rgba(255, 200, 60, ${alpha * 0.9})`
-    ctx.lineWidth = 4.5 * b.scale * (0.7 + fadeT * 0.3)
+    // Dark-red outline underneath — gives the bolt a contrasting edge so it reads cleanly
+    // against bright/cyan backgrounds (shield-break debris, AOE-center flash) without
+    // breaking the warm yellow/white palette the way black would.
     ctx.lineCap = 'round'
+    ctx.strokeStyle = `rgba(70, 8, 8, ${alpha * 0.7})`
+    ctx.lineWidth = 4.95 * b.scale * (0.7 + fadeT * 0.3) * 1.4
+    ctx.stroke()
+    // Fat yellow glow — thickness scales with the originating enemy's size
+    ctx.strokeStyle = `rgba(255, 200, 60, ${alpha * 0.9})`
+    ctx.lineWidth = 4.95 * b.scale * (0.7 + fadeT * 0.3)
     ctx.stroke()
     // Hot white core on top
     ctx.strokeStyle = `rgba(255, 255, 220, ${alpha})`
-    ctx.lineWidth = 1.4 * b.scale
+    ctx.lineWidth = 1.54 * b.scale
     ctx.stroke()
   }
   ctx.lineCap = 'butt'
@@ -1095,11 +1121,803 @@ function spawnParticle(
   particles.push({ x, y, vx, vy, r, g, b, life: 0, lifetime, size, spinRate, tintR, tintG, tintB })
 }
 
+// Aftershock telegraph — ticking pie + danger-zone ring drawn at the dash origin while a
+// pending beat-dash detonation is counting down. Render-side state is decoupled from the
+// sim's pending list (avoids a circular Renderer ↔ GameManager import); GameManager pushes
+// via addPendingDetonation and both tick at the same dt, so they stay aligned to within
+// a frame. The actual boom visuals are still triggerBeatDashFlash, fired by the sim.
+interface PendingDetViz {
+  x: number; y: number
+  radius: number
+  timer: number
+  lifetime: number
+}
+const pendingDetVizList: PendingDetViz[] = []
+
+export function addPendingDetonation(x: number, y: number, radius: number, lifetime: number): void {
+  pendingDetVizList.push({ x, y, radius, timer: lifetime, lifetime })
+}
+
+function updateAndDrawPendingDetonations(dt: number): void {
+  if (pendingDetVizList.length === 0) return
+  // Tick during any active-sim phase. 'playing' is normal gameplay; 'designer' is the test-play
+  // scene where Aftershock can also be applied and beat-dashes fire. Frozen otherwise
+  // (paused / dead / upgrading / shopping) to stay in sync with the sim's update guards.
+  const simActive = getPhase() === 'playing' || getPhase() === 'designer'
+  for (let i = pendingDetVizList.length - 1; i >= 0; i--) {
+    const p = pendingDetVizList[i]!
+    if (simActive) p.timer -= dt
+    if (p.timer <= 0) {
+      pendingDetVizList[i] = pendingDetVizList[pendingDetVizList.length - 1]!
+      pendingDetVizList.pop()
+      continue
+    }
+    const sx = p.x - camX
+    const sy = p.y - camY
+    const elapsed = 1 - p.timer / p.lifetime  // 0 → 1
+    // Color shift: gold → orange → red as detonation nears
+    const lateT = Math.max(0, (elapsed - 0.7) / 0.3)
+    const colR = 255
+    const colG = Math.floor(200 - elapsed * 90 - lateT * 50)
+    const colB = Math.floor(80 - elapsed * 50)
+    // Pulse accelerates as it counts down (period: 600ms → 180ms)
+    const pulsePeriod = 600 - elapsed * 420
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() / pulsePeriod * Math.PI * 2)
+    // Outer danger ring outline — dashed, pulsing, gets brighter near detonation
+    ctx.beginPath()
+    ctx.arc(sx, sy, p.radius, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${colR}, ${colG}, ${colB}, ${0.35 + pulse * 0.35 + lateT * 0.2})`
+    ctx.lineWidth = 2.5 + pulse * 1.5 + lateT * 1.5
+    ctx.setLineDash([10, 7])
+    ctx.stroke()
+    ctx.setLineDash([])
+    // Ticking pie wedge — fills clockwise from 12 o'clock
+    const pieEnd = -Math.PI / 2 + elapsed * Math.PI * 2
+    ctx.beginPath()
+    ctx.moveTo(sx, sy)
+    ctx.arc(sx, sy, p.radius, -Math.PI / 2, pieEnd)
+    ctx.closePath()
+    ctx.fillStyle = `rgba(${colR}, ${colG}, ${colB}, ${0.14 + lateT * 0.22})`
+    ctx.fill()
+    // Pie leading edge line — clearer "hand of the clock"
+    ctx.beginPath()
+    ctx.moveTo(sx, sy)
+    ctx.lineTo(sx + Math.cos(pieEnd) * p.radius, sy + Math.sin(pieEnd) * p.radius)
+    ctx.strokeStyle = `rgba(255, ${Math.min(255, colG + 50)}, ${colB}, ${0.7 + lateT * 0.3})`
+    ctx.lineWidth = 2
+    ctx.stroke()
+    // Fuse sparks drifting up from center — sparse early, ramping near detonation
+    if (Math.random() < 0.25 + elapsed * 0.4 + lateT * 0.5) {
+      const sa = -Math.PI / 2 + (Math.random() - 0.5) * 1.0
+      const ss = 70 + Math.random() * 70 + lateT * 100
+      spawnParticle(p.x, p.y, Math.cos(sa) * ss, Math.sin(sa) * ss,
+        colR, Math.min(255, colG + 30), colB,
+        0.25 + Math.random() * 0.15, 3 + Math.random() * 2)
+    }
+  }
+}
+
+// Echo Step visuals — anchor marker (persistent while anchorActive) + recall streak (during
+// the half-beat warp). Marker reads as a violet rune on the ground: rotating triangular runes
+// around a pulsing core ring. The streak is a fading violet line from departure to current
+// player position with extra afterimage echoes for that "warping through space" feel.
+function drawEchoStep(player: Player): void {
+  // Anchor marker — only when active. Big violet rune cluster: soft halo gradient + outer
+  // dashed ring (rotating CW) + mid chevron ring (counter-CCW) + inner pulsing core + six
+  // perimeter triangular runes + spinning center diamond + ambient floor sparks + a soft
+  // vertical light pillar so it's readable from across the arena.
+  if (player.anchorActive) {
+    const ax = player.anchorX - camX
+    const ay = player.anchorY - camY
+    const baseR = 78  // 3× the old 26 — "200% bigger"
+    const now = performance.now()
+    const pulse = 0.5 + 0.5 * Math.sin(now / 240)
+    const fastPulse = 0.5 + 0.5 * Math.sin(now / 110)
+    const rotCW = now / 1800        // slow clockwise
+    const rotCCW = -now / 2200      // slower counter-clockwise
+    const rotFast = now / 600       // center diamond spin
+
+    // (1) Wide radial halo — gradient that fades out beyond the marker
+    {
+      const haloR = baseR * 1.6 + pulse * 8
+      const g = ctx.createRadialGradient(ax, ay, 0, ax, ay, haloR)
+      g.addColorStop(0, `rgba(140, 90, 255, ${0.22 + pulse * 0.08})`)
+      g.addColorStop(0.55, `rgba(124, 77, 255, ${0.1 + pulse * 0.05})`)
+      g.addColorStop(1, `rgba(80, 40, 180, 0)`)
+      ctx.beginPath()
+      ctx.arc(ax, ay, haloR, 0, Math.PI * 2)
+      ctx.fillStyle = g
+      ctx.fill()
+    }
+
+    // (2) Soft vertical light pillar — readable from distance
+    {
+      const pillarH = baseR * 2.2
+      const pillarW = baseR * 0.55
+      const pg = ctx.createLinearGradient(ax, ay - pillarH, ax, ay + 4)
+      pg.addColorStop(0, `rgba(180, 140, 255, 0)`)
+      pg.addColorStop(0.7, `rgba(180, 140, 255, ${0.10 + pulse * 0.06})`)
+      pg.addColorStop(1, `rgba(220, 200, 255, ${0.28 + pulse * 0.10})`)
+      ctx.fillStyle = pg
+      ctx.fillRect(ax - pillarW / 2, ay - pillarH, pillarW, pillarH + 4)
+    }
+
+    // (3) Outer dashed ring rotating CW
+    ctx.save()
+    ctx.translate(ax, ay)
+    ctx.rotate(rotCW)
+    ctx.setLineDash([14, 9])
+    ctx.beginPath()
+    ctx.arc(0, 0, baseR, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(180, 140, 255, ${0.7 + pulse * 0.2})`
+    ctx.lineWidth = 3
+    ctx.stroke()
+    ctx.setLineDash([])
+    ctx.restore()
+
+    // (4) Mid ring — chevrons (V shapes) pointing inward, counter-rotating
+    ctx.save()
+    ctx.translate(ax, ay)
+    ctx.rotate(rotCCW)
+    const midR = baseR * 0.78
+    const chevrons = 12
+    ctx.strokeStyle = `rgba(220, 200, 255, ${0.55 + pulse * 0.25})`
+    ctx.lineWidth = 2
+    ctx.lineCap = 'round'
+    for (let i = 0; i < chevrons; i++) {
+      const a = (i / chevrons) * Math.PI * 2
+      const cx = Math.cos(a) * midR
+      const cy = Math.sin(a) * midR
+      const size = 7
+      // Chevron points inward toward center
+      const inward = Math.atan2(-cy, -cx)
+      const wing1 = inward + 0.6
+      const wing2 = inward - 0.6
+      ctx.beginPath()
+      ctx.moveTo(cx + Math.cos(wing1) * size, cy + Math.sin(wing1) * size)
+      ctx.lineTo(cx, cy)
+      ctx.lineTo(cx + Math.cos(wing2) * size, cy + Math.sin(wing2) * size)
+      ctx.stroke()
+    }
+    ctx.restore()
+    ctx.lineCap = 'butt'
+
+    // (5) Inner core ring — solid, pulses with fastPulse for energy feel
+    ctx.beginPath()
+    ctx.arc(ax, ay, baseR * 0.42, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(230, 215, 255, ${0.75 + fastPulse * 0.25})`
+    ctx.lineWidth = 2.4
+    ctx.stroke()
+    // Inner-inner ring — thin highlight
+    ctx.beginPath()
+    ctx.arc(ax, ay, baseR * 0.28, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(255, 245, 255, ${0.5 + fastPulse * 0.3})`
+    ctx.lineWidth = 1.2
+    ctx.stroke()
+
+    // (6) Six triangular runes around the outer perimeter, rotating CW
+    for (let i = 0; i < 6; i++) {
+      const ra = rotCW * 1.4 + (i / 6) * Math.PI * 2
+      const rx = ax + Math.cos(ra) * (baseR + 6)
+      const ry = ay + Math.sin(ra) * (baseR + 6)
+      const tri = 9
+      ctx.beginPath()
+      ctx.moveTo(rx + Math.cos(ra) * tri, ry + Math.sin(ra) * tri)
+      ctx.lineTo(rx + Math.cos(ra + 2.3) * tri * 0.7, ry + Math.sin(ra + 2.3) * tri * 0.7)
+      ctx.lineTo(rx + Math.cos(ra - 2.3) * tri * 0.7, ry + Math.sin(ra - 2.3) * tri * 0.7)
+      ctx.closePath()
+      ctx.fillStyle = `rgba(200, 170, 255, ${0.75 + pulse * 0.25})`
+      ctx.fill()
+      ctx.strokeStyle = `rgba(255, 245, 255, ${0.6 + pulse * 0.2})`
+      ctx.lineWidth = 1.2
+      ctx.stroke()
+    }
+
+    // (7) Center diamond — spins fast, the "active focus" of the rune
+    ctx.save()
+    ctx.translate(ax, ay)
+    ctx.rotate(rotFast)
+    const diaR = 7 + fastPulse * 2
+    ctx.beginPath()
+    ctx.moveTo(0, -diaR)
+    ctx.lineTo(diaR, 0)
+    ctx.lineTo(0, diaR)
+    ctx.lineTo(-diaR, 0)
+    ctx.closePath()
+    ctx.fillStyle = `rgba(255, 240, 255, ${0.85 + fastPulse * 0.15})`
+    ctx.fill()
+    ctx.strokeStyle = `rgba(180, 140, 255, 0.9)`
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+    ctx.restore()
+
+    // (8) Floor sparks drifting up from the perimeter — denser than before
+    if (Math.random() < 0.55) {
+      const sweep = Math.random() * Math.PI * 2
+      const spawnR = baseR * (0.7 + Math.random() * 0.3)
+      const spawnX = player.anchorX + Math.cos(sweep) * spawnR
+      const spawnY = player.anchorY + Math.sin(sweep) * spawnR
+      // Velocity mostly upward with a slight inward bias toward center
+      const inwardX = (player.anchorX - spawnX) * 0.4
+      const inwardY = (player.anchorY - spawnY) * 0.4
+      spawnParticle(spawnX, spawnY,
+        inwardX, -50 - Math.random() * 50 + inwardY,
+        180 + Math.floor(Math.random() * 60), 150 + Math.floor(Math.random() * 70), 255,
+        0.7 + Math.random() * 0.4, 2.5 + Math.random() * 2)
+    }
+    // Occasional bright twinkle particles near the perimeter
+    if (Math.random() < 0.22) {
+      const sweep = Math.random() * Math.PI * 2
+      const spawnR = baseR * (0.85 + Math.random() * 0.25)
+      spawnParticle(
+        player.anchorX + Math.cos(sweep) * spawnR,
+        player.anchorY + Math.sin(sweep) * spawnR,
+        Math.cos(sweep) * 20, Math.sin(sweep) * 20 - 30,
+        240, 220, 255, 0.4 + Math.random() * 0.3, 3 + Math.random() * 2)
+    }
+  }
+
+  // Recall warp streak — only during the traversal
+  if (player.recallTimer >= 0) {
+    const fx = player.recallFromX - camX
+    const fy = player.recallFromY - camY
+    const cx = player.x - camX
+    const cy = player.y - camY
+    // Bright streak from departure point to current player position (the head of the warp)
+    const dx = cx - fx
+    const dy = cy - fy
+    const len = Math.sqrt(dx * dx + dy * dy)
+    if (len > 1) {
+      // Outer glow
+      ctx.lineCap = 'round'
+      ctx.beginPath()
+      ctx.moveTo(fx, fy)
+      ctx.lineTo(cx, cy)
+      ctx.strokeStyle = `rgba(124, 77, 255, 0.35)`
+      ctx.lineWidth = 16
+      ctx.stroke()
+      // Mid stroke
+      ctx.beginPath()
+      ctx.moveTo(fx, fy)
+      ctx.lineTo(cx, cy)
+      ctx.strokeStyle = `rgba(180, 140, 255, 0.7)`
+      ctx.lineWidth = 7
+      ctx.stroke()
+      // Hot core
+      ctx.beginPath()
+      ctx.moveTo(fx, fy)
+      ctx.lineTo(cx, cy)
+      ctx.strokeStyle = `rgba(240, 230, 255, 0.95)`
+      ctx.lineWidth = 2.5
+      ctx.stroke()
+      ctx.lineCap = 'butt'
+    }
+    // Spray particles around the streak head
+    for (let i = 0; i < 2; i++) {
+      const sa = Math.random() * Math.PI * 2
+      const ss = 60 + Math.random() * 80
+      spawnParticle(player.x, player.y,
+        Math.cos(sa) * ss, Math.sin(sa) * ss,
+        180 + Math.floor(Math.random() * 60), 150 + Math.floor(Math.random() * 50), 255,
+        0.3 + Math.random() * 0.2, 3 + Math.random() * 2)
+    }
+  }
+}
+
+// Chill Zone visuals — persistent slow-field marker on the arena floor, plus the one-shot
+// ice-shard burst that fires when the zone gets replaced. State pushed from GameManager via
+// the setChillZoneViz/clearChillZoneViz/spawnIceShardBurst helpers (decouples to avoid the
+// circular Renderer ↔ GameManager import, same pattern used for pending detonations).
+let chillZoneViz: { x: number; y: number; radius: number } | null = null
+interface IceShard {
+  ox: number; oy: number     // origin (center of burst)
+  dx: number; dy: number     // direction vector (unit-ish)
+  startDist: number          // initial distance from center
+  endDist: number            // target distance (where it stops/dissolves)
+  rot: number; rotVel: number
+  size: number
+  timer: number; lifetime: number
+}
+const iceShards: IceShard[] = []
+interface FrostCrack {
+  x: number; y: number; radius: number
+  timer: number; lifetime: number
+}
+const frostCracks: FrostCrack[] = []
+// Mini snowflakes — small 6-armed asterisks drifting in the collapse area to add a "flurry"
+// texture to the ice-shard burst. Stateful (each has its own velocity + rotation) so they
+// drift organically rather than animating along a fixed lerp like the shards.
+interface MiniSnowflake {
+  x: number; y: number
+  vx: number; vy: number
+  rot: number; rotVel: number
+  size: number
+  timer: number; lifetime: number
+}
+const miniSnowflakes: MiniSnowflake[] = []
+
+export function setChillZoneViz(x: number, y: number, radius: number): void {
+  chillZoneViz = { x, y, radius }
+}
+export function clearChillZoneViz(): void {
+  chillZoneViz = null
+}
+
+// Inward-flying crystal shards from the perimeter of the old zone, plus a sharp shock-ring
+// flash. Tunable: shard count scales with radius so big zones have more debris.
+export function spawnIceShardBurst(x: number, y: number, radius: number): void {
+  const shardCount = Math.max(28, Math.floor(radius * 0.42))
+  for (let i = 0; i < shardCount; i++) {
+    const a = (i / shardCount) * Math.PI * 2 + Math.random() * 0.3
+    // Shards fire INWARD from perimeter toward center, decelerating
+    iceShards.push({
+      ox: x, oy: y,
+      dx: Math.cos(a), dy: Math.sin(a),
+      startDist: radius * (0.85 + Math.random() * 0.2),
+      endDist: radius * (0.1 + Math.random() * 0.2),
+      rot: Math.random() * Math.PI * 2,
+      rotVel: (Math.random() - 0.5) * 8,
+      size: 7 + Math.random() * 5,
+      timer: 0, lifetime: 0.38 + Math.random() * 0.08,
+    })
+  }
+  // Spray of small fast particles for added texture
+  for (let i = 0; i < 30; i++) {
+    const a = Math.random() * Math.PI * 2
+    const sp = 250 + Math.random() * 250
+    spawnParticle(x + Math.cos(a) * radius * 0.4, y + Math.sin(a) * radius * 0.4,
+      Math.cos(a) * sp, Math.sin(a) * sp,
+      200 + Math.floor(Math.random() * 55), 230 + Math.floor(Math.random() * 25), 255,
+      0.3 + Math.random() * 0.2, 3 + Math.random() * 2)
+  }
+  // Bright central flash + shock-ring (drawn each frame in updateAndDrawChillFX while alive)
+  frostCracks.push({ x, y, radius, timer: 0, lifetime: 0.36 })
+  // Mini snowflake flurry — sprinkled across the collapse area, drifting outward+upward
+  // with slight gravity. Reads as "powder snow kicked up by the shatter." Scales with radius.
+  const flakeCount = Math.max(20, Math.floor(radius * 0.30))
+  for (let i = 0; i < flakeCount; i++) {
+    const a = Math.random() * Math.PI * 2
+    const d = Math.sqrt(Math.random()) * radius * 0.88   // uniform distribution inside circle
+    const spawnX = x + Math.cos(a) * d
+    const spawnY = y + Math.sin(a) * d
+    // Velocity: gentle drift outward from center + jitter + slight upward bias for "kicked up dust"
+    const outAng = Math.atan2(spawnY - y, spawnX - x)
+    const speed = 50 + Math.random() * 90
+    const vx = Math.cos(outAng) * speed * 0.45 + (Math.random() - 0.5) * 50
+    const vy = Math.sin(outAng) * speed * 0.45 + (Math.random() - 0.5) * 50 - 35
+    miniSnowflakes.push({
+      x: spawnX, y: spawnY,
+      vx, vy,
+      rot: Math.random() * Math.PI * 2,
+      rotVel: (Math.random() - 0.5) * 7,
+      size: 4 + Math.random() * 3.5,
+      timer: 0, lifetime: 0.75 + Math.random() * 0.55,
+    })
+  }
+}
+
+// Snowflake "shatter free" — fires when an enemy's immobileTimer hits 0. Twelve crystal
+// fragments fly OUTWARD from the enemy along the snowflake's arm directions (vs the burst's
+// inward shower), plus white-cyan sparkles. Reads as the enemy cracking the ice and pushing
+// through, not as damage.
+export function spawnSnowflakeShatter(x: number, y: number, r: number): void {
+  const totalShards = 12
+  for (let i = 0; i < totalShards; i++) {
+    // First 6 align with the snowflake arms; second 6 in-fill the gaps
+    const a = (i / 6) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
+    iceShards.push({
+      ox: x, oy: y,
+      dx: Math.cos(a), dy: Math.sin(a),
+      startDist: r * 0.12,                          // start near hub
+      endDist: r * (1.4 + Math.random() * 0.5),     // fling past the body
+      rot: Math.random() * Math.PI * 2,
+      rotVel: (Math.random() - 0.5) * 10,
+      size: 5 + Math.random() * 4,
+      timer: 0, lifetime: 0.32 + Math.random() * 0.08,
+    })
+  }
+  // Sparkle particles for the "ice dust" feel
+  for (let i = 0; i < 16; i++) {
+    const a = Math.random() * Math.PI * 2
+    const sp = 180 + Math.random() * 200
+    spawnParticle(x + Math.cos(a) * r * 0.3, y + Math.sin(a) * r * 0.3,
+      Math.cos(a) * sp, Math.sin(a) * sp,
+      230, 245, 255, 0.25 + Math.random() * 0.15, 2.5 + Math.random() * 2)
+  }
+}
+
+// Small white-cyan puff for the FIRST chill zone placement (no old zone to shatter).
+export function spawnFrostCrack(x: number, y: number, radius: number): void {
+  frostCracks.push({ x, y, radius: radius * 0.6, timer: 0, lifetime: 0.28 })
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2 + Math.random() * 0.4
+    const sp = 140 + Math.random() * 100
+    spawnParticle(x, y, Math.cos(a) * sp, Math.sin(a) * sp,
+      210 + Math.floor(Math.random() * 45), 235, 255,
+      0.28 + Math.random() * 0.15, 2.5 + Math.random() * 2)
+  }
+}
+
+function drawChillZone(): void {
+  if (!chillZoneViz) return
+  const cz = chillZoneViz
+  const sx = cz.x - camX
+  const sy = cz.y - camY
+  const now = performance.now()
+  const t = now / 1000
+  const breathe = 0.5 + 0.5 * Math.sin(now / 700)
+  const slowRot = now / 4500
+
+  // (1) Base radial fill — soft cyan, breathing alpha
+  const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, cz.radius)
+  g.addColorStop(0, `rgba(128, 216, 255, ${0.20 + breathe * 0.06})`)
+  g.addColorStop(0.65, `rgba(100, 200, 245, ${0.13 + breathe * 0.05})`)
+  g.addColorStop(1, `rgba(80, 180, 235, 0)`)
+  ctx.beginPath()
+  ctx.arc(sx, sy, cz.radius, 0, Math.PI * 2)
+  ctx.fillStyle = g
+  ctx.fill()
+
+  // Clip everything below to the zone circle so layers don't leak past the edge.
+  ctx.save()
+  ctx.beginPath()
+  ctx.arc(sx, sy, cz.radius, 0, Math.PI * 2)
+  ctx.clip()
+
+  // (A) Hex tile floor pattern — faint flat-top hex grid pulsing with the breathe envelope.
+  // Suggests ice's molecular structure. Stroke-only, very low alpha so it sits under the
+  // other layers without dominating. Rendered in world coords so the grid stays anchored to
+  // the zone (not panning with camera in a distracting way).
+  {
+    const hexR = 48
+    const hexW = hexR * 2
+    const hexH = hexR * Math.sqrt(3)
+    const colStep = hexR * 1.5
+    const rowStep = hexH
+    // Bounding box of the zone in world space
+    const x0 = cz.x - cz.radius
+    const x1 = cz.x + cz.radius
+    const y0 = cz.y - cz.radius
+    const y1 = cz.y + cz.radius
+    // Snap iteration grid to multiples of stride so the pattern is stable as zone moves
+    const startCol = Math.floor(x0 / colStep)
+    const endCol = Math.ceil(x1 / colStep)
+    const startRow = Math.floor(y0 / rowStep)
+    const endRow = Math.ceil(y1 / rowStep)
+    ctx.strokeStyle = `rgba(180, 230, 255, ${0.10 + breathe * 0.05})`
+    ctx.lineWidth = 1
+    for (let col = startCol; col <= endCol; col++) {
+      const cxw = col * colStep
+      const offset = (col & 1) ? rowStep * 0.5 : 0
+      for (let row = startRow; row <= endRow; row++) {
+        const cyw = row * rowStep + offset
+        const hx = cxw - camX
+        const hy = cyw - camY
+        // Skip hexes whose center is well outside the zone (still inside clip path though)
+        const dx = cxw - cz.x
+        const dy = cyw - cz.y
+        if (dx * dx + dy * dy > (cz.radius + hexR) * (cz.radius + hexR)) continue
+        ctx.beginPath()
+        for (let v = 0; v < 6; v++) {
+          const va = (v / 6) * Math.PI * 2
+          const vx = hx + Math.cos(va) * hexR
+          const vy = hy + Math.sin(va) * hexR
+          if (v === 0) ctx.moveTo(vx, vy)
+          else ctx.lineTo(vx, vy)
+        }
+        ctx.closePath()
+        ctx.stroke()
+      }
+    }
+    // Suppress unused-var warnings from the simple bounds-only computation
+    void hexW
+  }
+
+  // (D) Drifting cold mist — 4 stateless soft blobs that orbit the zone center with phase
+  // offsets driven by sin combinations. No persistent state needed; positions are derived
+  // from time + index each frame, so they drift smoothly without arrays.
+  {
+    const mistCount = 4
+    for (let i = 0; i < mistCount; i++) {
+      const orbitAngle = (t * 0.18) + (i / mistCount) * Math.PI * 2 + Math.sin(t * 0.5 + i * 1.3) * 0.4
+      const orbitR = cz.radius * (0.25 + 0.30 * (0.5 + 0.5 * Math.sin(t * 0.4 + i * 2.1)))
+      const mx = sx + Math.cos(orbitAngle) * orbitR
+      const my = sy + Math.sin(orbitAngle) * orbitR
+      const blobR = cz.radius * 0.32 + Math.sin(t * 0.6 + i * 2.7) * cz.radius * 0.08
+      const mg = ctx.createRadialGradient(mx, my, 0, mx, my, blobR)
+      mg.addColorStop(0, `rgba(210, 240, 255, 0.13)`)
+      mg.addColorStop(0.5, `rgba(190, 230, 255, 0.06)`)
+      mg.addColorStop(1, `rgba(190, 230, 255, 0)`)
+      ctx.beginPath()
+      ctx.arc(mx, my, blobR, 0, Math.PI * 2)
+      ctx.fillStyle = mg
+      ctx.fill()
+    }
+  }
+
+  // (B) Beat-synced cold pulse — expanding white-cyan ring on every beat. Phase derived from
+  // PatternClock.getLoopPosition() so it stays locked to the game's rhythm. The ring expands
+  // from center to slightly past the zone edge over one beat, fading as it grows. Clipped to
+  // the zone so the "cold containing itself" feel is preserved.
+  {
+    const beatPhase = getLoopPosition() % 1
+    const pulseR = beatPhase * cz.radius * 1.08
+    const pulseAlpha = (1 - beatPhase) * 0.45
+    if (pulseR > 6 && pulseAlpha > 0.02) {
+      ctx.beginPath()
+      ctx.arc(sx, sy, pulseR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(225, 245, 255, ${pulseAlpha})`
+      ctx.lineWidth = 2 + (1 - beatPhase) * 3.5
+      ctx.stroke()
+      // Inner core line for double-stroke clarity
+      ctx.beginPath()
+      ctx.arc(sx, sy, pulseR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 255, 255, ${pulseAlpha * 0.6})`
+      ctx.lineWidth = 1.2
+      ctx.stroke()
+    }
+  }
+
+  // Snowflake clusters scattered inside — 6-pointed asterisks, slow counter-rotation (kept
+  // from before; they're the "ice crystals on the ground" layer between the hex grid and
+  // the tendrils).
+  ctx.save()
+  ctx.translate(sx, sy)
+  ctx.rotate(-slowRot * 0.6)
+  const flakes = 5
+  for (let i = 0; i < flakes; i++) {
+    const a = (i / flakes) * Math.PI * 2
+    const dist = cz.radius * (0.4 + (i % 2) * 0.25)
+    const fx = Math.cos(a) * dist
+    const fy = Math.sin(a) * dist
+    const fr = 9 + (i % 2) * 3
+    ctx.strokeStyle = `rgba(220, 245, 255, ${0.45 + breathe * 0.2})`
+    ctx.lineWidth = 1.4
+    for (let arm = 0; arm < 6; arm++) {
+      const aa = (arm / 6) * Math.PI * 2
+      ctx.beginPath()
+      ctx.moveTo(fx, fy)
+      ctx.lineTo(fx + Math.cos(aa) * fr, fy + Math.sin(aa) * fr)
+      ctx.stroke()
+    }
+  }
+  ctx.restore()
+
+  ctx.restore()   // end inner-clip — tendrils and sparkles render unclipped
+
+  // (C) Rotating ice shards at the edge — replaces the dashed/tendril perimeter. N small
+  // elongated-diamond crystals sit AT the perimeter, each spinning independently in their
+  // own direction and speed. Phase-cycled visibility (grow → hold → fade) staggers their
+  // life so the edge always has a few crystals appearing while others fade. The rotation
+  // sells the "alive ice" feel and justifies the freeze-on-touch interaction.
+  {
+    const N = 29
+    const cycleDur = 2.0  // seconds per full grow→hold→fade cycle
+    // Faint solid outline so the perimeter is always slightly readable
+    ctx.beginPath()
+    ctx.arc(sx, sy, cz.radius - 1, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(160, 220, 250, ${0.16 + breathe * 0.08})`
+    ctx.lineWidth = 1.5
+    ctx.stroke()
+    for (let i = 0; i < N; i++) {
+      const baseAngle = (i / N) * Math.PI * 2 + Math.sin(i * 1.13) * 0.02
+      // Pseudo-random per-shard phase + rotation params
+      const phaseOff = (i * 0.317) % 1
+      const ph = ((t / cycleDur) + phaseOff) % 1
+      let vis: number
+      if (ph < 0.18) vis = ph / 0.18              // grow
+      else if (ph < 0.78) vis = 1                 // hold
+      else vis = 1 - (ph - 0.78) / 0.22           // fade
+      if (vis < 0.04) continue
+      const cxw = sx + Math.cos(baseAngle) * cz.radius
+      const cyw = sy + Math.sin(baseAngle) * cz.radius
+      // Each shard spins at its own speed and direction
+      const spinDir = (i & 1) ? 1 : -1
+      const spinRate = 1.4 + (i % 5) * 0.35
+      const shardRot = t * spinRate * spinDir + i * 0.7
+      const shardSize = 9 + (i % 4) * 1.5
+      const longHalf = shardSize * 1.15
+      const shortHalf = shardSize * 0.42
+      // Grow-in scale also tied to vis so shards "snap into" their full size as they appear
+      const growScale = vis < 0.4 ? vis / 0.4 : 1
+      ctx.save()
+      ctx.translate(cxw, cyw)
+      ctx.rotate(shardRot)
+      ctx.scale(growScale, growScale)
+      // Soft halo backdrop — wider diamond, fades vis
+      ctx.beginPath()
+      ctx.moveTo(longHalf * 1.4, 0)
+      ctx.lineTo(0, shortHalf * 1.4)
+      ctx.lineTo(-longHalf * 1.4, 0)
+      ctx.lineTo(0, -shortHalf * 1.4)
+      ctx.closePath()
+      ctx.fillStyle = `rgba(140, 215, 250, ${0.35 * vis})`
+      ctx.fill()
+      // Cyan body
+      ctx.beginPath()
+      ctx.moveTo(longHalf, 0)
+      ctx.lineTo(0, shortHalf)
+      ctx.lineTo(-longHalf, 0)
+      ctx.lineTo(0, -shortHalf)
+      ctx.closePath()
+      ctx.fillStyle = `rgba(200, 235, 255, ${0.82 * vis})`
+      ctx.fill()
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.95 * vis})`
+      ctx.lineWidth = 1.2
+      ctx.stroke()
+      // Highlight slash across the body for "polished crystal" look
+      ctx.beginPath()
+      ctx.moveTo(-longHalf * 0.5, -shortHalf * 0.3)
+      ctx.lineTo(longHalf * 0.4, shortHalf * 0.2)
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.7 * vis})`
+      ctx.lineWidth = 0.8
+      ctx.stroke()
+      ctx.restore()
+    }
+  }
+
+  // (E) Glint sparkles — tiny static white particles flickering in random positions inside
+  // the zone. Implemented via the particle system (no velocity, short lifetime) so they
+  // self-fade and don't need extra state. Sparse enough not to spam.
+  if (Math.random() < 0.55) {
+    const sa = Math.random() * Math.PI * 2
+    const sd = cz.radius * Math.sqrt(Math.random()) * 0.92
+    spawnParticle(cz.x + Math.cos(sa) * sd, cz.y + Math.sin(sa) * sd,
+      0, 0,
+      255, 255, 255, 0.18 + Math.random() * 0.12, 1.2 + Math.random() * 1.0)
+  }
+
+  // Drift particles (existing) — small ice crystals floating up from random spots
+  if (Math.random() < 0.45) {
+    const a = Math.random() * Math.PI * 2
+    const d = cz.radius * Math.sqrt(Math.random()) * 0.92
+    const px = cz.x + Math.cos(a) * d
+    const py = cz.y + Math.sin(a) * d
+    spawnParticle(px, py, (Math.random() - 0.5) * 18, -30 - Math.random() * 25,
+      200 + Math.floor(Math.random() * 55), 230 + Math.floor(Math.random() * 25), 255,
+      0.7 + Math.random() * 0.4, 2 + Math.random() * 2)
+  }
+}
+
+function updateAndDrawChillFX(dt: number): void {
+  // Ice shards — animate inward from perimeter with rotation, fade out near end
+  for (let i = iceShards.length - 1; i >= 0; i--) {
+    const s = iceShards[i]!
+    s.timer += dt
+    if (s.timer >= s.lifetime) {
+      iceShards[i] = iceShards[iceShards.length - 1]!
+      iceShards.pop()
+      continue
+    }
+    const t = s.timer / s.lifetime
+    // Ease-out distance — fast start, slow finish
+    const ease = 1 - (1 - t) * (1 - t)
+    const dist = s.startDist + (s.endDist - s.startDist) * ease
+    const cx = s.ox + s.dx * dist - camX
+    const cy = s.oy + s.dy * dist - camY
+    s.rot += s.rotVel * dt
+    const alpha = 1 - t * t
+    // Elongated diamond shape — point in direction of travel
+    const longLen = s.size * 1.8
+    const shortLen = s.size * 0.55
+    ctx.save()
+    ctx.translate(cx, cy)
+    ctx.rotate(Math.atan2(s.dy, s.dx) + s.rot * 0.2)
+    ctx.beginPath()
+    ctx.moveTo(longLen, 0)
+    ctx.lineTo(0, shortLen)
+    ctx.lineTo(-longLen * 0.7, 0)
+    ctx.lineTo(0, -shortLen)
+    ctx.closePath()
+    ctx.fillStyle = `rgba(200, 235, 255, ${0.85 * alpha})`
+    ctx.fill()
+    ctx.strokeStyle = `rgba(255, 255, 255, ${0.9 * alpha})`
+    ctx.lineWidth = 1.2
+    ctx.stroke()
+    ctx.restore()
+  }
+  // Frost cracks — central bright shock-ring expanding + flash, fades fast
+  for (let i = frostCracks.length - 1; i >= 0; i--) {
+    const f = frostCracks[i]!
+    f.timer += dt
+    if (f.timer >= f.lifetime) {
+      frostCracks[i] = frostCracks[frostCracks.length - 1]!
+      frostCracks.pop()
+      continue
+    }
+    const t = f.timer / f.lifetime
+    const cx = f.x - camX
+    const cy = f.y - camY
+    // Expanding ring
+    const ringR = f.radius * (0.2 + t * 0.9)
+    ctx.beginPath()
+    ctx.arc(cx, cy, ringR, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(220, 245, 255, ${0.85 * (1 - t)})`
+    ctx.lineWidth = 4 + (1 - t) * 4
+    ctx.stroke()
+    // Central flash for the first ~30% of lifetime
+    if (t < 0.3) {
+      const flashT = 1 - t / 0.3
+      ctx.beginPath()
+      ctx.arc(cx, cy, f.radius * 0.35 * flashT, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 255, 255, ${0.6 * flashT})`
+      ctx.fill()
+    }
+  }
+  // Mini snowflakes — drift with velocity + slight gravity + drag, rotate, fade out.
+  for (let i = miniSnowflakes.length - 1; i >= 0; i--) {
+    const f = miniSnowflakes[i]!
+    f.timer += dt
+    if (f.timer >= f.lifetime) {
+      miniSnowflakes[i] = miniSnowflakes[miniSnowflakes.length - 1]!
+      miniSnowflakes.pop()
+      continue
+    }
+    // Physics: position update, gravity, drag
+    f.x += f.vx * dt
+    f.y += f.vy * dt
+    f.vy += 35 * dt           // gentle gravity
+    f.vx *= 1 - dt * 0.7      // drag — flakes settle
+    f.vy *= 1 - dt * 0.45
+    f.rot += f.rotVel * dt
+    const tt = f.timer / f.lifetime
+    // Fade in fast (0–15%), hold, fade out (last 50%)
+    const alpha = tt < 0.15 ? tt / 0.15 : Math.max(0, 1 - (tt - 0.5) / 0.5)
+    const sx = f.x - camX
+    const sy = f.y - camY
+    ctx.save()
+    ctx.translate(sx, sy)
+    ctx.rotate(f.rot)
+    // Wide soft halo
+    ctx.strokeStyle = `rgba(160, 220, 250, ${0.55 * alpha})`
+    ctx.lineWidth = 2.6
+    ctx.lineCap = 'round'
+    for (let arm = 0; arm < 6; arm++) {
+      const aa = (arm / 6) * Math.PI * 2
+      ctx.beginPath()
+      ctx.moveTo(0, 0)
+      ctx.lineTo(Math.cos(aa) * f.size, Math.sin(aa) * f.size)
+      ctx.stroke()
+    }
+    // Crisp white core
+    ctx.strokeStyle = `rgba(240, 250, 255, ${0.9 * alpha})`
+    ctx.lineWidth = 1.0
+    for (let arm = 0; arm < 6; arm++) {
+      const aa = (arm / 6) * Math.PI * 2
+      ctx.beginPath()
+      ctx.moveTo(0, 0)
+      ctx.lineTo(Math.cos(aa) * f.size, Math.sin(aa) * f.size)
+      ctx.stroke()
+    }
+    ctx.lineCap = 'butt'
+    ctx.restore()
+  }
+}
+
 export function triggerBeatDashFlash(x: number, y: number, radius: number): void {
   beatDashFlash = 0.444
   beatDashX = x
   beatDashY = y
   beatDashRadius = radius
+  // Lightning at the AOE center — reads as the source radiating outward. Two layers:
+  // a tight inner cluster of short bolts (the "core arc"), and a longer outer ring that
+  // reaches roughly to where enemy bolts will spawn so the spread visually connects.
+  const innerCount = 9
+  const innerScale = 1.4
+  const innerLen = radius * 0.74
+  const innerLife = 0.36
+  for (let i = 0; i < innerCount; i++) {
+    const a = (i / innerCount) * Math.PI * 2 + Math.random() * 0.5
+    spawnStaticLightningBolt(x, y, a, innerLen * (0.75 + Math.random() * 0.5), innerScale, innerLife + Math.random() * 0.06)
+  }
+  const outerCount = 6
+  const outerScale = 1.1
+  const outerLen = radius * 1.37
+  const outerLife = 0.30
+  for (let i = 0; i < outerCount; i++) {
+    const a = (i / outerCount) * Math.PI * 2 + Math.random() * 0.8
+    spawnStaticLightningBolt(x, y, a, outerLen * (0.8 + Math.random() * 0.35), outerScale, outerLife + Math.random() * 0.06)
+  }
 }
 
 export function spawnParticleExport(
@@ -1491,6 +2309,8 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   }
 
   drawArenaBorder(player)
+  // Chill Zone slow-field — on the arena floor, under enemies/orbs/player
+  drawChillZone()
   perfStart('ripples')
   updateAndDrawDeathRipples(lastDt)
   updateAndDrawLightningBolts(lastDt)
@@ -1762,6 +2582,12 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
 
   drawRitualNodes()
 
+  // Aftershock telegraph — ticking pie under the player marking pending detonations
+  updateAndDrawPendingDetonations(lastDt)
+
+  // Echo Step anchor + recall visuals — anchor marker on the ground, ghost streak during warp
+  drawEchoStep(player)
+
   // Beat dash AOE flash — drawn BEFORE the player so the player visibly stands on top
   if (beatDashFlash > 0) {
     beatDashFlash -= lastDt
@@ -1879,6 +2705,10 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   }
   updateAndDrawRevengeRings(lastDt)
   perfEnd('e_rings_overlay')
+
+  // Chill Zone climax visuals — ice shards flying inward + frost-crack shock-ring. Drawn
+  // ABOVE enemies + rings so the ice storm reads as the climactic event of the replacement.
+  updateAndDrawChillFX(lastDt)
 
   // Dash-fail flash timer (just decrements — read by pie render to tint red)
   if (dashFailFlash > 0) { dashFailFlash -= lastDt; if (dashFailFlash < 0) dashFailFlash = 0 }
@@ -2377,14 +3207,20 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   const pastPeak = attackTimer - expandTime
   const showRedRing = pastPeak >= 0 && pastPeak < 0.2
 
+  // Skip per-frame particle spawning when frozen on the death screen. The ring's
+  // attackTimer is pinned to expandTime there (see GameManager death-check), which would
+  // otherwise re-spawn trail + peak-burst particles every frame and spam the system.
+  // Deterministic strokes below still render — the ring stays visible as a static echo.
+  const isFrozenDeath = getPhase() === 'dead'
+
   // Trail particles — reduced count to leave room for explosions
-  if (buildup > 0.3) {
+  if (!isFrozenDeath && buildup > 0.3) {
     const trailCount = Math.floor(buildup * 2)
     spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, trailCount, 20 + buildup * 40, 0.3, 2, blockedArcs)
   }
 
   // Explosion at peak — white-hot sparks racing along the ring circumference
-  if (showRedRing && pastPeak < lastDt * 2 && particles.length < MAX_PARTICLES - 20) {
+  if (!isFrozenDeath && showRedRing && pastPeak < lastDt * 2 && particles.length < MAX_PARTICLES - 20) {
     const ringScale = Math.max(1, currentRadius / 140)
     const totalCount = Math.round(21 * ringScale)
     const angleOffset = Math.random() * Math.PI * 2
@@ -2745,8 +3581,10 @@ function drawPlayer(player: Player): void {
   }
   ctx.restore()
 
-  // Ghost dash — semi-transparent + white shimmer
-  const isGhostDashing = player.dashTimer >= 0 && hasBonus('ghostDash')
+  // Ghost dash — semi-transparent + white shimmer. Echo Step's recall traversal piggybacks
+  // on the same visual (it's also unconditionally invulnerable), so we treat any active
+  // recall as "ghost dashing" for rendering purposes regardless of the upgrade flag.
+  const isGhostDashing = (player.dashTimer >= 0 && hasBonus('ghostDash')) || player.recallTimer >= 0
   if (isGhostDashing) {
     ctx.globalAlpha = 0.4 + Math.sin(performance.now() / 50) * 0.15
   }
@@ -2792,6 +3630,120 @@ function drawPlayer(player: Player): void {
         ctx.lineWidth = 2 * aScale
         ctx.stroke()
       }
+    }
+  }
+
+  // Slipstream water-wave ribbon — three offset sine waves trailing along the dash path,
+  // perpendicular to motion direction. Tapers to zero at both endpoints so the wave reads as
+  // "ripples in the wake" rather than starting/ending abruptly. Only drawn on chained dashes
+  // (dashChainBoost > 1), which is how Slipstream announces itself visually.
+  if (player.dashTimer >= 0 && player.dashChainBoost > 1 && player.dashPath.length >= 2) {
+    const path = player.dashPath
+    const fade = player.dashTimer / player.dashDuration
+    const time = performance.now() / 1000
+    // Precompute arclength + tangent perpendicular per point — both loops below reuse them.
+    const perpX: number[] = new Array(path.length)
+    const perpY: number[] = new Array(path.length)
+    const arc: number[] = new Array(path.length)
+    let accum = 0
+    for (let i = 0; i < path.length; i++) {
+      const pt = path[i]!
+      let tx: number, ty: number
+      if (i === 0 && path.length > 1) {
+        const nx = path[1]!
+        tx = nx.x - pt.x; ty = nx.y - pt.y
+      } else if (i > 0) {
+        const pv = path[i - 1]!
+        tx = pt.x - pv.x; ty = pt.y - pv.y
+        accum += Math.sqrt(tx * tx + ty * ty)
+      } else {
+        tx = 1; ty = 0
+      }
+      const len = Math.sqrt(tx * tx + ty * ty) || 1
+      perpX[i] = -ty / len
+      perpY[i] = tx / len
+      arc[i] = accum
+    }
+    // Layers, deepest-to-brightest. Outer halo is intentionally wide + soft for the "cresting
+    // foam" glow; inner layers carry the actual wave shape.
+    const layers = [
+      { amp: 38, freq: 0.040, phaseOff: 0,   r: 0,   g: 160, b: 200, a: 0.40, w: 18 },  // outer halo
+      { amp: 34, freq: 0.048, phaseOff: 0,   r: 38,  g: 198, b: 218, a: 0.95, w: 8  },  // deep teal body
+      { amp: 24, freq: 0.070, phaseOff: 1.4, r: 130, g: 230, b: 248, a: 0.85, w: 4.5 }, // mid highlight
+      { amp: 15, freq: 0.105, phaseOff: 2.8, r: 240, g: 252, b: 255, a: 0.85, w: 2.2 }, // bright core
+    ]
+    ctx.lineCap = 'round'
+    const prevComp = ctx.globalCompositeOperation
+    for (const L of layers) {
+      // Outer halo uses 'lighter' so multiple wave crests bloom into each other; tighter
+      // strands keep 'source-over' so they read as crisp ribbon edges.
+      ctx.globalCompositeOperation = L.w >= 18 ? 'lighter' : 'source-over'
+      ctx.beginPath()
+      for (let i = 0; i < path.length; i++) {
+        const pt = path[i]!
+        // Taper to 0 amplitude at the start (oldest point) and end (player); peaks mid-trail.
+        const u = path.length > 1 ? i / (path.length - 1) : 0
+        const taper = Math.sin(u * Math.PI)
+        const w = Math.sin(arc[i]! * L.freq + time * 13 + L.phaseOff) * L.amp * taper
+        const ox = pt.x - camX + perpX[i]! * w
+        const oy = pt.y - camY + perpY[i]! * w
+        if (i === 0) ctx.moveTo(ox, oy)
+        else ctx.lineTo(ox, oy)
+      }
+      ctx.strokeStyle = `rgba(${L.r}, ${L.g}, ${L.b}, ${L.a * fade})`
+      ctx.lineWidth = L.w
+      ctx.stroke()
+    }
+    // A second pass MIRRORED (negative amplitude) gives the ribbon a symmetric "stream" look
+    // — two waves cross-weaving along the path like a braid.
+    for (const L of layers) {
+      ctx.globalCompositeOperation = L.w >= 18 ? 'lighter' : 'source-over'
+      ctx.beginPath()
+      for (let i = 0; i < path.length; i++) {
+        const pt = path[i]!
+        const u = path.length > 1 ? i / (path.length - 1) : 0
+        const taper = Math.sin(u * Math.PI)
+        const w = -Math.sin(arc[i]! * L.freq + time * 13 + L.phaseOff) * L.amp * taper
+        const ox = pt.x - camX + perpX[i]! * w
+        const oy = pt.y - camY + perpY[i]! * w
+        if (i === 0) ctx.moveTo(ox, oy)
+        else ctx.lineTo(ox, oy)
+      }
+      ctx.strokeStyle = `rgba(${L.r}, ${L.g}, ${L.b}, ${L.a * fade})`
+      ctx.lineWidth = L.w
+      ctx.stroke()
+    }
+    ctx.globalCompositeOperation = prevComp
+    ctx.lineCap = 'butt'
+    // Dense droplet spray fanning off both sides — chunky enough to read as splash, not mist.
+    const sprayCount = 3
+    for (let s = 0; s < sprayCount; s++) {
+      if (Math.random() < 0.9 * fade) {
+        const dirAngle = Math.atan2(player.dashDirY, player.dashDirX)
+        const side = Math.random() < 0.5 ? 1 : -1
+        const offA = dirAngle + side * (Math.PI / 2 + (Math.random() - 0.5) * 0.6)
+        const sp = 160 + Math.random() * 160
+        const dropSize = 4 + Math.random() * 4
+        spawnParticle(player.x, player.y,
+          Math.cos(offA) * sp, Math.sin(offA) * sp,
+          150 + Math.floor(Math.random() * 70), 225 + Math.floor(Math.random() * 30), 255,
+          0.32 + Math.random() * 0.22, dropSize)
+      }
+    }
+    // Periodic splash ring at the player's current position — a brief expanding circle every
+    // few frames that "blooms" off the leading edge of the dash. Cheap and very legible.
+    if (Math.random() < 0.28 * fade) {
+      const baseR = drawRadius * (0.9 + Math.random() * 0.6)
+      ctx.beginPath()
+      ctx.arc(player.x - camX, player.y - camY, baseR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(180, 235, 255, ${0.55 * fade})`
+      ctx.lineWidth = 2.5
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(player.x - camX, player.y - camY, baseR * 0.65, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(230, 250, 255, ${0.75 * fade})`
+      ctx.lineWidth = 1.6
+      ctx.stroke()
     }
   }
 
@@ -4709,13 +5661,159 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     ctx.globalCompositeOperation = prevComp
   }
 
-  // Chill overlay — blue tint (inside circle only)
-  if (enemy.chillStacks > 0) {
-    const intensity = enemy.chillStacks / 5
+  // Chill overlay — blue tint inside the enemy body. Three sources can contribute:
+  //   1. Frostbite stacks (existing) — intensity scales with chillStacks/5
+  //   2. Chill Zone presence (zoneSlowFrac > 0) — flat moderate tint
+  //   3. Chill Zone immobility (immobileTimer > 0) — full tint + hex snowflake overlay
+  // We pick the strongest visual treatment of the three so they don't double-up alpha.
+  const stackIntensity = enemy.chillStacks / 5
+  const zoneTint = enemy.zoneSlowFrac > 0 ? 0.7 : 0
+  const isImmobile = enemy.immobileTimer > 0
+  const chillIntensity = Math.max(stackIntensity, zoneTint, isImmobile ? 1 : 0)
+  if (chillIntensity > 0) {
+    // Heavier saturated tint — was 0.06 + 0.18 (cap 0.24); now 0.14 + 0.42 (cap 0.56).
+    // Plus a brighter overlay layer for the strong frozen state so it really pops.
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(128, 216, 255, ${0.06 + intensity * 0.14})`
+    ctx.fillStyle = `rgba(80, 200, 255, ${0.14 + chillIntensity * 0.42})`
     ctx.fill()
+    if (chillIntensity >= 0.6) {
+      // Inner deeper-blue glow at high chill so the body reads as "frozen through"
+      ctx.beginPath()
+      ctx.arc(sx, sy, r * 0.9, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(40, 150, 230, ${(chillIntensity - 0.6) * 0.45})`
+      ctx.fill()
+    }
+    // Ice crystal spikes around the perimeter — readable indicator of chilled state.
+    // Count and size scale with intensity. Slow rotation so they look "alive."
+    if (chillIntensity >= 0.4) {
+      const spikeCount = isImmobile ? 8 : 6
+      const spikeBase = isImmobile ? 7 : 4
+      const slowRot = performance.now() / (isImmobile ? 1200 : 2400)
+      ctx.fillStyle = `rgba(220, 245, 255, ${0.7 + chillIntensity * 0.25})`
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.85})`
+      ctx.lineWidth = 1
+      for (let i = 0; i < spikeCount; i++) {
+        const a = slowRot + (i / spikeCount) * Math.PI * 2
+        const baseX = sx + Math.cos(a) * r
+        const baseY = sy + Math.sin(a) * r
+        const tipX = sx + Math.cos(a) * (r + spikeBase)
+        const tipY = sy + Math.sin(a) * (r + spikeBase)
+        const wingX = Math.cos(a + Math.PI / 2) * (spikeBase * 0.5)
+        const wingY = Math.sin(a + Math.PI / 2) * (spikeBase * 0.5)
+        ctx.beginPath()
+        ctx.moveTo(tipX, tipY)
+        ctx.lineTo(baseX + wingX, baseY + wingY)
+        ctx.lineTo(baseX - wingX, baseY - wingY)
+        ctx.closePath()
+        ctx.fill()
+        ctx.stroke()
+      }
+    }
+    // Hex snowflake — only for immobilized enemies. Six-armed crystalline overlay covering
+    // the enemy: a main arm out to ~1.5r, two small "V" branches at the midpoint and outer
+    // third of each arm, plus a small central hexagon hub. Slow rotation.
+    if (isImmobile) {
+      const flakeRot = performance.now() / 1800
+      // Grow-in: ease-out-back scale over the first ~0.18s so the snowflake "snaps" into
+      // place with a satisfying overshoot, not an instant pop-in. Stays at scale 1 afterward.
+      const elapsed = BEAT_SEC - enemy.immobileTimer
+      const growT = Math.min(elapsed / 0.18, 1.0)
+      let growScale = 1
+      if (growT < 1) {
+        // easeOutBack — overshoots ~1.1 around growT=0.6, settles at 1
+        const c1 = 1.70158
+        const c3 = c1 + 1
+        growScale = 1 + c3 * Math.pow(growT - 1, 3) + c1 * Math.pow(growT - 1, 2)
+      }
+      const flakeR = r * 1.55 * growScale
+      ctx.save()
+      ctx.translate(sx, sy)
+      ctx.rotate(flakeRot)
+      // Halo backdrop — soft cyan glow so the snowflake's white strokes pop against the enemy
+      const halo = ctx.createRadialGradient(0, 0, 0, 0, 0, flakeR * 1.1)
+      halo.addColorStop(0, `rgba(180, 230, 255, 0.32)`)
+      halo.addColorStop(0.7, `rgba(140, 210, 250, 0.18)`)
+      halo.addColorStop(1, `rgba(120, 200, 250, 0)`)
+      ctx.beginPath()
+      ctx.arc(0, 0, flakeR * 1.1, 0, Math.PI * 2)
+      ctx.fillStyle = halo
+      ctx.fill()
+      // The six arms — drawn as one path then stroked twice (wide glow + thin white core)
+      const drawArms = (strokeStyle: string, width: number) => {
+        ctx.strokeStyle = strokeStyle
+        ctx.lineWidth = width
+        ctx.lineCap = 'round'
+        for (let i = 0; i < 6; i++) {
+          const a = (i / 6) * Math.PI * 2
+          const ax2 = Math.cos(a) * flakeR
+          const ay2 = Math.sin(a) * flakeR
+          // Main arm
+          ctx.beginPath()
+          ctx.moveTo(0, 0)
+          ctx.lineTo(ax2, ay2)
+          ctx.stroke()
+          // Mid-arm V branch (at 50% along the arm)
+          {
+            const bx = ax2 * 0.5
+            const by = ay2 * 0.5
+            const bl = flakeR * 0.22
+            ctx.beginPath()
+            ctx.moveTo(bx, by)
+            ctx.lineTo(bx + Math.cos(a + 0.7) * bl, by + Math.sin(a + 0.7) * bl)
+            ctx.moveTo(bx, by)
+            ctx.lineTo(bx + Math.cos(a - 0.7) * bl, by + Math.sin(a - 0.7) * bl)
+            ctx.stroke()
+          }
+          // Outer-arm V branch (at 75% along the arm)
+          {
+            const bx = ax2 * 0.75
+            const by = ay2 * 0.75
+            const bl = flakeR * 0.14
+            ctx.beginPath()
+            ctx.moveTo(bx, by)
+            ctx.lineTo(bx + Math.cos(a + 0.7) * bl, by + Math.sin(a + 0.7) * bl)
+            ctx.moveTo(bx, by)
+            ctx.lineTo(bx + Math.cos(a - 0.7) * bl, by + Math.sin(a - 0.7) * bl)
+            ctx.stroke()
+          }
+        }
+      }
+      // Wide soft glow layer underneath
+      drawArms(`rgba(140, 210, 250, 0.55)`, 6)
+      // Crisp white core on top
+      drawArms(`rgba(240, 250, 255, 0.95)`, 2)
+      // Central hex hub — also grows with growScale so everything snaps in together
+      const hubR = r * 0.22 * growScale
+      ctx.beginPath()
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * Math.PI * 2
+        const hx = Math.cos(a) * hubR
+        const hy = Math.sin(a) * hubR
+        if (i === 0) ctx.moveTo(hx, hy)
+        else ctx.lineTo(hx, hy)
+      }
+      ctx.closePath()
+      ctx.fillStyle = `rgba(240, 250, 255, 0.9)`
+      ctx.fill()
+      ctx.strokeStyle = `rgba(180, 230, 255, 0.9)`
+      ctx.lineWidth = 1.4
+      ctx.stroke()
+      ctx.lineCap = 'butt'
+      ctx.restore()
+      // Occasional "frozen breath" particle drifting up
+      if (Math.random() < 0.18) {
+        spawnParticle(enemy.x + (Math.random() - 0.5) * r * 0.5, enemy.y - r * 0.4,
+          (Math.random() - 0.5) * 12, -25 - Math.random() * 15,
+          220, 240, 255, 0.5 + Math.random() * 0.3, 2 + Math.random() * 1.5)
+      }
+    }
+  }
+  // Snowflake "shatter free" — one-shot trigger when immobility ends. Set in updateEnemy
+  // when immobileTimer crosses 0; consumed here so we only spawn the effect once.
+  if (enemy.immobileJustBroke) {
+    enemy.immobileJustBroke = false
+    spawnSnowflakeShatter(enemy.x, enemy.y, r * 1.55)
   }
 
   // Beat ripple — expanding ring when enemy fires
@@ -5734,25 +6832,40 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         }
       }
     }
-    // Break shockwave + shard burst (one-shot on the first frame of break)
+    // Break shockwave + shard burst (one-shot on the first frame of break).
+    // Dramatic treatment: primary shockwave expands further/thicker, a second delayed
+    // echo ring follows, white core blooms longer, and a ring of static lightning bolts
+    // radiates outward — same visual language as the beat-dash AOE so the connection reads.
     if (enemy.shieldBreakFlash > 0) {
       const bt = enemy.shieldBreakFlash / SHIELD_BREAK_FLASH
-      const shockR = sr + (1 - bt) * 180
+      // Primary shockwave — bigger reach, thicker, gold-tinged white core for "snap"
+      const shockR = sr + (1 - bt) * 300
       ctx.beginPath()
       ctx.arc(sx, sy, shockR, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(${SR}, ${SG}, ${SB}, ${bt * bt * 0.6})`
-      ctx.lineWidth = 5 * bt + 1
+      ctx.strokeStyle = `rgba(${SR}, ${SG}, ${SB}, ${bt * bt * 0.75})`
+      ctx.lineWidth = 8 * bt + 1.5
       ctx.stroke()
-      const innerR = sr + (1 - bt) * 80
+      // Echo ring — lags behind primary, fades on a different curve so two distinct shells read
+      const echoT = Math.max(0, bt - 0.15)
+      if (echoT > 0) {
+        const echoR = sr + (1 - echoT) * 200
+        ctx.beginPath()
+        ctx.arc(sx, sy, echoR, 0, Math.PI * 2)
+        ctx.strokeStyle = `rgba(180, 240, 255, ${echoT * 0.45})`
+        ctx.lineWidth = 4 * echoT + 1
+        ctx.stroke()
+      }
+      const innerR = sr + (1 - bt) * 110
       ctx.beginPath()
       ctx.arc(sx, sy, innerR, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(200, 245, 255, ${bt * 0.4})`
-      ctx.lineWidth = 3 * bt
+      ctx.strokeStyle = `rgba(220, 250, 255, ${bt * 0.55})`
+      ctx.lineWidth = 4 * bt
       ctx.stroke()
-      if (bt > 0.7) {
+      // Solid white-core flash — longer-lived than before (was bt > 0.7 → 0.3s of life)
+      if (bt > 0.5) {
         ctx.beginPath()
         ctx.arc(sx, sy, sr + 2, 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(150, 240, 255, ${(bt - 0.7) * 2})`
+        ctx.fillStyle = `rgba(200, 245, 255, ${(bt - 0.5) * 1.4})`
         ctx.fill()
       }
       // Shard burst — one-shot on the frame the shield breaks. Uses a transient flag
@@ -5761,27 +6874,38 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       if (enemy.shieldJustBroken) {
         enemy.shieldJustBroken = false
         const partScale = Math.max(2, r * 0.1)
-        const shardCount = Math.floor(18 + r * 0.2)
+        // More shards, faster, varied size for chunkier "shatter" read
+        const shardCount = Math.floor(30 + r * 0.32)
         for (let i = 0; i < shardCount; i++) {
           const angle = (i / shardCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
           const px = enemy.x + Math.cos(angle) * sr
           const py = enemy.y + Math.sin(angle) * sr
-          const speed = 700 + Math.random() * 500
+          const speed = 900 + Math.random() * 700
           spawnParticle(px, py,
-            Math.cos(angle) * speed + (Math.random() - 0.5) * 100,
-            Math.sin(angle) * speed + (Math.random() - 0.5) * 100,
+            Math.cos(angle) * speed + (Math.random() - 0.5) * 130,
+            Math.sin(angle) * speed + (Math.random() - 0.5) * 130,
             80 + Math.floor(Math.random() * 80), 220, 255,
-            0.24 + Math.random() * 0.16, partScale * (0.8 + Math.random() * 0.6))
+            0.28 + Math.random() * 0.22, partScale * (0.7 + Math.random() * 1.0))
         }
-        // White-hot core sparks
-        for (let i = 0; i < 8; i++) {
+        // White-hot core sparks — beefier
+        for (let i = 0; i < 14; i++) {
           const angle = Math.random() * Math.PI * 2
           const px = enemy.x + Math.cos(angle) * sr * 0.5
           const py = enemy.y + Math.sin(angle) * sr * 0.5
-          const speed = 800 + Math.random() * 500
+          const speed = 1000 + Math.random() * 700
           spawnParticle(px, py,
             Math.cos(angle) * speed, Math.sin(angle) * speed,
-            230, 250, 255, 0.22 + Math.random() * 0.12, partScale * 0.6)
+            230, 250, 255, 0.24 + Math.random() * 0.16, partScale * (0.55 + Math.random() * 0.5))
+        }
+        // Lightning burst — short jagged bolts radiating out from the break point.
+        // Recolored implicitly by the shared bolt drawing (yellow/white), which still reads
+        // as "electric discharge" against the cyan shell debris.
+        const boltCount = 7
+        const boltLen = sr * 1.6
+        const boltScale = Math.min(2.2, Math.max(1.0, r / 26))
+        for (let i = 0; i < boltCount; i++) {
+          const a = (i / boltCount) * Math.PI * 2 + Math.random() * 0.5
+          spawnStaticLightningBolt(enemy.x, enemy.y, a, boltLen * (0.7 + Math.random() * 0.5), boltScale, 0.22 + Math.random() * 0.06)
         }
       }
     }

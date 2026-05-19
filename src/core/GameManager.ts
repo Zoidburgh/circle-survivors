@@ -1,6 +1,6 @@
 import * as Input from '../game/InputManager.ts'
 import * as Renderer from '../render/Renderer.ts'
-import { updatePlayer, hurtPlayer, getEffectiveRadius, resetDashCDToast } from '../entities/Player.ts'
+import { updatePlayer, hurtPlayer, resetDashCDToast, RECALL_DURATION } from '../entities/Player.ts'
 import type { Player } from '../entities/Player.ts'
 import { createEnemy, updateEnemy, updateDeath, damageEnemy, spawnDrops, tickLeaveToastCD, resetLeaveToastCD } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
@@ -15,7 +15,7 @@ import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat, getLoopPosition } from '../audio/PatternClock.ts'
-import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth } from '../audio/AudioEngine.ts'
+import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playFuseStart, playRecallStart, playChillZonePlace, playIceShardBurst, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth } from '../audio/AudioEngine.ts'
 import { resetProTip, showToast } from '../render/Renderer.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
 import { getScoresForChallenge, fetchOnlineScores } from '../game/HighScores.ts'
@@ -265,8 +265,35 @@ interface PendingShrineSpawn {
 }
 const pendingShrineSpawns: PendingShrineSpawn[] = []
 
-// On-beat dash shockwave — area damage at dash start position
-on('player:beatDash', (player: Player) => {
+// Aftershock — delayed beat-dash detonations. Each entry is a pinned AOE that fires after
+// `timer` seconds at the world position where the player dashed FROM. The extensible shape
+// (damage, radius, etc. are captured at placement) lets future upgrades modify the queued
+// detonation — e.g., bump radius, attach a chill effect, change damage — without rewriting
+// the firing logic. Renderer reads these via getPendingDetonations() to draw the ticking pie.
+export interface PendingDetonation {
+  x: number
+  y: number
+  radius: number
+  damage: number
+  timer: number     // counts down to 0
+  lifetime: number  // original delay — used for pie-fill progress
+}
+const pendingDetonations: PendingDetonation[] = []
+export function getPendingDetonations(): readonly PendingDetonation[] { return pendingDetonations }
+
+// Chill Zone (player upgrade) — single persistent slow-field. Each beat-dash replaces the
+// active zone with a new one at the detonate position. When replaced, the OLD zone's
+// position is flash-frozen: any enemy inside has their immobileTimer set to BEAT_SEC.
+// Exported getter so the renderer can draw the zone marker on the arena floor.
+export interface ChillZone { x: number; y: number; radius: number }
+let activeChillZone: ChillZone | null = null
+export function getActiveChillZone(): ChillZone | null { return activeChillZone }
+
+// Placement-time work for any beat-dash — fires immediately whether or not Aftershock is
+// active. Includes tutorial toasts, shrine activation, and summon-node tagging — these all
+// depend on the PLAYER being where the dash starts (e.g., shrine requires "fully inside"),
+// so delaying them wouldn't make sense and would actually break those mechanics.
+function placeBeatDash(player: Player, shockRadius: number): void {
   if (getActiveChallenge()?.name === 'Beginner Challenge') {
     if (!firstBeatDashFired) {
       firstBeatDashFired = true
@@ -285,10 +312,7 @@ on('player:beatDash', (player: Player) => {
       showToast('2 in a row?! My hero <3', { y: 0.14, duration: 2, id: 'double_beat_dash', color: [100, 255, 120], style: 'glow', glowWords: ['hero', '<3'], glowColor: [255, 50, 200] })
     }
   }
-  const shockRadius = getEffectiveRadius(player) * 0.7 * player.modifiers.beatBlastMult
-  const damage = player.damage * player.modifiers.damageMult
   const enemies = getEnemies()
-  let beatDashHitCount = 0
   for (const enemy of enemies) {
     if (!enemy.alive || enemy.dying) continue
     // Shrine activation — player must be fully inside, 1 HP per beat-dash
@@ -461,9 +485,24 @@ on('player:beatDash', (player: Player) => {
       }
       continue
     }
-    const dx = enemy.x - player.x
-    const dy = enemy.y - player.y
-    const hitRange = shockRadius + enemy.radius
+  }
+}
+
+// Detonation-time work — the actual AOE damage, orb collect, audio, and visual shockwave.
+// Runs immediately for instant beat-dashes and on a delay (next beat) when Aftershock is active.
+// Position/radius/damage are passed in so a delayed detonation fires at the PINNED location
+// (where the player dashed FROM), not wherever the player is at detonate time.
+function detonateBeatDash(x: number, y: number, radius: number, damage: number): void {
+  const player = getPlayer()
+  const enemies = getEnemies()
+  let beatDashHitCount = 0
+  for (const enemy of enemies) {
+    if (!enemy.alive || enemy.dying) continue
+    if (enemy.isShrine || enemy.summon) continue  // handled at placement; skip here so a delayed
+                                                  // detonation can't double-tag a shrine/node
+    const dx = enemy.x - x
+    const dy = enemy.y - y
+    const hitRange = radius + enemy.radius
     if (dx * dx + dy * dy <= hitRange * hitRange) {
       beatDashHitCount++
       const wasDying = enemy.dying
@@ -497,9 +536,9 @@ on('player:beatDash', (player: Player) => {
   const allOrbs = getOrbs()
   for (const orb of allOrbs) {
     if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
-    const odx = orb.x - player.x
-    const ody = orb.y - player.y
-    if (odx * odx + ody * ody <= (shockRadius + orb.radius) * (shockRadius + orb.radius)) {
+    const odx = orb.x - x
+    const ody = orb.y - y
+    if (odx * odx + ody * ody <= (radius + orb.radius) * (radius + orb.radius)) {
       collectOrb(orb)
       if (orb.orbType === 'hp') {
         player.hp = Math.min(player.hp + 1, player.maxHp)
@@ -510,8 +549,85 @@ on('player:beatDash', (player: Player) => {
   }
   // SFX + Visual — shockwave flash on top of everything + particles
   playBeatDash()
-  Renderer.triggerBeatDashFlash(player.x, player.y, shockRadius)
-  Renderer.spawnVolatileParticles(player.x, player.y, shockRadius, 0, 230, 255)
+  Renderer.triggerBeatDashFlash(x, y, radius)
+  Renderer.spawnVolatileParticles(x, y, radius, 0, 230, 255)
+
+  // Chill Zone — replace the active slow-field. If a previous zone existed, ice-shard burst
+  // it: every enemy currently inside gets immobileTimer = BEAT_SEC (frozen feet for one beat,
+  // attacks still tick). Then plant the new zone at the detonate position with 2× radius.
+  // Overlap test uses (zone.radius + enemy.radius)² so any part of the enemy touching the
+  // zone counts as inside — center-only would let big enemies have their body half-buried
+  // in the zone without being affected.
+  if (hasBonus('chillZone')) {
+    const zoneR = radius * 2
+    if (activeChillZone) {
+      const oz = activeChillZone
+      for (const enemy of enemies) {
+        if (!enemy.alive || enemy.dying) continue
+        const ddx = enemy.x - oz.x
+        const ddy = enemy.y - oz.y
+        const overlapR = oz.radius + enemy.radius
+        if (ddx * ddx + ddy * ddy <= overlapR * overlapR) {
+          enemy.immobileTimer = BEAT_SEC
+        }
+      }
+      Renderer.spawnIceShardBurst(oz.x, oz.y, oz.radius)
+      playIceShardBurst()
+    } else {
+      // First placement — small frost-crack puff so the upgrade has a tangible "I activated" beat
+      Renderer.spawnFrostCrack(x, y, zoneR)
+    }
+    activeChillZone = { x, y, radius: zoneR }
+    Renderer.setChillZoneViz(x, y, zoneR)
+    playChillZonePlace()
+  }
+}
+
+// On-beat dash shockwave — area damage at dash start position.
+// With Aftershock: detonation is delayed by one beat and shown as a ticking-pie telegraph.
+on('player:beatDash', (player: Player) => {
+  // Beat-dash radius scales with beatBlastMult only — NOT ringRadiusMult. Ring-range
+  // upgrades already grow the main ring; coupling them to the beat-dash too would let one
+  // upgrade pull double duty.
+  const shockRadius = player.ring.radius * 0.7 * player.modifiers.beatBlastMult
+  const damage = player.damage * player.modifiers.damageMult
+  placeBeatDash(player, shockRadius)
+  if (hasBonus('aftershock')) {
+    pendingDetonations.push({
+      x: player.x, y: player.y,
+      radius: shockRadius, damage,
+      timer: BEAT_SEC, lifetime: BEAT_SEC,
+    })
+    Renderer.addPendingDetonation(player.x, player.y, shockRadius, BEAT_SEC)
+    playFuseStart()
+  } else {
+    detonateBeatDash(player.x, player.y, shockRadius, damage)
+  }
+
+  // Echo Step — leapfrog anchor system. Capture the dash position as the NEW anchor; if a
+  // previous anchor existed, kick off the ghost-traversal back to it. The new anchor stays
+  // pinned at the spot the player pressed dash from (even after they warp away to the old
+  // anchor), so the rhythm reads as a back-and-forth between two ever-shifting positions.
+  if (hasBonus('anchorRecall')) {
+    const newAnchorX = player.x
+    const newAnchorY = player.y
+    if (player.anchorActive) {
+      player.recallFromX = player.x
+      player.recallFromY = player.y
+      player.recallToX = player.anchorX
+      player.recallToY = player.anchorY
+      player.recallTimer = RECALL_DURATION
+      // Cancel the in-flight dash motion — the recall is taking over for the next 0.5s.
+      // Without this, dashTimer keeps its remaining duration (it was paused while recall
+      // had priority in updatePlayer), and once recall ends the dash motion branch resumes
+      // and drifts the player away from the anchor for the leftover time.
+      player.dashTimer = -1
+      playRecallStart()
+    }
+    player.anchorX = newAnchorX
+    player.anchorY = newAnchorY
+    player.anchorActive = true
+  }
 })
 
 // Shield audio events
@@ -780,6 +896,9 @@ export function resetPendingEffects(): void {
   pendingExplosions.length = 0
   pendingRevenges.length = 0
   pendingShrineSpawns.length = 0
+  pendingDetonations.length = 0
+  activeChillZone = null
+  Renderer.clearChillZoneViz()
   lowHpToastFired = false
   criticalHpCooldown = 0
   clutchShieldCooldown = 0
@@ -874,6 +993,33 @@ function updateDesigner(dt: number): void {
   }
   // Process queued volatile explosions so designer-spawned exploders actually detonate
   processVolatileExplosions(player, enemies, dt)
+  // Process pending Aftershock detonations in designer too — without this the fuse pie
+  // ticks visually (see Renderer designer-phase check) but the boom never fires.
+  for (let i = pendingDetonations.length - 1; i >= 0; i--) {
+    const pd = pendingDetonations[i]!
+    pd.timer -= dt
+    if (pd.timer <= 0) {
+      detonateBeatDash(pd.x, pd.y, pd.radius, pd.damage)
+      pendingDetonations[i] = pendingDetonations[pendingDetonations.length - 1]!
+      pendingDetonations.pop()
+    }
+  }
+  // Chill Zone presence check in designer — mirrors the main pass so the slow/immobile
+  // visuals work during test play too.
+  if (activeChillZone) {
+    const cz = activeChillZone
+    for (const e of enemies) {
+      if (!e.alive || e.dying) { e.zoneSlowFrac = 0; continue }
+      const ddx = e.x - cz.x
+      const ddy = e.y - cz.y
+      const overlapR = cz.radius + e.radius
+      e.zoneSlowFrac = (ddx * ddx + ddy * ddy <= overlapR * overlapR) ? 0.5 : 0
+    }
+  } else {
+    for (const e of enemies) {
+      if (e.zoneSlowFrac !== 0) e.zoneSlowFrac = 0
+    }
+  }
   for (const e of enemies) {
     if (e.dying) updateDeath(e, dt)
     else if (e.alive) updateEnemy(e, player, dt, grid)
@@ -900,7 +1046,7 @@ function updateDesigner(dt: number): void {
       player.y -= ny * overlap * 0.15
     }
   }
-  // Orb separation (grid-accelerated, mirrors real-game pass at GameManager.ts:1787)
+  // Orb separation (grid-accelerated, mirrors real-game pass)
   for (const orb of orbs) {
     if (!orb.alive || orb.dying) continue
     const nearby = grid.query(orb)
@@ -914,16 +1060,22 @@ function updateDesigner(dt: number): void {
       if (dist < minDist && dist > 0.1) {
         const nx = dx / dist
         const ny = dy / dist
-        const overlap = (minDist - dist) * 0.5
-        orb.x += nx * overlap
-        orb.y += ny * overlap
-        if (!isEnemy) {
-          const otherOrb = other as typeof orb
-          otherOrb.x -= nx * overlap
-          otherOrb.y -= ny * overlap
-        } else {
-          const oe = other as Enemy
-          if (!oe.immovable) { oe.x -= nx * overlap; oe.y -= ny * overlap }
+        const total = minDist - dist
+        // Heavy/immovable enemies absorb no push — orb takes the FULL overlap (see main pass for rationale).
+        const isImmovableEnemy = isEnemy && (other as Enemy).immovable
+        const orbPush = isImmovableEnemy ? total : total * 0.5
+        orb.x += nx * orbPush
+        orb.y += ny * orbPush
+        if (!isImmovableEnemy) {
+          const otherPush = total * 0.5
+          if (!isEnemy) {
+            const otherOrb = other as typeof orb
+            otherOrb.x -= nx * otherPush
+            otherOrb.y -= ny * otherPush
+          } else {
+            const oe = other as Enemy
+            oe.x -= nx * otherPush; oe.y -= ny * otherPush
+          }
         }
       }
     }
@@ -1144,6 +1296,37 @@ export function update(dt: number): void {
             0.4 + Math.random() * 0.25, 7 + Math.random() * 6)
         }
       }
+    }
+  }
+
+  // Process pending Aftershock detonations — fire on next beat. Swap-and-pop iteration so
+  // detonation can spawn more enemies/effects without invalidating the loop.
+  for (let i = pendingDetonations.length - 1; i >= 0; i--) {
+    const pd = pendingDetonations[i]!
+    pd.timer -= dt
+    if (pd.timer <= 0) {
+      detonateBeatDash(pd.x, pd.y, pd.radius, pd.damage)
+      pendingDetonations[i] = pendingDetonations[pendingDetonations.length - 1]!
+      pendingDetonations.pop()
+    }
+  }
+
+  // Chill Zone — per-frame presence check. Sets enemy.zoneSlowFrac so updateEnemy's slow
+  // calc can combine it with frostbite stacks via max(). Overlap test uses
+  // (zone.radius + enemy.radius)² so any part of the body touching the zone counts.
+  if (activeChillZone) {
+    const cz = activeChillZone
+    for (const e of enemies) {
+      if (!e.alive || e.dying) { e.zoneSlowFrac = 0; continue }
+      const ddx = e.x - cz.x
+      const ddy = e.y - cz.y
+      const overlapR = cz.radius + e.radius
+      e.zoneSlowFrac = (ddx * ddx + ddy * ddy <= overlapR * overlapR) ? 0.5 : 0
+    }
+  } else {
+    // No zone — clear stale slow values from any enemy that was previously chilled by one
+    for (const e of enemies) {
+      if (e.zoneSlowFrac !== 0) e.zoneSlowFrac = 0
     }
   }
 
@@ -1568,6 +1751,18 @@ export function update(dt: number): void {
     setPhase('dead')
     const ch = getActiveChallenge()
     if (ch) fetchOnlineScores(ch.name)
+    // Freeze active enemy attack rings at peak so the player sees what hit them on the
+    // death screen. The enemy update loop is skipped while dead, so attackTimer would
+    // otherwise stay wherever it happened to be — anywhere from mid-expand to fully faded
+    // out, making this look inconsistent (sometimes the ring lingers, sometimes it vanishes).
+    // Snapping to expandTime renders the ring at full expansion + full alpha + peak flash.
+    for (const e of enemies) {
+      if (!e.alive || e.dying) continue
+      for (const rs of e.rings) {
+        if (rs.attackTimer < 0) continue
+        rs.attackTimer = rs.expandTime
+      }
+    }
   }
 
   const dir = Input.getMovementDir()
@@ -1829,20 +2024,26 @@ export function update(dt: number): void {
         if (dist < minDist && dist > 0.1) {
           const nx = dx / dist
           const ny = dy / dist
-          const overlap = (minDist - dist) * 0.5
-          orb.x += nx * overlap
-          orb.y += ny * overlap
-          if (!isEnemy) {
-            // Orb-orb: push the other orb too
-            const otherOrb = other as typeof orb
-            otherOrb.x -= nx * overlap
-            otherOrb.y -= ny * overlap
-          } else {
-            // Orb-enemy: push enemy too (same as enemy-enemy)
-            const oe = other as Enemy
-            if (!oe.immovable) {
-              oe.x -= nx * overlap
-              oe.y -= ny * overlap
+          const total = minDist - dist
+          // Heavy/immovable enemies absorb no push — the orb must take the FULL overlap
+          // or it ends up half-buried and visibly clipped (worst case: orb wedged between
+          // two heavies, where each side only ever resolves half the penetration).
+          const isImmovableEnemy = isEnemy && (other as Enemy).immovable
+          const orbPush = isImmovableEnemy ? total : total * 0.5
+          orb.x += nx * orbPush
+          orb.y += ny * orbPush
+          if (!isImmovableEnemy) {
+            const otherPush = total * 0.5
+            if (!isEnemy) {
+              // Orb-orb: push the other orb too
+              const otherOrb = other as typeof orb
+              otherOrb.x -= nx * otherPush
+              otherOrb.y -= ny * otherPush
+            } else {
+              // Orb-enemy (non-immovable): push enemy too (same as enemy-enemy)
+              const oe = other as Enemy
+              oe.x -= nx * otherPush
+              oe.y -= ny * otherPush
             }
           }
         }

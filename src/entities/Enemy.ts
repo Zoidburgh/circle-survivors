@@ -75,6 +75,15 @@ export interface Enemy {
   lungeDirY: number
   chillStacks: number
   chillDecayTimer: number
+  // Chill Zone state (player upgrade). zoneSlowFrac is 0 or 0.5, set each frame by a presence
+  // check against the player's active chill zone. immobileTimer > 0 means the enemy is frozen
+  // in place (zero movement) but their attack/ring timers continue ticking normally — they're
+  // still a threat. Triggered by an old chill zone's ice-shard burst when it gets replaced.
+  // immobileJustBroke is a transient one-shot flag set the frame the timer crosses 0 — the
+  // renderer consumes it to spawn the snowflake-shatter "breaking free" effect.
+  zoneSlowFrac: number
+  immobileTimer: number
+  immobileJustBroke: boolean
   cr: number  // parsed color components (avoid per-frame parseInt)
   cg: number
   cb: number
@@ -225,6 +234,9 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     lungeDirY: 0,
     chillStacks: 0,
     chillDecayTimer: 0,
+    zoneSlowFrac: 0,
+    immobileTimer: 0,
+    immobileJustBroke: false,
     cr: parseInt(type.color.slice(1, 3), 16),
     cg: parseInt(type.color.slice(3, 5), 16),
     cb: parseInt(type.color.slice(5, 7), 16),
@@ -440,6 +452,10 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   if (enemy.hitFlash > 0) enemy.hitFlash -= dt
   if (enemy.beatDashFlash > 0) enemy.beatDashFlash -= dt
   if (enemy.isShrine && enemy.shrineSummonTimer > 0) enemy.shrineSummonTimer -= dt
+  if (enemy.immobileTimer > 0) {
+    enemy.immobileTimer -= dt
+    if (enemy.immobileTimer <= 0) enemy.immobileJustBroke = true
+  }
 
   // Chill stack decay
   if (enemy.chillStacks > 0) {
@@ -754,7 +770,12 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   }
 
   // Apply chill slow + integrate position. Skip when mid-dodge — applyDashMotion already moved us.
-  const chillMult = 1 - enemy.chillStacks * CHILL_SLOW_PER_STACK
+  // Chill Zone interaction: zoneSlowFrac (0 or 0.5) and frostbite stacks combine via max() so
+  // the two slow sources don't sum to 100% (which would overlap with the immobility mechanic).
+  // immobileTimer > 0 hard-zeros movement regardless of other slow values — total takeover.
+  const stackedSlow = enemy.chillStacks * CHILL_SLOW_PER_STACK
+  const effectiveSlow = Math.max(stackedSlow, enemy.zoneSlowFrac)
+  const chillMult = enemy.immobileTimer > 0 ? 0 : (1 - effectiveSlow)
   enemy.vx = moveX * chillMult
   enemy.vy = moveY * chillMult
   if (!(enemy.dodge && enemy.dashTimer >= 0)) {

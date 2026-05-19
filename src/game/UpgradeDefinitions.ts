@@ -28,6 +28,10 @@ export const UPGRADE_POOL: UpgradeDef[] = [
   { id: 'small', name: 'Compact', description: '-10% player size', bonus: { sizeMult: -0.10 }, color: '#80CBC4', maxStacks: 5 },
   { id: 'beat_blast', name: 'Beat Blast', description: '+10% beat dash radius', bonus: { beatBlastMult: 0.10 }, color: '#FF5252', maxStacks: 5 },
   { id: 'chill_hit', name: 'Frostbite', description: 'Ring hits slow enemies (10%/stack, 5 max)', bonus: { chillHit: true }, color: '#80D8FF', tier: 'game', maxStacks: 2 },
+  { id: 'aftershock', name: 'Aftershock', description: 'Beat dash detonates on the next beat (telegraphed)', bonus: { aftershock: true }, color: '#FF7043', tier: 'game', maxStacks: 1 },
+  { id: 'slipstream', name: 'Slipstream', description: 'Dashing while still mid-dash gives +100% distance on that dash', bonus: { chainDash: true }, color: '#26C6DA', tier: 'game', maxStacks: 1 },
+  { id: 'echo_step', name: 'Echo Step', description: 'Beat dash drops an anchor; next beat dash recalls you to it (invulnerable warp)', bonus: { anchorRecall: true }, color: '#7C4DFF', tier: 'game', maxStacks: 1 },
+  { id: 'chill_zone', name: 'Chill Zone', description: 'Beat dash leaves a 2× radius slow field; next beat dash freezes anyone still inside the old field for a beat', bonus: { chillZone: true }, color: '#80D8FF', tier: 'game', maxStacks: 1 },
 ]
 
 /** Pick N random upgrades from the pool, excluding already-maxed */

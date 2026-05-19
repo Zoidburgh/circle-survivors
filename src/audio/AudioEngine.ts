@@ -1448,6 +1448,163 @@ export function playTotemSpawn(): void {
   woosh.stop(t + wooshDur)
 }
 
+// Short tick + airy whoosh — placed at the start of an Aftershock fuse so the player gets
+// audible confirmation that the bomb is armed before the visual pie even starts ticking.
+export function playFuseStart(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  // Tick — short metallic click
+  const tick = c.createOscillator()
+  const tickGain = c.createGain()
+  tick.type = 'square'
+  tick.frequency.setValueAtTime(rPitch(1200), t)
+  tick.frequency.exponentialRampToValueAtTime(rPitch(600), t + 0.05)
+  tickGain.gain.setValueAtTime(rVol(0.18), t)
+  tickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08)
+  tick.connect(tickGain)
+  tickGain.connect(master)
+  tick.start(t)
+  tick.stop(t + 0.08)
+
+  // Low body — gives the tick weight without competing with playBeatDash later
+  const body = c.createOscillator()
+  const bodyGain = c.createGain()
+  body.type = 'sine'
+  body.frequency.setValueAtTime(rPitch(200), t)
+  body.frequency.exponentialRampToValueAtTime(rPitch(120), t + 0.12)
+  bodyGain.gain.setValueAtTime(rVol(0.22), t)
+  bodyGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
+  body.connect(bodyGain)
+  bodyGain.connect(master)
+  body.start(t)
+  body.stop(t + 0.15)
+}
+
+// Soft icy whoosh — fires on Chill Zone placement. Low-volume "frosting over" texture so it
+// doesn't compete with the beat-dash boom that fires simultaneously.
+export function playChillZonePlace(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  // Filtered noise sweep — descending highpass for "settling frost" feel
+  const dur = 0.35
+  const buf = c.createBuffer(1, c.sampleRate * dur, c.sampleRate)
+  const data = buf.getChannelData(0)
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length)
+  const noise = c.createBufferSource()
+  noise.buffer = buf
+  const hp = c.createBiquadFilter()
+  hp.type = 'highpass'
+  hp.frequency.setValueAtTime(3000, t)
+  hp.frequency.exponentialRampToValueAtTime(700, t + dur)
+  const gain = c.createGain()
+  gain.gain.setValueAtTime(0.001, t)
+  gain.gain.linearRampToValueAtTime(rVol(0.16), t + 0.04)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  noise.connect(hp)
+  hp.connect(gain)
+  gain.connect(master)
+  noise.start(t)
+}
+
+// Sharp glass crack + crystalline tinkle — the climax SFX for the old zone shattering.
+// Three layers: a sub-thump for impact, mid crackle for glass, high shimmer for crystal.
+export function playIceShardBurst(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  // Layer 1: Sub-thump impact
+  const thump = c.createOscillator()
+  const thumpGain = c.createGain()
+  thump.type = 'sine'
+  thump.frequency.setValueAtTime(rPitch(140), t)
+  thump.frequency.exponentialRampToValueAtTime(rPitch(50), t + 0.15)
+  thumpGain.gain.setValueAtTime(rVol(0.45), t)
+  thumpGain.gain.exponentialRampToValueAtTime(0.001, t + 0.18)
+  thump.connect(thumpGain)
+  thumpGain.connect(master)
+  thump.start(t)
+  thump.stop(t + 0.2)
+
+  // Layer 2: Glass crack — fast noise burst, bandpassed mid
+  const crackBuf = c.createBuffer(1, c.sampleRate * 0.18, c.sampleRate)
+  const crackData = crackBuf.getChannelData(0)
+  for (let i = 0; i < crackData.length; i++) crackData[i] = (Math.random() * 2 - 1) * (1 - i / crackData.length)
+  const crack = c.createBufferSource()
+  crack.buffer = crackBuf
+  const bp = c.createBiquadFilter()
+  bp.type = 'bandpass'
+  bp.frequency.setValueAtTime(2200, t)
+  bp.Q.setValueAtTime(2, t)
+  const crackGain = c.createGain()
+  crackGain.gain.setValueAtTime(rVol(0.55), t)
+  crackGain.gain.exponentialRampToValueAtTime(0.001, t + 0.18)
+  crack.connect(bp)
+  bp.connect(crackGain)
+  crackGain.connect(master)
+  crack.start(t)
+
+  // Layer 3: Crystalline tinkles — three quick descending notes for the "shards falling" feel
+  const notes = [rPitch(2400), rPitch(2000), rPitch(1600)]
+  for (let i = 0; i < notes.length; i++) {
+    const tn = t + i * 0.04
+    const osc = c.createOscillator()
+    const oGain = c.createGain()
+    osc.type = 'triangle'
+    osc.frequency.setValueAtTime(notes[i]!, tn)
+    oGain.gain.setValueAtTime(rVol(0.18), tn)
+    oGain.gain.exponentialRampToValueAtTime(0.001, tn + 0.18)
+    osc.connect(oGain)
+    oGain.connect(master)
+    osc.start(tn)
+    osc.stop(tn + 0.2)
+  }
+}
+
+// Ghostly upward-pitching whoosh — fires at the start of an Echo Step recall and runs about
+// as long as the 0.5s ghost-traversal so the audio reaches its peak as the player lands.
+export function playRecallStart(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+
+  // High shimmering body — sine that pitches up over the recall window
+  const tone = c.createOscillator()
+  const toneGain = c.createGain()
+  tone.type = 'sine'
+  tone.frequency.setValueAtTime(rPitch(320), t)
+  tone.frequency.exponentialRampToValueAtTime(rPitch(1200), t + 0.45)
+  toneGain.gain.setValueAtTime(0.001, t)
+  toneGain.gain.linearRampToValueAtTime(rVol(0.28), t + 0.04)
+  toneGain.gain.exponentialRampToValueAtTime(0.001, t + 0.48)
+  tone.connect(toneGain)
+  toneGain.connect(master)
+  tone.start(t)
+  tone.stop(t + 0.5)
+
+  // Air whoosh — noise burst high-passed for the "passing through space" texture
+  const buf = c.createBuffer(1, c.sampleRate * 0.45, c.sampleRate)
+  const data = buf.getChannelData(0)
+  for (let i = 0; i < data.length; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / data.length)
+  const noise = c.createBufferSource()
+  noise.buffer = buf
+  const hp = c.createBiquadFilter()
+  hp.type = 'highpass'
+  hp.frequency.setValueAtTime(800, t)
+  hp.frequency.linearRampToValueAtTime(2400, t + 0.45)
+  const noiseGain = c.createGain()
+  noiseGain.gain.setValueAtTime(0.001, t)
+  noiseGain.gain.linearRampToValueAtTime(rVol(0.18), t + 0.05)
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + 0.48)
+  noise.connect(hp)
+  hp.connect(noiseGain)
+  noiseGain.connect(master)
+  noise.start(t)
+}
+
 export function playBeatDash(): void {
   ensureContext()
   const c = ctx!
