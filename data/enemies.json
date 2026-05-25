@@ -4,7 +4,7 @@
     {
       "name": "Enemy3",
       "color": "#ba68c8",
-      "hp": 5,
+      "hp": 6,
       "moveSpeed": 150,
       "radius": 60,
       "ringRadius": 120,
@@ -142,7 +142,7 @@
       "blink": true,
       "blinkBeats": 2,
       "volatile": true,
-      "volatileRange": 500,
+      "volatileRange": 400,
       "revenge": false,
       "revengeRings": 4,
       "revengeRadius": 120,
@@ -221,8 +221,8 @@
       "name": "Enemy7",
       "color": "#ffd740",
       "hp": 12,
-      "moveSpeed": 100,
-      "radius": 135,
+      "moveSpeed": 130,
+      "radius": 130,
       "ringRadius": 130,
       "key": "7",
       "role": "rim",
@@ -257,25 +257,7 @@
           "edgeSwitchBeats": 1
         },
         {
-          "ringRadius": 255,
-          "sound": "rim",
-          "beats": [
-            0.5,
-            1.5,
-            2.5,
-            3.5,
-            4.5,
-            5.5,
-            6.5,
-            7.5
-          ],
-          "edgeMode": false,
-          "edgePoints": 3,
-          "edgeActive": 1,
-          "edgeSwitchBeats": 1
-        },
-        {
-          "ringRadius": 470,
+          "ringRadius": 270,
           "sound": "rim",
           "beats": [
             0.5,
@@ -304,13 +286,6 @@
       "revenge": false,
       "revengeRings": 4,
       "revengeRadius": 120,
-      "dodge": false,
-      "dodgeCharges": 2,
-      "dodgeChargeTime": 1.5,
-      "dodgeDistance": 100,
-      "dodgeSpeed": 1,
-      "shield": false,
-      "shieldRechargeTime": 4,
       "movePattern": "orbit",
       "totemSpawn": "",
       "dropType": "none",
@@ -319,16 +294,7 @@
       "dropCount": 1,
       "summon": false,
       "summonNodes": 3,
-      "summonPhases": [],
-      "isShrine": false,
-      "shrineSpawnEnemy": "",
-      "shrineXpCount": 0,
-      "shrineHpCount": 0,
-      "shrinePhases": [
-        {
-          "xpOrbs": 3
-        }
-      ]
+      "summonPhases": []
     },
     {
       "name": "Enemy8",
@@ -393,7 +359,7 @@
     },
     {
       "name": "Enemy9",
-      "color": "#4caf50",
+      "color": "#ef5350",
       "hp": 2,
       "moveSpeed": 50,
       "radius": 130,
@@ -479,11 +445,7 @@
             }
           ]
         }
-      ],
-      "isShrine": false,
-      "shrineSpawnEnemy": "",
-      "shrineXpCount": 3,
-      "shrineHpCount": 0
+      ]
     },
     {
       "name": "Enemy10",
@@ -927,7 +889,7 @@
         }
       ],
       "blocksRings": false,
-      "consume": true,
+      "consume": false,
       "magnet": false,
       "magnetRange": 200,
       "blink": false,
@@ -949,9 +911,9 @@
     },
     {
       "name": "Exploding",
-      "color": "#ffee58",
+      "color": "#d4a017",
       "hp": 3,
-      "moveSpeed": 440,
+      "moveSpeed": 400,
       "radius": 40,
       "ringRadius": 140,
       "key": "17",
@@ -988,7 +950,7 @@
         }
       ],
       "blocksRings": false,
-      "consume": true,
+      "consume": false,
       "magnet": false,
       "magnetRange": 200,
       "blink": false,
@@ -1006,11 +968,7 @@
       "dropCount": 1,
       "summon": false,
       "summonNodes": 3,
-      "summonPhases": [],
-      "isShrine": false,
-      "shrineSpawnEnemy": "",
-      "shrineXpCount": 3,
-      "shrineHpCount": 0
+      "summonPhases": []
     },
     {
       "name": "Heavy_Totem",
@@ -1143,7 +1101,7 @@
       "blink": true,
       "blinkBeats": 2,
       "volatile": true,
-      "volatileRange": 300,
+      "volatileRange": 200,
       "revenge": false,
       "revengeRings": 4,
       "revengeRadius": 120,
@@ -1152,7 +1110,7 @@
       "dropType": "hp",
       "dropXp": 0,
       "dropHp": 100,
-      "dropCount": 2,
+      "dropCount": 5,
       "summon": false,
       "summonNodes": 3,
       "summonPhases": []
@@ -1550,8 +1508,6 @@
       "dodgeChargeTime": 4.6,
       "dodgeDistance": 780,
       "dodgeSpeed": 0.3,
-      "shield": false,
-      "shieldRechargeTime": 4,
       "movePattern": "zigzag",
       "totemSpawn": "",
       "dropType": "xp",
@@ -1647,6 +1603,87 @@
           "xpOrbs": 3
         }
       ]
+    },
+    {
+      "name": "pusher",
+      "color": "#ab47bc",
+      "hp": 10,
+      "moveSpeed": 100,
+      "radius": 80,
+      "ringRadius": 280,
+      "key": "29",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ],
+      "rings": [
+        {
+          "ringRadius": 280,
+          "sound": "rim",
+          "beats": [
+            0,
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7
+          ],
+          "edgeMode": false,
+          "edgePoints": 3,
+          "edgeActive": 1,
+          "edgeSwitchBeats": 1
+        }
+      ],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "pusher": true,
+      "pusherBeats": 1,
+      "pusherPhase": 0.5,
+      "pusherStrength": 1300,
+      "dodge": false,
+      "dodgeCharges": 2,
+      "dodgeChargeTime": 1.5,
+      "dodgeDistance": 100,
+      "dodgeSpeed": 1,
+      "shield": false,
+      "shieldRechargeTime": 4,
+      "movePattern": "pursue",
+      "totemSpawn": "",
+      "dropType": "xp",
+      "dropXp": 100,
+      "dropHp": 0,
+      "dropCount": 1,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": [],
+      "isShrine": false,
+      "shrineSpawnEnemy": "",
+      "shrineXpCount": 0,
+      "shrineHpCount": 0,
+      "shrinePhases": [
+        {
+          "xpOrbs": 3
+        }
+      ]
     }
   ],
   "challenges": [
@@ -1683,8 +1720,8 @@
       "enemies": [
         {
           "typeName": "Enemy9",
-          "x": 345,
-          "y": 544.8300968657295
+          "x": 266.20750456863107,
+          "y": 490.16414756319057
         }
       ],
       "order": 10
@@ -1700,6 +1737,85 @@
         }
       ],
       "order": 20
+    },
+    {
+      "name": "new_challenge",
+      "arenaShape": "circle",
+      "enemies": [],
+      "walls": [
+        {
+          "ax": -1283.75,
+          "ay": 1362.5,
+          "bx": 183.75,
+          "by": 714.9999999999998,
+          "radius": 24,
+          "motion": {
+            "type": "rotate",
+            "beatsPerCycle": 20,
+            "direction": -1,
+            "phaseBeats": 0
+          },
+          "spring": {
+            "beatsPerCycle": 1,
+            "phase": 0,
+            "strength": 2000
+          }
+        },
+        {
+          "ax": -672.5197793427652,
+          "ay": 1034.552772125067,
+          "bx": -77.05277212506792,
+          "by": 407.4802206572358,
+          "radius": 24,
+          "motion": {
+            "type": "rotate",
+            "beatsPerCycle": 20,
+            "direction": 1,
+            "phaseBeats": 0
+          },
+          "spring": {
+            "beatsPerCycle": 1,
+            "phase": 0.5,
+            "strength": 3000
+          }
+        },
+        {
+          "ax": -56.25,
+          "ay": 1112.5,
+          "bx": -56.25,
+          "by": 1112.5,
+          "radius": 120,
+          "spring": {
+            "beatsPerCycle": 1,
+            "phase": 0.5,
+            "strength": 3000
+          }
+        },
+        {
+          "ax": 615,
+          "ay": -65,
+          "bx": 631.25,
+          "by": 1096.25,
+          "radius": 36,
+          "spring": {
+            "beatsPerCycle": 1,
+            "phase": 0,
+            "strength": 1500
+          }
+        },
+        {
+          "ax": 954.375,
+          "ay": -41.875,
+          "bx": 970.625,
+          "by": 1119.375,
+          "radius": 36,
+          "spring": {
+            "beatsPerCycle": 1,
+            "phase": 0.5,
+            "strength": 1500
+          }
+        }
+      ]
     }
   ]
 }

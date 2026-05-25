@@ -34,8 +34,10 @@ import type { SongPattern } from '../audio/SongPatterns.ts'
 import { setPattern, getPattern, getLoopPosition, getLoopLength } from '../audio/PatternClock.ts'
 import { getPlayer, getEnemies, getPhase } from '../core/GameState.ts'
 import { findClearSpawnPos } from '../game/Arena.ts'
+import * as Renderer from '../render/Renderer.ts'
+import { clearDesignerEphemerals } from '../core/GameManager.ts'
 import { createEnemy } from '../entities/Enemy.ts'
-import { getSpawnPos } from './Arena.ts'
+import { getSpawnPos, getPerimeterSpawnPos } from './Arena.ts'
 import { playEnemyBeatTick } from '../audio/AudioEngine.ts'
 import { clearKeys } from './InputManager.ts'
 import { UPGRADE_POOL } from './UpgradeDefinitions.ts'
@@ -169,6 +171,7 @@ function exportEnemies(): void {
     version: SAVE_VERSION,
     enemies: designedEnemies,
     challenges: ChallengeBuilder.getChallenges(),
+    wallPrefabs: ChallengeBuilder.getWallPrefabs(),
   }
   const json = JSON.stringify(data, null, 2)
   // Save to project folder via dev server
@@ -214,6 +217,11 @@ function importEnemies(): void {
         // Import challenges
         if (data.challenges?.length) {
           ChallengeBuilder.importChallenges(JSON.stringify(data.challenges))
+        }
+        // Import wall prefab library (added in 2026; absent in older exports)
+        const incoming = (data as any).wallPrefabs
+        if (Array.isArray(incoming) && incoming.length > 0) {
+          ChallengeBuilder.importWallPrefabs(incoming)
         }
       } catch {
         // invalid file, ignore
@@ -268,11 +276,12 @@ export interface PreviewEnemy {
 }
 let previewEnemy: PreviewEnemy | null = null
 
-let enemySectionExpanded = true
+let enemySectionExpanded = false
 let startChallengeCallback: ((ch: Challenge) => void) | null = null
 let testPlayCallback: (() => void) | null = null
 export let challengeCanvasClick: ((x: number, y: number) => boolean) | null = null
-export let challengeCanvasMouseMove: ((x: number, y: number) => void) | null = null
+export let challengeCanvasMouseMove: ((x: number, y: number, shift?: boolean) => void) | null = null
+export let challengeCanvasMouseDown: ((x: number, y: number, shift?: boolean) => boolean) | null = null
 export let challengeCanvasMouseUp: (() => void) | null = null
 export function onStartChallenge(cb: (ch: Challenge) => void): void { startChallengeCallback = cb }
 export function onTestPlay(cb: () => void): void { testPlayCallback = cb }
@@ -347,8 +356,11 @@ function spawnTestEnemy(typeName: string): void {
   const type = ENEMY_TYPES.find(t => t.name === typeName)
   if (!type) return
   const player = getPlayer()
+  // Spawn in a ring 500-700px from the player — comfortable middle distance, not right on
+  // top, not all the way at the perimeter. Clamped to arena so spawns near a wall slide
+  // to a valid in-arena position.
   const angle = Math.random() * Math.PI * 2
-  const dist = 220 + Math.random() * 100
+  const dist = 500 + Math.random() * 200
   const sx = player.x + Math.cos(angle) * dist
   const sy = player.y + Math.sin(angle) * dist
   const radius = (type as any).radius ?? 40
@@ -417,9 +429,9 @@ export function initDesigner(): void {
     <!-- Enemy Designer Section -->
     <div id="ed-enemy-header" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.1);margin-bottom:8px;">
       <span style="color:#FF9800;font-size:13px;font-weight:bold;">Enemy Designer</span>
-      <span id="ed-enemy-toggle" style="color:#666;font-size:12px;">▼</span>
+      <span id="ed-enemy-toggle" style="color:#666;font-size:12px;">▶</span>
     </div>
-    <div id="ed-enemy-body">
+    <div id="ed-enemy-body" style="display:none;">
       <div id="ed-list"></div>
       <button id="ed-add" style="width:100%;padding:8px;margin-top:6px;cursor:pointer;background:rgba(79,195,247,0.15);border:1px solid rgba(79,195,247,0.3);color:#4FC3F7;font:12px monospace;border-radius:4px;">+ Add Enemy Type</button>
       <div style="display:flex;gap:6px;margin-top:6px;">
@@ -431,9 +443,9 @@ export function initDesigner(): void {
     <!-- Upgrades Section -->
     <div id="ed-upgrade-header" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.1);margin-top:12px;margin-bottom:8px;">
       <span style="color:#64FF78;font-size:13px;font-weight:bold;">Upgrades (Test)</span>
-      <span id="ed-upgrade-toggle" style="color:#666;font-size:12px;">▼</span>
+      <span id="ed-upgrade-toggle" style="color:#666;font-size:12px;">▶</span>
     </div>
-    <div id="ed-upgrade-body">
+    <div id="ed-upgrade-body" style="display:none;">
       <div id="ed-upgrade-pool"></div>
       <div style="margin-top:8px;border-top:1px solid rgba(255,255,255,0.05);padding-top:6px;">
         <span style="color:#888;font-size:11px;">Active:</span>
@@ -462,6 +474,125 @@ export function initDesigner(): void {
         <span style="color:#aaa;font:10px monospace;">Pick a type → click arena to place. Click an existing ghost to select; drag to move; Delete to remove.</span>
       </div>
       <div id="ed-ch-types" style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;"></div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;padding:5px;background:rgba(128,216,255,0.05);border:1px solid rgba(128,216,255,0.15);border-radius:3px;">
+        <button id="ed-ch-tool-wall" style="padding:4px 10px;cursor:pointer;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);color:#80D8FF;font:10px monospace;border-radius:3px;">Wall</button>
+        <button id="ed-ch-tool-pillar" style="padding:4px 10px;cursor:pointer;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);color:#80D8FF;font:10px monospace;border-radius:3px;">Pillar</button>
+        <span style="color:#aaa;font:10px monospace;">Thick</span>
+        <input id="ed-ch-wall-thick" type="range" min="6" max="240" value="16" step="2" style="flex:1;">
+        <span id="ed-ch-wall-thick-val" style="color:#80D8FF;font:10px monospace;min-width:18px;text-align:right;">16</span>
+        <button id="ed-ch-walls-clear" style="padding:4px 8px;cursor:pointer;background:rgba(255,80,80,0.1);border:1px solid rgba(255,80,80,0.2);color:#FF5252;font:10px monospace;border-radius:3px;">Clear Walls</button>
+      </div>
+      <div id="ed-ch-tool-hint" style="font:10px monospace;color:#666;margin-bottom:6px;">Wall: click & drag. Pillar: single click. Right-click any wall or enemy to delete it (red highlight = will delete). Endpoint snap on (~15px). Esc cancels a drag.</div>
+      <div id="ed-wall-props" style="display:none;margin-bottom:6px;padding:6px;background:rgba(255,215,64,0.05);border:1px solid rgba(255,215,64,0.20);border-radius:3px;">
+        <div style="color:#FFD740;font:10px monospace;margin-bottom:4px;font-weight:bold;">Wall Properties (selected)</div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;flex-wrap:wrap;">
+          <span style="color:#aaa;font:10px monospace;">Thickness</span>
+          <input id="ed-wall-prop-thick" type="range" min="6" max="240" step="2" value="16" style="flex:1;min-width:120px;">
+          <span id="ed-wall-prop-thick-val" style="color:#80D8FF;font:10px monospace;min-width:24px;text-align:right;">16</span>
+          <label style="display:flex;align-items:center;gap:3px;cursor:pointer;margin-left:6px;">
+            <input id="ed-wall-prop-noclip" type="checkbox">
+            <span style="color:#FF5252;font:10px monospace;" title="When on, this wall won't auto-connect to neighbors and won't be a snap target. Use for isolated obstacles.">No-clip</span>
+          </label>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;flex-wrap:wrap;">
+          <span style="color:#aaa;font:10px monospace;">Motion</span>
+          <select id="ed-wall-motion-type" style="padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <option value="none">None (static)</option>
+            <option value="rotate">Rotate</option>
+            <option value="pendulum">Pendulum</option>
+            <option value="tick">Tick (clock)</option>
+          </select>
+          <div id="ed-wall-motion-rotate-params" style="display:none;gap:6px;align-items:center;flex-wrap:wrap;">
+            <span style="color:#aaa;font:10px monospace;">Beats/cycle</span>
+            <input id="ed-wall-motion-beats" type="number" min="0.25" max="32" step="0.25" value="4" style="width:50px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span style="color:#aaa;font:10px monospace;">Direction</span>
+            <select id="ed-wall-motion-dir" style="padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+              <option value="1">CW ↻</option>
+              <option value="-1">CCW ↺</option>
+            </select>
+            <span style="color:#aaa;font:10px monospace;">Phase</span>
+            <input id="ed-wall-motion-phase" type="number" min="0" max="32" step="0.25" value="0" style="width:50px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span id="ed-wall-motion-sweep-label" style="color:#aaa;font:10px monospace;display:none;">Sweep</span>
+            <input id="ed-wall-motion-sweep" type="number" min="10" max="360" step="5" value="90" style="width:55px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;display:none;">
+            <span id="ed-wall-motion-sweep-unit" style="color:#aaa;font:10px monospace;display:none;">°</span>
+            <span id="ed-wall-motion-deg-label" style="color:#aaa;font:10px monospace;display:none;">°/tick</span>
+            <input id="ed-wall-motion-deg" type="number" min="1" max="180" step="1" value="30" style="width:55px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;display:none;">
+            <span id="ed-wall-motion-pause-label" style="color:#aaa;font:10px monospace;display:none;">Pause</span>
+            <input id="ed-wall-motion-pause" type="number" min="0" max="1" step="0.05" value="0.6" style="width:50px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;display:none;">
+            <span id="ed-wall-motion-rev-label" style="color:#aaa;font:10px monospace;display:none;">Reverse after</span>
+            <input id="ed-wall-motion-rev" type="number" min="0" max="32" step="1" value="0" style="width:50px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;display:none;">
+            <span id="ed-wall-motion-rev-unit" style="color:#aaa;font:10px monospace;display:none;">ticks</span>
+          </div>
+        </div>
+        <div id="ed-wall-motion-help" style="color:#666;font:9px monospace;">Rotates around the connected piece's bbox center. Test Play to see it animate.</div>
+        <div id="ed-wall-pivot-row" style="margin-top:4px;display:none;gap:6px;align-items:center;flex-wrap:wrap;">
+          <span style="color:#aaa;font:10px monospace;">Pivot</span>
+          <span id="ed-wall-pivot-status" style="color:#FFD740;font:9px monospace;">● Bbox center</span>
+          <button id="ed-wall-pivot-set" style="padding:2px 8px;cursor:pointer;background:rgba(255,215,64,0.15);border:1px solid rgba(255,215,64,0.4);color:#FFD740;font:10px monospace;border-radius:3px;">Set Pivot…</button>
+          <button id="ed-wall-pivot-reset" style="padding:2px 8px;cursor:pointer;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);color:#aaa;font:10px monospace;border-radius:3px;">Reset</button>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;margin-top:6px;padding-top:6px;border-top:1px dashed rgba(255,215,64,0.15);flex-wrap:wrap;">
+          <span style="color:#aaa;font:10px monospace;">Translate</span>
+          <select id="ed-wall-trans-type" style="padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <option value="none">None</option>
+            <option value="horizontal">Horizontal ↔</option>
+            <option value="vertical">Vertical ↕</option>
+            <option value="circle">Circle ◯</option>
+            <option value="square">Square ▢</option>
+          </select>
+          <div id="ed-wall-trans-params" style="display:none;gap:6px;align-items:center;flex-wrap:wrap;">
+            <span style="color:#aaa;font:10px monospace;">Beats/cycle</span>
+            <input id="ed-wall-trans-beats" type="number" min="0.25" max="32" step="0.25" value="4" style="width:50px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span id="ed-wall-trans-amp-label" style="color:#aaa;font:10px monospace;">Distance</span>
+            <input id="ed-wall-trans-amp" type="number" min="10" max="2000" step="10" value="80" style="width:60px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span style="color:#aaa;font:10px monospace;">px</span>
+            <span style="color:#aaa;font:10px monospace;">Dir</span>
+            <select id="ed-wall-trans-dir" style="padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+              <option value="1">+</option>
+              <option value="-1">−</option>
+            </select>
+            <span style="color:#aaa;font:10px monospace;">Phase</span>
+            <input id="ed-wall-trans-phase" type="number" min="0" max="32" step="0.25" value="0" style="width:50px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <label style="display:flex;align-items:center;gap:3px;cursor:pointer;">
+              <input id="ed-wall-trans-ticked" type="checkbox">
+              <span style="color:#aaa;font:10px monospace;">Ticked</span>
+            </label>
+            <span id="ed-wall-trans-pause-label" style="color:#aaa;font:10px monospace;display:none;">Pause</span>
+            <input id="ed-wall-trans-pause" type="number" min="0" max="1" step="0.05" value="0.6" style="width:50px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;display:none;">
+            <span id="ed-wall-trans-count-label" style="color:#aaa;font:10px monospace;display:none;">Stops</span>
+            <input id="ed-wall-trans-count" type="number" min="2" max="32" step="1" value="2" style="width:50px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;display:none;">
+          </div>
+        </div>
+        <div id="ed-wall-trans-help" style="color:#666;font:9px monospace;"></div>
+        <div style="display:flex;gap:6px;align-items:center;margin-top:6px;padding-top:6px;border-top:1px dashed rgba(255,215,64,0.15);flex-wrap:wrap;">
+          <span style="color:#aaa;font:10px monospace;">Spring</span>
+          <select id="ed-wall-spring-type" style="padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <option value="none">None</option>
+            <option value="on">Active</option>
+          </select>
+          <div id="ed-wall-spring-params" style="display:none;gap:6px;align-items:center;flex-wrap:wrap;width:100%;">
+            <span style="color:#aaa;font:10px monospace;">Fires every</span>
+            <input id="ed-wall-spring-beats" type="number" min="0.25" max="32" step="0.25" value="2" style="width:55px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span style="color:#aaa;font:10px monospace;">beat(s)</span>
+            <span style="color:#aaa;font:10px monospace;margin-left:8px;">Offset</span>
+            <input id="ed-wall-spring-phase" type="number" min="0" max="32" step="0.25" value="0" style="width:55px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span style="color:#aaa;font:10px monospace;">beats</span>
+            <span style="color:#aaa;font:10px monospace;margin-left:8px;">Strength</span>
+            <input id="ed-wall-spring-strength" type="number" min="50" max="2500" step="50" value="600" style="width:60px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <div style="color:#666;font:9px monospace;width:100%;line-height:1.4;">
+              <b>Fires every N beats</b> (e.g. <code>1</code>=every beat, <code>2</code>=every other beat, <code>0.5</code>=every half-beat).<br>
+              <b>Offset</b> shifts when the first fire happens. Set <code>1</code> with offset <code>0.5</code> to fire on the <i>off</i>-beat.<br>
+              <b>Strength</b> = launch impulse in px/s (200=gentle, 600=strong, 1500=catapult).
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;padding:5px;background:rgba(180,140,255,0.05);border:1px solid rgba(180,140,255,0.18);border-radius:3px;flex-wrap:wrap;">
+        <span style="color:#aaa;font:10px monospace;">Prefab</span>
+        <button id="ed-ch-prefab-save" style="padding:4px 8px;cursor:pointer;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);color:#B39DDB;font:10px monospace;border-radius:3px;">Save Selected Group</button>
+        <button id="ed-ch-prefab-cancel" style="padding:4px 8px;cursor:pointer;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.15);color:#888;font:10px monospace;border-radius:3px;display:none;">Cancel placement</button>
+        <div id="ed-ch-prefab-list" style="display:flex;flex-wrap:wrap;gap:4px;flex:1;min-width:100%;"></div>
+      </div>
       <div style="display:flex;gap:4px;margin-bottom:6px;">
         <button id="ed-ch-clear" style="flex:1;padding:5px;cursor:pointer;background:rgba(255,80,80,0.1);border:1px solid rgba(255,80,80,0.2);color:#FF5252;font:10px monospace;border-radius:3px;">Clear All</button>
         <button id="ed-ch-del-selected" style="flex:1;padding:5px;cursor:pointer;background:rgba(255,80,80,0.1);border:1px solid rgba(255,80,80,0.2);color:#FF5252;font:10px monospace;border-radius:3px;">Delete Selected</button>
@@ -501,7 +632,7 @@ export function initDesigner(): void {
   })
 
   // Collapsible upgrade section
-  let upgradeSectionExpanded = true
+  let upgradeSectionExpanded = false
   const upgradeBody = panel.querySelector('#ed-upgrade-body') as HTMLDivElement
   const upgradeToggle = panel.querySelector('#ed-upgrade-toggle') as HTMLSpanElement
   panel.querySelector('#ed-upgrade-header')!.addEventListener('click', () => {
@@ -543,6 +674,7 @@ export function initDesigner(): void {
           ChallengeBuilder.setPlaceMode(type.name)
         }
         rebuildChTypeButtons()
+        refreshToolButtons()
       })
       chTypesDiv.appendChild(btn)
     }
@@ -642,15 +774,555 @@ export function initDesigner(): void {
     testPlayCallback?.()
   })
 
+  // ── Wall / Pillar tool wiring ────────────────────────────────────────────
+  const wallBtn = panel.querySelector('#ed-ch-tool-wall') as HTMLButtonElement
+  const pillarBtn = panel.querySelector('#ed-ch-tool-pillar') as HTMLButtonElement
+  const thickSlider = panel.querySelector('#ed-ch-wall-thick') as HTMLInputElement
+  const thickVal = panel.querySelector('#ed-ch-wall-thick-val') as HTMLSpanElement
+  const wallsClearBtn = panel.querySelector('#ed-ch-walls-clear') as HTMLButtonElement
+  const toolHint = panel.querySelector('#ed-ch-tool-hint') as HTMLDivElement
+  function refreshToolButtons(): void {
+    const tool = ChallengeBuilder.getPlaceTool()
+    const activeBg = 'rgba(128,216,255,0.25)'
+    const activeBd = 'rgba(128,216,255,0.55)'
+    const inactiveBg = 'rgba(255,255,255,0.05)'
+    const inactiveBd = 'rgba(255,255,255,0.15)'
+    wallBtn.style.background = tool === 'wall' ? activeBg : inactiveBg
+    wallBtn.style.borderColor = tool === 'wall' ? activeBd : inactiveBd
+    pillarBtn.style.background = tool === 'pillar' ? activeBg : inactiveBg
+    pillarBtn.style.borderColor = tool === 'pillar' ? activeBd : inactiveBd
+    if (tool === 'wall') {
+      if (ChallengeBuilder.getPlacingPrefab()) {
+        toolHint.textContent = `PREFAB: click to drop "${ChallengeBuilder.getPlacingPrefab()!.name}". Scroll = rotate 5° (Shift+scroll = 45°). R = snap 90° CW (Shift+R = CCW). Esc to exit.`
+      } else {
+        toolHint.textContent = 'WALL: click+drag empty to draw (Shift = 15° snap). Click a wall = select. Drag SELECTED body = move whole piece. Yellow handles = reshape endpoint. CYAN diamond = bend. Scroll = rotate selected group 5° (Shift+scroll = 45°). R / Shift+R = snap 90°. Z = zoom out & freeze walls. Delete removes selected. Right-click deletes. Save selected group as prefab below.'
+      }
+    }
+    else if (tool === 'pillar') toolHint.textContent = 'PILLAR: single click to place. Right-click any wall/enemy to delete.'
+    else if (tool === 'enemy') toolHint.textContent = `ENEMY: click to place ${ChallengeBuilder.getPlaceTypeName()}. Right-click any wall/enemy to delete.`
+    else toolHint.textContent = 'Pick an enemy type, Wall, or Pillar above. Right-click any wall/enemy to delete.'
+  }
+  wallBtn.addEventListener('click', () => {
+    const tool = ChallengeBuilder.getPlaceTool()
+    ChallengeBuilder.setPlaceTool(tool === 'wall' ? 'none' : 'wall')
+    rebuildChTypeButtons()
+    refreshToolButtons()
+  })
+  pillarBtn.addEventListener('click', () => {
+    const tool = ChallengeBuilder.getPlaceTool()
+    ChallengeBuilder.setPlaceTool(tool === 'pillar' ? 'none' : 'pillar')
+    rebuildChTypeButtons()
+    refreshToolButtons()
+  })
+  thickSlider.addEventListener('input', () => {
+    const v = parseInt(thickSlider.value)
+    ChallengeBuilder.setWallThickness(v)
+    thickVal.textContent = String(v)
+  })
+  wallsClearBtn.addEventListener('click', () => {
+    if (ChallengeBuilder.getPlacingWalls().length === 0) return
+    if (confirm('Clear all walls from this challenge?')) ChallengeBuilder.clearWalls()
+  })
+
+  // ── Wall Properties panel (selected-wall editor) ──
+  const wallPropsDiv = panel.querySelector('#ed-wall-props') as HTMLDivElement
+  const propThickInput = panel.querySelector('#ed-wall-prop-thick') as HTMLInputElement
+  const propThickVal = panel.querySelector('#ed-wall-prop-thick-val') as HTMLSpanElement
+  propThickInput.addEventListener('input', () => {
+    const v = parseInt(propThickInput.value) || 16
+    propThickVal.textContent = String(v)
+    ChallengeBuilder.setSelectedWallRadius(v)
+  })
+  const propNoClipInput = panel.querySelector('#ed-wall-prop-noclip') as HTMLInputElement
+  propNoClipInput.addEventListener('change', () => {
+    ChallengeBuilder.setSelectedWallNoClip(propNoClipInput.checked)
+  })
+  const motionTypeSel = panel.querySelector('#ed-wall-motion-type') as HTMLSelectElement
+  const motionRotateParams = panel.querySelector('#ed-wall-motion-rotate-params') as HTMLDivElement
+  const motionBeatsInput = panel.querySelector('#ed-wall-motion-beats') as HTMLInputElement
+  const motionDirSel = panel.querySelector('#ed-wall-motion-dir') as HTMLSelectElement
+  const motionPhaseInput = panel.querySelector('#ed-wall-motion-phase') as HTMLInputElement
+  const motionSweepLabel = panel.querySelector('#ed-wall-motion-sweep-label') as HTMLSpanElement
+  const motionSweepInput = panel.querySelector('#ed-wall-motion-sweep') as HTMLInputElement
+  const motionSweepUnit = panel.querySelector('#ed-wall-motion-sweep-unit') as HTMLSpanElement
+  const motionDegLabel = panel.querySelector('#ed-wall-motion-deg-label') as HTMLSpanElement
+  const motionDegInput = panel.querySelector('#ed-wall-motion-deg') as HTMLInputElement
+  const motionPauseLabel = panel.querySelector('#ed-wall-motion-pause-label') as HTMLSpanElement
+  const motionPauseInput = panel.querySelector('#ed-wall-motion-pause') as HTMLInputElement
+  const motionRevLabel = panel.querySelector('#ed-wall-motion-rev-label') as HTMLSpanElement
+  const motionRevInput = panel.querySelector('#ed-wall-motion-rev') as HTMLInputElement
+  const motionRevUnit = panel.querySelector('#ed-wall-motion-rev-unit') as HTMLSpanElement
+  const motionHelpDiv = panel.querySelector('#ed-wall-motion-help') as HTMLDivElement
+  const pivotRow = panel.querySelector('#ed-wall-pivot-row') as HTMLDivElement
+  const pivotStatus = panel.querySelector('#ed-wall-pivot-status') as HTMLSpanElement
+  const pivotSetBtn = panel.querySelector('#ed-wall-pivot-set') as HTMLButtonElement
+  const pivotResetBtn = panel.querySelector('#ed-wall-pivot-reset') as HTMLButtonElement
+  pivotSetBtn.addEventListener('click', () => {
+    if (ChallengeBuilder.isPivotSetMode()) {
+      ChallengeBuilder.exitPivotSetMode()
+    } else {
+      ChallengeBuilder.enterPivotSetMode()
+    }
+    refreshWallProps()
+  })
+  pivotResetBtn.addEventListener('click', () => {
+    ChallengeBuilder.resetSelectedWallPivot()
+    refreshWallProps()
+  })
+  // ── Translation panel wiring ──
+  const transTypeSel = panel.querySelector('#ed-wall-trans-type') as HTMLSelectElement
+  const transParams = panel.querySelector('#ed-wall-trans-params') as HTMLDivElement
+  const transBeatsInput = panel.querySelector('#ed-wall-trans-beats') as HTMLInputElement
+  const transAmpLabel = panel.querySelector('#ed-wall-trans-amp-label') as HTMLSpanElement
+  const transAmpInput = panel.querySelector('#ed-wall-trans-amp') as HTMLInputElement
+  const transDirSel = panel.querySelector('#ed-wall-trans-dir') as HTMLSelectElement
+  const transPhaseInput = panel.querySelector('#ed-wall-trans-phase') as HTMLInputElement
+  const transTickedInput = panel.querySelector('#ed-wall-trans-ticked') as HTMLInputElement
+  const transPauseLabel = panel.querySelector('#ed-wall-trans-pause-label') as HTMLSpanElement
+  const transPauseInput = panel.querySelector('#ed-wall-trans-pause') as HTMLInputElement
+  const transCountLabel = panel.querySelector('#ed-wall-trans-count-label') as HTMLSpanElement
+  const transCountInput = panel.querySelector('#ed-wall-trans-count') as HTMLInputElement
+  const transHelpDiv = panel.querySelector('#ed-wall-trans-help') as HTMLDivElement
+  function updateTransAmpLabel(): void {
+    const t = transTypeSel.value
+    if (t === 'circle') transAmpLabel.textContent = 'Radius'
+    else if (t === 'square') transAmpLabel.textContent = 'Side ½'
+    else transAmpLabel.textContent = 'Distance'
+  }
+  function updateTransPauseVisibility(): void {
+    const show = transTickedInput.checked
+    transPauseLabel.style.display = show ? '' : 'none'
+    transPauseInput.style.display = show ? '' : 'none'
+    transCountLabel.style.display = show ? '' : 'none'
+    transCountInput.style.display = show ? '' : 'none'
+    // For linear types the stops count MUST be even — clamp display to next even number.
+    const tType = transTypeSel.value
+    if (show && (tType === 'horizontal' || tType === 'vertical')) {
+      transCountInput.step = '2'
+      transCountInput.min = '2'
+      const v = parseInt(transCountInput.value)
+      if (Number.isFinite(v) && v % 2 !== 0) transCountInput.value = String(v + 1)
+    } else {
+      transCountInput.step = '1'
+      transCountInput.min = tType === 'square' ? '4' : '2'
+    }
+  }
+  function updateTransHelp(): void {
+    const t = transTypeSel.value
+    if (t === 'none') { transHelpDiv.textContent = ''; return }
+    const beats = parseFloat(transBeatsInput.value) || 4
+    const amp = parseFloat(transAmpInput.value) || 80
+    const ticked = transTickedInput.checked
+    const count = parseInt(transCountInput.value) || 2
+    if (ticked) {
+      if (t === 'horizontal' || t === 'vertical') {
+        const half = Math.floor(count / 2)
+        const axis = t === 'horizontal' ? 'horizontally' : 'vertically'
+        transHelpDiv.textContent = `Patrols ±${amp}px ${axis} in ${count} ticks (${half} out, ${half} back) every ${beats} beat(s).`
+      } else if (t === 'circle') {
+        transHelpDiv.textContent = `Orbits in a circle of radius ${amp}px with ${count} ticked stops every ${beats} beat(s). Returns to rest position once per cycle.`
+      } else if (t === 'square') {
+        const perSide = count / 4
+        const sideStr = Number.isInteger(perSide) ? `${perSide} stop(s) per side` : `${count} stops total`
+        transHelpDiv.textContent = `Walks a square of side ${amp}px in ${count} ticks (${sideStr}), 1 lap every ${beats} beat(s).`
+      }
+    } else {
+      if (t === 'horizontal') transHelpDiv.textContent = `Patrols ±${amp}px horizontally smoothly every ${beats} beat(s).`
+      else if (t === 'vertical') transHelpDiv.textContent = `Patrols ±${amp}px vertically smoothly every ${beats} beat(s).`
+      else if (t === 'circle') transHelpDiv.textContent = `Orbits in a circle of radius ${amp}px smoothly every ${beats} beat(s). Passes through rest position once per cycle.`
+      else if (t === 'square') transHelpDiv.textContent = `Walks a square path of side ${amp}px smoothly (continuous perimeter), 1 lap every ${beats} beat(s).`
+    }
+  }
+  function pushTransChange(): void {
+    const t = transTypeSel.value
+    if (t === 'none') { ChallengeBuilder.setSelectedWallTranslation(undefined); return }
+    const beats = parseFloat(transBeatsInput.value)
+    const amp = parseFloat(transAmpInput.value)
+    const phase = parseFloat(transPhaseInput.value)
+    const pause = parseFloat(transPauseInput.value)
+    if (!Number.isFinite(beats) || beats <= 0) return
+    if (!Number.isFinite(amp) || amp <= 0) return
+    if (!Number.isFinite(phase)) return
+    if (!Number.isFinite(pause)) return
+    const tickCountRaw = parseInt(transCountInput.value)
+    let tickCount: number | undefined
+    if (Number.isFinite(tickCountRaw) && tickCountRaw >= 2) {
+      tickCount = tickCountRaw
+      // Linear types require even — round up
+      if ((t === 'horizontal' || t === 'vertical') && tickCount % 2 !== 0) tickCount++
+      if (t === 'square' && tickCount < 4) tickCount = 4
+    }
+    ChallengeBuilder.setSelectedWallTranslation({
+      type: t as 'horizontal' | 'vertical' | 'circle' | 'square',
+      beatsPerCycle: beats,
+      amplitude: amp,
+      direction: parseInt(transDirSel.value) === -1 ? -1 : 1,
+      phaseBeats: phase,
+      ticked: transTickedInput.checked,
+      pauseFraction: Math.max(0, Math.min(1, pause)),
+      ...(tickCount != null ? { tickCount } : {}),
+    })
+    updateTransHelp()
+  }
+  transTypeSel.addEventListener('change', () => {
+    if (transTypeSel.value === 'none') {
+      transParams.style.display = 'none'
+      ChallengeBuilder.setSelectedWallTranslation(undefined)
+    } else {
+      transParams.style.display = 'flex'
+      updateTransAmpLabel()
+      pushTransChange()
+    }
+    updateTransHelp()
+  })
+  transBeatsInput.addEventListener('input', pushTransChange)
+  transAmpInput.addEventListener('input', pushTransChange)
+  transDirSel.addEventListener('change', pushTransChange)
+  transPhaseInput.addEventListener('input', pushTransChange)
+  transTickedInput.addEventListener('change', () => { updateTransPauseVisibility(); pushTransChange() })
+  transPauseInput.addEventListener('input', pushTransChange)
+  transCountInput.addEventListener('input', pushTransChange)
+  function refreshTransRow(): void {
+    const tr = ChallengeBuilder.getSelectedWallTranslation()
+    if (!tr) {
+      transTypeSel.value = 'none'
+      transParams.style.display = 'none'
+      updateTransHelp()
+      return
+    }
+    transTypeSel.value = tr.type
+    transParams.style.display = 'flex'
+    transBeatsInput.value = String(tr.beatsPerCycle ?? 4)
+    transAmpInput.value = String(tr.amplitude ?? 80)
+    transDirSel.value = String(tr.direction ?? 1)
+    transPhaseInput.value = String(tr.phaseBeats ?? 0)
+    transTickedInput.checked = !!tr.ticked
+    transPauseInput.value = String(tr.pauseFraction ?? 0.6)
+    // Default tickCount per type: linear 2, circle 4, square 4
+    const defaultCount = tr.type === 'square' ? 4 : tr.type === 'circle' ? 4 : 2
+    transCountInput.value = String(tr.tickCount ?? defaultCount)
+    updateTransAmpLabel()
+    updateTransPauseVisibility()
+    updateTransHelp()
+  }
+
+  function updatePivotRow(): void {
+    const motion = ChallengeBuilder.getSelectedWallMotion()
+    const isMoving = motion?.type === 'rotate' || motion?.type === 'pendulum' || motion?.type === 'tick'
+    pivotRow.style.display = isMoving ? 'flex' : 'none'
+    if (!isMoving) return
+    const pivot = ChallengeBuilder.getSelectedWallPivotWorld()
+    const offX = pivot?.offset.x ?? 0
+    const offY = pivot?.offset.y ?? 0
+    const atCenter = Math.abs(offX) < 0.5 && Math.abs(offY) < 0.5
+    pivotStatus.textContent = atCenter
+      ? '● Bbox center'
+      : `● Off-center (${offX.toFixed(0)}, ${offY.toFixed(0)})`
+    pivotStatus.style.color = atCenter ? '#888' : '#FFD740'
+    pivotSetBtn.textContent = ChallengeBuilder.isPivotSetMode() ? 'Click arena…' : 'Set Pivot…'
+    pivotSetBtn.style.background = ChallengeBuilder.isPivotSetMode() ? 'rgba(255,215,64,0.35)' : 'rgba(255,215,64,0.15)'
+  }
+  function setSweepFieldsVisible(visible: boolean): void {
+    const d = visible ? '' : 'none'
+    motionSweepLabel.style.display = d
+    motionSweepInput.style.display = d
+    motionSweepUnit.style.display = d
+  }
+  function setTickFieldsVisible(visible: boolean): void {
+    const d = visible ? '' : 'none'
+    motionDegLabel.style.display = d
+    motionDegInput.style.display = d
+    motionPauseLabel.style.display = d
+    motionPauseInput.style.display = d
+    motionRevLabel.style.display = d
+    motionRevInput.style.display = d
+    motionRevUnit.style.display = d
+  }
+  function updateMotionHelp(): void {
+    const t = motionTypeSel.value
+    if (t === 'rotate') {
+      motionHelpDiv.textContent = 'Spins continuously around the connected piece\'s bbox center. Test Play to see it animate.'
+    } else if (t === 'pendulum') {
+      const sweep = parseFloat(motionSweepInput.value) || 90
+      motionHelpDiv.textContent = `Swings ±${(sweep / 2).toFixed(0)}° around the bbox center, slowing at the turnarounds. One full A→B→A swing per cycle.`
+    } else if (t === 'tick') {
+      const deg = parseFloat(motionDegInput.value) || 30
+      const beats = parseFloat(motionBeatsInput.value) || 1
+      const rev = parseInt(motionRevInput.value) || 0
+      if (rev > 0) {
+        motionHelpDiv.textContent = `Steps ${deg}° every ${beats} beat(s), then reverses after ${rev} tick(s). Covers ±${(deg * rev).toFixed(0)}° each way before swinging back.`
+      } else {
+        motionHelpDiv.textContent = `Steps ${deg}° every ${beats} beat(s), always the same direction (clock-style). Full rotation in ${(360 / deg * beats).toFixed(1)} beats.`
+      }
+    } else {
+      motionHelpDiv.textContent = 'Pick Rotate, Pendulum, or Tick to animate this wall group on the beat.'
+    }
+  }
+  const springTypeSel = panel.querySelector('#ed-wall-spring-type') as HTMLSelectElement
+  const springParams = panel.querySelector('#ed-wall-spring-params') as HTMLDivElement
+  const springBeatsInput = panel.querySelector('#ed-wall-spring-beats') as HTMLInputElement
+  const springPhaseInput = panel.querySelector('#ed-wall-spring-phase') as HTMLInputElement
+  const springStrengthInput = panel.querySelector('#ed-wall-spring-strength') as HTMLInputElement
+  // Re-read & repopulate the panel from current selection state. Called whenever selection
+  // changes, motion changes, or initial setup.
+  function refreshWallProps(): void {
+    const selIdx = ChallengeBuilder.getSelectedWallIdx()
+    if (selIdx < 0) { wallPropsDiv.style.display = 'none'; return }
+    wallPropsDiv.style.display = 'block'
+    const curR = ChallengeBuilder.getSelectedWallRadius()
+    if (curR != null) {
+      propThickInput.value = String(curR)
+      propThickVal.textContent = String(curR)
+    }
+    propNoClipInput.checked = ChallengeBuilder.getSelectedWallNoClip()
+    const motion = ChallengeBuilder.getSelectedWallMotion()
+    if (!motion) {
+      motionTypeSel.value = 'none'
+      motionRotateParams.style.display = 'none'
+      setSweepFieldsVisible(false)
+    } else if (motion.type === 'rotate') {
+      motionTypeSel.value = 'rotate'
+      motionRotateParams.style.display = 'flex'
+      motionBeatsInput.value = String(motion.beatsPerCycle ?? 4)
+      motionDirSel.value = String(motion.direction ?? 1)
+      motionPhaseInput.value = String(motion.phaseBeats ?? 0)
+      setSweepFieldsVisible(false)
+      setTickFieldsVisible(false)
+    } else if (motion.type === 'pendulum') {
+      motionTypeSel.value = 'pendulum'
+      motionRotateParams.style.display = 'flex'
+      motionBeatsInput.value = String(motion.beatsPerCycle ?? 4)
+      motionDirSel.value = String(motion.direction ?? 1)
+      motionPhaseInput.value = String(motion.phaseBeats ?? 0)
+      motionSweepInput.value = String(motion.sweepDegrees ?? 90)
+      setSweepFieldsVisible(true)
+      setTickFieldsVisible(false)
+    } else if (motion.type === 'tick') {
+      motionTypeSel.value = 'tick'
+      motionRotateParams.style.display = 'flex'
+      // For tick, "Beats/cycle" doubles as beats-per-tick. Phase and direction reused.
+      motionBeatsInput.value = String(motion.beatsPerTick ?? 1)
+      motionDirSel.value = String(motion.direction ?? 1)
+      motionPhaseInput.value = String(motion.phaseBeats ?? 0)
+      motionDegInput.value = String(motion.degreesPerTick ?? 30)
+      motionPauseInput.value = String(motion.pauseFraction ?? 0.6)
+      motionRevInput.value = String(motion.ticksBeforeReverse ?? 0)
+      setSweepFieldsVisible(false)
+      setTickFieldsVisible(true)
+    }
+    updateMotionHelp()
+    updatePivotRow()
+    refreshTransRow()
+    const spring = ChallengeBuilder.getSelectedWallSpring()
+    if (!spring) {
+      springTypeSel.value = 'none'
+      springParams.style.display = 'none'
+    } else {
+      springTypeSel.value = 'on'
+      springParams.style.display = 'flex'
+      springBeatsInput.value = String(spring.beatsPerCycle)
+      springPhaseInput.value = String(spring.phase)
+      springStrengthInput.value = String(spring.strength)
+    }
+  }
+  motionTypeSel.addEventListener('change', () => {
+    if (motionTypeSel.value === 'none') {
+      ChallengeBuilder.setSelectedWallMotion(undefined)
+    } else if (motionTypeSel.value === 'rotate') {
+      ChallengeBuilder.setSelectedWallMotion({
+        type: 'rotate',
+        beatsPerCycle: parseFloat(motionBeatsInput.value) || 4,
+        direction: parseInt(motionDirSel.value) === -1 ? -1 : 1,
+        phaseBeats: parseFloat(motionPhaseInput.value) || 0,
+      })
+    } else if (motionTypeSel.value === 'pendulum') {
+      ChallengeBuilder.setSelectedWallMotion({
+        type: 'pendulum',
+        beatsPerCycle: parseFloat(motionBeatsInput.value) || 4,
+        direction: parseInt(motionDirSel.value) === -1 ? -1 : 1,
+        phaseBeats: parseFloat(motionPhaseInput.value) || 0,
+        sweepDegrees: parseFloat(motionSweepInput.value) || 90,
+      })
+    } else if (motionTypeSel.value === 'tick') {
+      ChallengeBuilder.setSelectedWallMotion({
+        type: 'tick',
+        beatsPerTick: parseFloat(motionBeatsInput.value) || 1,
+        direction: parseInt(motionDirSel.value) === -1 ? -1 : 1,
+        phaseBeats: parseFloat(motionPhaseInput.value) || 0,
+        degreesPerTick: parseFloat(motionDegInput.value) || 30,
+        pauseFraction: parseFloat(motionPauseInput.value),
+        ticksBeforeReverse: parseInt(motionRevInput.value) || 0,
+      })
+    }
+    refreshWallProps()
+  })
+  function pushMotionChange(): void {
+    const t = motionTypeSel.value
+    if (t !== 'rotate' && t !== 'pendulum' && t !== 'tick') return
+    const bpc = parseFloat(motionBeatsInput.value)
+    const ph = parseFloat(motionPhaseInput.value)
+    if (!Number.isFinite(bpc) || bpc <= 0) return
+    if (!Number.isFinite(ph)) return
+    const dir = parseInt(motionDirSel.value) === -1 ? -1 : 1
+    if (t === 'rotate') {
+      ChallengeBuilder.setSelectedWallMotion({ type: 'rotate', beatsPerCycle: bpc, direction: dir, phaseBeats: ph })
+    } else if (t === 'pendulum') {
+      const sw = parseFloat(motionSweepInput.value)
+      if (!Number.isFinite(sw) || sw <= 0) return
+      ChallengeBuilder.setSelectedWallMotion({ type: 'pendulum', beatsPerCycle: bpc, direction: dir, phaseBeats: ph, sweepDegrees: sw })
+    } else {
+      // tick — beats input doubles as beatsPerTick
+      const deg = parseFloat(motionDegInput.value)
+      const pause = parseFloat(motionPauseInput.value)
+      const rev = parseInt(motionRevInput.value)
+      if (!Number.isFinite(deg) || deg <= 0) return
+      if (!Number.isFinite(pause)) return
+      if (!Number.isFinite(rev) || rev < 0) return
+      ChallengeBuilder.setSelectedWallMotion({
+        type: 'tick',
+        beatsPerTick: bpc,
+        direction: dir,
+        phaseBeats: ph,
+        degreesPerTick: deg,
+        pauseFraction: Math.max(0, Math.min(1, pause)),
+        ticksBeforeReverse: rev,
+      })
+    }
+    updateMotionHelp()
+  }
+  motionBeatsInput.addEventListener('input', pushMotionChange)
+  motionDirSel.addEventListener('change', pushMotionChange)
+  motionPhaseInput.addEventListener('input', pushMotionChange)
+  motionSweepInput.addEventListener('input', pushMotionChange)
+  motionDegInput.addEventListener('input', pushMotionChange)
+  motionPauseInput.addEventListener('input', pushMotionChange)
+  motionRevInput.addEventListener('input', pushMotionChange)
+  springTypeSel.addEventListener('change', () => {
+    if (springTypeSel.value === 'none') {
+      ChallengeBuilder.setSelectedWallSpring(undefined)
+    } else {
+      ChallengeBuilder.setSelectedWallSpring({
+        beatsPerCycle: parseFloat(springBeatsInput.value) || 2,
+        phase: parseFloat(springPhaseInput.value) || 0,
+        strength: parseFloat(springStrengthInput.value) || 600,
+      })
+    }
+    refreshWallProps()
+  })
+  function pushSpringChange(): void {
+    if (springTypeSel.value !== 'on') return
+    // Validate before pushing — empty/partial fields would otherwise push 0 or defaults
+    // and the interval refresh would overwrite the user's in-progress typing.
+    const bpc = parseFloat(springBeatsInput.value)
+    const ph = parseFloat(springPhaseInput.value)
+    const str = parseFloat(springStrengthInput.value)
+    if (!Number.isFinite(bpc) || bpc <= 0) return
+    if (!Number.isFinite(ph) || ph < 0) return
+    if (!Number.isFinite(str) || str <= 0) return
+    ChallengeBuilder.setSelectedWallSpring({ beatsPerCycle: bpc, phase: ph, strength: str })
+  }
+  springBeatsInput.addEventListener('input', pushSpringChange)
+  springPhaseInput.addEventListener('input', pushSpringChange)
+  springStrengthInput.addEventListener('input', pushSpringChange)
+  // Refresh panel ONLY when the selection actually changes. The previous "refresh every 100ms"
+  // approach overwrote inputs while the user was typing (e.g. typing "0.5" — the "0" got
+  // pushed to wall, refresh tick wrote it back as "0", killing the in-progress value).
+  let lastSelWallIdx = -2
+  setInterval(() => {
+    if (!visible || !chExpanded) return
+    const cur = ChallengeBuilder.getSelectedWallIdx()
+    if (cur !== lastSelWallIdx) {
+      lastSelWallIdx = cur
+      refreshWallProps()
+    }
+  }, 100)
+
+  // ── Prefab library ──
+  const prefabSaveBtn = panel.querySelector('#ed-ch-prefab-save') as HTMLButtonElement
+  const prefabCancelBtn = panel.querySelector('#ed-ch-prefab-cancel') as HTMLButtonElement
+  const prefabListDiv = panel.querySelector('#ed-ch-prefab-list') as HTMLDivElement
+  function rebuildPrefabList(): void {
+    const prefabs = ChallengeBuilder.getWallPrefabs()
+    const placing = ChallengeBuilder.getPlacingPrefab()
+    if (prefabs.length === 0) {
+      prefabListDiv.innerHTML = '<span style="color:#666;font:10px monospace;">No prefabs saved. Select a wall, click "Save Selected Group" to capture its connected piece.</span>'
+    } else {
+      prefabListDiv.innerHTML = prefabs.map(p => {
+        const active = placing?.name === p.name
+        const bg = active ? 'rgba(180,140,255,0.3)' : 'rgba(255,255,255,0.05)'
+        const bd = active ? 'rgba(180,140,255,0.55)' : 'rgba(255,255,255,0.15)'
+        return `<div style="display:flex;gap:0;align-items:stretch;">` +
+          `<button class="prefab-use" data-name="${p.name}" style="padding:3px 7px;cursor:pointer;background:${bg};border:1px solid ${bd};color:#B39DDB;font:10px monospace;border-radius:3px 0 0 3px;border-right:none;">${p.name} <span style="opacity:0.6;">(${p.walls.length})</span></button>` +
+          `<button class="prefab-del" data-name="${p.name}" style="padding:3px 5px;cursor:pointer;background:rgba(255,80,80,0.1);border:1px solid rgba(255,80,80,0.2);color:#FF5252;font:10px monospace;border-radius:0 3px 3px 0;">×</button>` +
+          `</div>`
+      }).join('')
+      prefabListDiv.querySelectorAll('.prefab-use').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const name = (btn as HTMLElement).dataset.name!
+          // Toggle: click active prefab again to cancel
+          if (ChallengeBuilder.getPlacingPrefab()?.name === name) {
+            ChallengeBuilder.stopPlacingPrefab()
+          } else {
+            ChallengeBuilder.startPlacingPrefab(name)
+          }
+          rebuildPrefabList()
+          refreshToolButtons()
+        })
+      })
+      prefabListDiv.querySelectorAll('.prefab-del').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const name = (btn as HTMLElement).dataset.name!
+          if (confirm(`Delete prefab "${name}"?`)) {
+            ChallengeBuilder.deleteWallPrefab(name)
+            rebuildPrefabList()
+            refreshToolButtons()
+          }
+        })
+      })
+    }
+    prefabCancelBtn.style.display = placing ? 'inline-block' : 'none'
+  }
+  prefabSaveBtn.addEventListener('click', () => {
+    if (ChallengeBuilder.getSelectedWallIdx() < 0) {
+      alert('Select a wall first — the prefab will capture its entire connected group.')
+      return
+    }
+    const name = prompt('Prefab name:')
+    if (!name) return
+    if (ChallengeBuilder.saveSelectedGroupAsPrefab(name)) {
+      rebuildPrefabList()
+    }
+  })
+  prefabCancelBtn.addEventListener('click', () => {
+    ChallengeBuilder.stopPlacingPrefab()
+    rebuildPrefabList()
+    refreshToolButtons()
+  })
+
   ChallengeBuilder.loadFromStorage()
   rebuildChTypeButtons()
   rebuildChPlacements()
   rebuildChList()
+  rebuildPrefabList()
+  refreshToolButtons()
 
   // Expose click handler for canvas placement
   challengeCanvasClick = (screenX: number, screenY: number) => {
     if (getPhase() !== 'designer') return false
     if (!chExpanded) return false
+    // Prefab placement (highest priority — supersedes wall tool drag behavior)
+    if (ChallengeBuilder.getPlacingPrefab()) {
+      ChallengeBuilder.dropPrefabAt(screenX, screenY)
+      return true
+    }
+    const tool = ChallengeBuilder.getPlaceTool()
+    // Pillar tool: single click places a pillar at the cursor.
+    if (tool === 'pillar') {
+      ChallengeBuilder.placePillar(screenX, screenY)
+      return true
+    }
+    // Wall tool: drag is handled via pointerdown/up. Click alone does nothing.
+    if (tool === 'wall') return true
     // If a ghost is currently being moved, click drops it (deselect — its position
     // already follows the cursor via mouse-move).
     if (ChallengeBuilder.getSelectedPlacement() >= 0) {
@@ -671,19 +1343,154 @@ export function initDesigner(): void {
     }
     return false
   }
-  challengeCanvasMouseMove = (screenX: number, screenY: number) => {
+  challengeCanvasMouseDown = (screenX: number, screenY: number, _shift = false) => {
+    if (getPhase() !== 'designer') return false
+    if (!chExpanded) return false
+    // Pivot-set mode — highest priority: click anywhere → place the pivot for the selected
+    // wall's group, exit mode. Right-click handler (separate) resets to bbox center.
+    if (ChallengeBuilder.isPivotSetMode()) {
+      ChallengeBuilder.consumePivotSetClick(screenX, screenY)
+      refreshWallProps()
+      return true
+    }
+    // Prefab placement is click-only (drop on mouse-up). Suppress dash on pointer-down but
+    // don't start a wall drag.
+    if (ChallengeBuilder.getPlacingPrefab()) return true
+    // Pillar tool: click is for placement (handled in challengeCanvasClick). Don't
+    // hijack with wall-selection — pillar placement needs an unmolested click event,
+    // including clicks on top of existing walls (a pillar dropped on a wall's snap point
+    // is the intended way to clip a pillar onto a line).
+    if (ChallengeBuilder.getPlaceTool() === 'pillar') return false
+    // Wall interaction always works regardless of place tool — selecting / re-shaping /
+    // moving an existing wall should never require activating the Wall tool first. The
+    // place tool only gates CREATING new walls below.
+    if (ChallengeBuilder.hitTestSelectedWallCurveHandle(screenX, screenY)) {
+      ChallengeBuilder.startBendDrag()
+      return true
+    }
+    const handle = ChallengeBuilder.hitTestSelectedWallHandle(screenX, screenY)
+    if (handle) {
+      ChallengeBuilder.startEndpointDrag(handle)
+      return true
+    }
+    const selIdx = ChallengeBuilder.getSelectedWallIdx()
+    if (selIdx >= 0 && ChallengeBuilder.hitTestSpecificWall(selIdx, screenX, screenY)) {
+      ChallengeBuilder.startMoveDrag(screenX, screenY)
+      return true
+    }
+    if (ChallengeBuilder.selectWallAtScreen(screenX, screenY)) {
+      return true
+    }
+    // No wall under cursor — only the Wall tool starts a NEW wall drag on empty space.
+    if (ChallengeBuilder.getPlaceTool() !== 'wall') return false
+    ChallengeBuilder.clearWallSelection()
+    ChallengeBuilder.startWallDrag(screenX, screenY)
+    return true
+  }
+  challengeCanvasMouseMove = (screenX: number, screenY: number, shift = false) => {
     if (ChallengeBuilder.getSelectedPlacement() >= 0) {
       ChallengeBuilder.moveSelectedPlacement(screenX, screenY)
     }
+    // Bend drag — projects cursor onto the chord-perpendicular and sets the wall's `bend`
+    if (ChallengeBuilder.getBendDrag()) {
+      ChallengeBuilder.updateBendDrag(screenX, screenY)
+      return
+    }
+    // Move-group drag — translates the selected wall's whole connected component
+    if (ChallengeBuilder.getMoveDrag()) {
+      ChallengeBuilder.updateMoveDrag(screenX, screenY)
+      return
+    }
+    // Endpoint drag of a selected wall — Shift locks angle from the OTHER endpoint
+    if (ChallengeBuilder.getEndpointDrag()) {
+      ChallengeBuilder.updateEndpointDrag(screenX, screenY, shift)
+      return
+    }
+    // New-wall drag preview — Shift locks angle from the drag start
+    if (ChallengeBuilder.getWallDrag()) {
+      ChallengeBuilder.updateWallDrag(screenX, screenY, shift)
+    }
+    // Track hovered enemy/wall for delete-overlay feedback (always in designer; right-click
+    // removes whichever is hovered — enemy takes priority over wall since it's the more
+    // specific hit-target).
+    if (getPhase() === 'designer') {
+      ChallengeBuilder.updateHover(screenX, screenY)
+      if (ChallengeBuilder.getPlacingPrefab()) ChallengeBuilder.updatePrefabCursor(screenX, screenY)
+    }
   }
   challengeCanvasMouseUp = () => {
-    // Deselect on mouse up (end drag)
+    if (ChallengeBuilder.getBendDrag()) {
+      ChallengeBuilder.endBendDrag()
+      return
+    }
+    if (ChallengeBuilder.getMoveDrag()) {
+      ChallengeBuilder.endMoveDrag()
+      return
+    }
+    if (ChallengeBuilder.getEndpointDrag()) {
+      ChallengeBuilder.endEndpointDrag()
+      return
+    }
+    if (ChallengeBuilder.getWallDrag()) ChallengeBuilder.endWallDrag()
   }
 
   window.addEventListener('keydown', e => {
     if (__DEV__ && e.key === 'Tab') {
       e.preventDefault()
       toggleDesigner()
+    }
+    // Esc — cancel prefab placement, in-progress wall drag, or clear wall selection
+    if (e.key === 'Escape') {
+      if (ChallengeBuilder.getPlacingPrefab()) {
+        ChallengeBuilder.stopPlacingPrefab()
+        e.preventDefault()
+        return
+      }
+      if (ChallengeBuilder.getWallDrag()) {
+        ChallengeBuilder.cancelWallDrag()
+        e.preventDefault()
+        return
+      }
+      if (ChallengeBuilder.getSelectedWallIdx() >= 0) {
+        ChallengeBuilder.clearWallSelection()
+        e.preventDefault()
+        return
+      }
+    }
+    // Delete/Backspace removes the currently selected wall (if one is selected)
+    if ((e.key === 'Delete' || e.key === 'Backspace') && ChallengeBuilder.getSelectedWallIdx() >= 0) {
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) return
+      ChallengeBuilder.deleteSelectedWall()
+      e.preventDefault()
+      return
+    }
+    // Z — toggle designer zoom-out (see whole arena + freeze wall motion for stable authoring).
+    // Also clears all ephemeral spawn-test enemies on toggle so the wide view is uncluttered.
+    if ((e.key === 'z' || e.key === 'Z') && getPhase() === 'designer') {
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) return
+      Renderer.toggleDesignerZoomOut()
+      clearDesignerEphemerals()
+      e.preventDefault()
+      return
+    }
+    // R — rotate prefab being placed (priority), or selected group, by 90°.
+    //   Shift+R = CCW. Designer mode + not typing in an input.
+    if ((e.key === 'r' || e.key === 'R') && getPhase() === 'designer') {
+      const target = e.target as HTMLElement | null
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT')) return
+      const ccw = e.shiftKey
+      if (ChallengeBuilder.getPlacingPrefab()) {
+        ChallengeBuilder.snapPrefabRotation90(ccw)
+        e.preventDefault()
+        return
+      }
+      if (ChallengeBuilder.getSelectedWallIdx() >= 0) {
+        ChallengeBuilder.rotateSelectedGroup(ccw ? -Math.PI / 2 : Math.PI / 2)
+        e.preventDefault()
+        return
+      }
     }
     // Delete/Backspace removes the currently selected placement
     if ((e.key === 'Delete' || e.key === 'Backspace') && ChallengeBuilder.getSelectedPlacement() >= 0) {
@@ -831,6 +1638,10 @@ function addEnemyForm(existing?: DesignedEnemy): void {
             <input id="ed-shrine-${id}" type="checkbox" ${existing?.isShrine ? 'checked' : ''}>
             <span style="color:#FFD740;font:11px monospace;">Shrine</span>
           </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+            <input id="ed-pusher-${id}" type="checkbox" ${existing?.pusher ? 'checked' : ''}>
+            <span style="color:#FFB74D;font:11px monospace;">Pusher</span>
+          </label>
         </div>
         <div id="ed-magnet-range-wrap-${id}" style="margin-top:6px;display:${existing?.magnet ? 'block' : 'none'};">
           <span style="color:#50B4FF;font:10px monospace;">Range: <span id="ed-magnet-range-val-${id}">${existing?.magnetRange ?? 200}</span></span>
@@ -848,6 +1659,13 @@ function addEnemyForm(existing?: DesignedEnemy): void {
           <div style="display:flex;gap:6px;">
             <div style="flex:1;"><span style="color:#FF5252;font:9px monospace;">Rings: <span id="ed-revenge-rings-val-${id}">${existing?.revengeRings ?? 4}</span></span><input id="ed-revenge-rings-${id}" type="range" min="1" max="8" step="1" value="${existing?.revengeRings ?? 4}" style="width:100%;"></div>
             <div style="flex:1;"><span style="color:#FF5252;font:9px monospace;">Range: <span id="ed-revenge-radius-val-${id}">${existing?.revengeRadius ?? 120}</span></span><input id="ed-revenge-radius-${id}" type="range" min="60" max="300" step="10" value="${existing?.revengeRadius ?? 120}" style="width:100%;"></div>
+          </div>
+        </div>
+        <div id="ed-pusher-wrap-${id}" style="margin-top:4px;display:${existing?.pusher ? 'block' : 'none'};">
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:80px;"><span style="color:#FFB74D;font:9px monospace;">Every <span id="ed-pusher-beats-val-${id}">${existing?.pusherBeats ?? 2}</span> beats</span><input id="ed-pusher-beats-${id}" type="range" min="0.25" max="16" step="0.25" value="${existing?.pusherBeats ?? 2}" style="width:100%;"></div>
+            <div style="flex:1;min-width:80px;"><span style="color:#FFB74D;font:9px monospace;">Offset <span id="ed-pusher-phase-val-${id}">${existing?.pusherPhase ?? 0}</span> beats</span><input id="ed-pusher-phase-${id}" type="range" min="0" max="16" step="0.25" value="${existing?.pusherPhase ?? 0}" style="width:100%;"></div>
+            <div style="flex:1;min-width:80px;"><span style="color:#FFB74D;font:9px monospace;">Strength <span id="ed-pusher-strength-val-${id}">${existing?.pusherStrength ?? 600}</span></span><input id="ed-pusher-strength-${id}" type="range" min="50" max="2500" step="50" value="${existing?.pusherStrength ?? 600}" style="width:100%;"></div>
           </div>
         </div>
         <div id="ed-dodge-wrap-${id}" style="margin-top:4px;display:${existing?.dodge ? 'block' : 'none'};">
@@ -1124,6 +1942,22 @@ function addEnemyForm(existing?: DesignedEnemy): void {
   })
   revengeRingsInput.addEventListener('input', () => { revengeRingsVal.textContent = revengeRingsInput.value })
   revengeRadiusInput.addEventListener('input', () => { revengeRadiusVal.textContent = revengeRadiusInput.value })
+  // Pusher trait wiring — same pattern as revenge (checkbox toggles visibility, sliders
+  // mirror their value into the label spans). Beat/phase/strength all live in pusher-wrap.
+  const pusherCheckbox = body.querySelector(`#ed-pusher-${id}`) as HTMLInputElement
+  const pusherWrap = body.querySelector(`#ed-pusher-wrap-${id}`) as HTMLDivElement
+  const pusherBeatsInput = body.querySelector(`#ed-pusher-beats-${id}`) as HTMLInputElement
+  const pusherBeatsVal = body.querySelector(`#ed-pusher-beats-val-${id}`) as HTMLSpanElement
+  const pusherPhaseInput = body.querySelector(`#ed-pusher-phase-${id}`) as HTMLInputElement
+  const pusherPhaseVal = body.querySelector(`#ed-pusher-phase-val-${id}`) as HTMLSpanElement
+  const pusherStrengthInput = body.querySelector(`#ed-pusher-strength-${id}`) as HTMLInputElement
+  const pusherStrengthVal = body.querySelector(`#ed-pusher-strength-val-${id}`) as HTMLSpanElement
+  pusherCheckbox.addEventListener('change', () => {
+    pusherWrap.style.display = pusherCheckbox.checked ? 'block' : 'none'
+  })
+  pusherBeatsInput.addEventListener('input', () => { pusherBeatsVal.textContent = pusherBeatsInput.value })
+  pusherPhaseInput.addEventListener('input', () => { pusherPhaseVal.textContent = pusherPhaseInput.value })
+  pusherStrengthInput.addEventListener('input', () => { pusherStrengthVal.textContent = pusherStrengthInput.value })
 
   // Dodge checkbox toggles sliders
   const dodgeCheckbox = body.querySelector(`#ed-dodge-${id}`) as HTMLInputElement
@@ -1377,6 +2211,10 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const revenge = (div.querySelector(`#ed-revenge-${id}`) as HTMLInputElement).checked
     const revengeRings = parseInt((div.querySelector(`#ed-revenge-rings-${id}`) as HTMLInputElement).value) || 4
     const revengeRadius = parseInt((div.querySelector(`#ed-revenge-radius-${id}`) as HTMLInputElement).value) || 120
+    const pusher = (div.querySelector(`#ed-pusher-${id}`) as HTMLInputElement).checked
+    const pusherBeats = parseFloat((div.querySelector(`#ed-pusher-beats-${id}`) as HTMLInputElement).value) || 2
+    const pusherPhase = parseFloat((div.querySelector(`#ed-pusher-phase-${id}`) as HTMLInputElement).value) || 0
+    const pusherStrength = parseInt((div.querySelector(`#ed-pusher-strength-${id}`) as HTMLInputElement).value) || 600
     const dodge = (div.querySelector(`#ed-dodge-${id}`) as HTMLInputElement).checked
     const dodgeCharges = parseInt((div.querySelector(`#ed-dodge-charges-${id}`) as HTMLInputElement).value) || 2
     const dodgeChargeTime = parseFloat((div.querySelector(`#ed-dodge-cd-${id}`) as HTMLInputElement).value) || 1.5
@@ -1419,7 +2257,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
     const finalHp = isShrine && shrinePhases.length > 0 ? shrinePhases.length : hp
-    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, dodge, dodgeCharges, dodgeChargeTime, dodgeDistance, dodgeSpeed, shield, shieldRechargeTime, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
+    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, pusher, pusherBeats, pusherPhase, pusherStrength, dodge, dodgeCharges, dodgeChargeTime, dodgeDistance, dodgeSpeed, shield, shieldRechargeTime, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
   }
 
 
@@ -1487,12 +2325,17 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     }).catch(() => {})
   })
 
-  // Spawn
+  // Spawn — matches the spawn-test strip behavior (500-700px ring around the player)
   div.querySelector(`#ed-spawn-${id}`)!.addEventListener('click', () => {
     const designed = readForm()
     if (!ENEMY_TYPES.find(t => t.name === designed.name)) ENEMY_TYPES.push(designed)
     const player = getPlayer()
-    const pos = getSpawnPos(player.x, player.y)
+    const angle = Math.random() * Math.PI * 2
+    const dist = 500 + Math.random() * 200
+    const sx = player.x + Math.cos(angle) * dist
+    const sy = player.y + Math.sin(angle) * dist
+    const radius = (designed as any).radius ?? 40
+    const pos = findClearSpawnPos(sx, sy, radius, getEnemies(), player)
     getEnemies().push(createEnemy(pos.x, pos.y, designed))
   })
 }

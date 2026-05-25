@@ -37,6 +37,10 @@ export interface EnemyType {
   revenge?: boolean                 // fires rings on next beat after being hit
   revengeRings?: number             // how many rings fire (default: 4)
   revengeRadius?: number            // ring attack radius (default: 120)
+  pusher?: boolean                  // pulses on-beat, kinematically shoves nearby entities (no damage)
+  pusherBeats?: number              // cycle length in beats between fires (default: 2)
+  pusherPhase?: number              // beat offset for the fire moment (default: 0)
+  pusherStrength?: number           // launch velocity in px/s (default: 600) — same units as wall springs
   dodge?: boolean                   // intelligently dodges player rings via charged sidesteps
   dodgeCharges?: number             // number of dodge orbs (default: 2)
   dodgeChargeTime?: number          // seconds to recharge one slot (default: 1.5)

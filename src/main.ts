@@ -8,16 +8,16 @@ import { ENEMY_TYPES } from './entities/EnemyTypes.ts'
 import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameState, getRunFinalTime, enterDesigner, exitDesigner, getDesignerReturnPhase, setDesignerPrevArenaShape, getDesignerPrevArenaShape, setInDesignerTestPlay, isInDesignerTestPlay, getCamera } from './core/GameState.ts'
 import { update, render, clearDesignerEphemerals } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
-import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, onStartChallenge, onTestPlay } from './game/EnemyDesigner.ts'
+import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, challengeCanvasMouseDown, challengeCanvasMouseUp, onStartChallenge, onTestPlay } from './game/EnemyDesigner.ts'
 import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd, startIrisTransition, startIrisOpen, isIrisActive, cycleProTip, getCsSelectedIndex, setCsSelectedIndex, navigateChallenge, showToast, isPortalClick, resetVictoryScroll } from './render/Renderer.ts'
 import { setVolume } from './audio/AudioEngine.ts'
 import { submitScore, isNameClean, fetchOnlineScores } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
-import { setArenaShape, getArenaShape, clampToArena } from './game/Arena.ts'
+import { setArenaShape, getArenaShape, clampToArena, setWalls } from './game/Arena.ts'
 import type { ArenaShape } from './game/Arena.ts'
 import { setPattern, getPattern } from './audio/PatternClock.ts'
 import { SONG_DEFAULT } from './audio/SongPatterns.ts'
-import { getSpawnPos } from './game/Arena.ts'
+import { getSpawnPos, getPerimeterSpawnPos, findClearSpawnPos } from './game/Arena.ts'
 import { spawnOrb } from './entities/XPOrb.ts'
 import { handleUpgradeClick, handleUpgradeHover } from './game/UpgradeScreen.ts'
 import { handleShopClick, handleShopHover, closeShop } from './game/ShopScreen.ts'
@@ -134,6 +134,7 @@ function launchChallenge(ch: Challenge): void {
   resetGameState()
   resetVictoryScroll()
   setArenaShape(ch.arenaShape as any)
+  setWalls((ch.walls ?? []).map(w => ({ ...w })))
   console.log('Launch challenge:', ch.name, 'enemies:', ch.enemies.map(e => e.typeName), 'ENEMY_TYPES:', ENEMY_TYPES.map(t => t.name))
   for (const ce of ch.enemies) {
     const type = ENEMY_TYPES.find(t => t.name === ce.typeName)
@@ -165,6 +166,7 @@ function restartChallenge(): void {
   challengeRetries++
   resetGameState()
   setArenaShape(lastChallenge.arenaShape as any)
+  setWalls((lastChallenge.walls ?? []).map(w => ({ ...w })))
   for (const ce of lastChallenge.enemies) {
     const type = ENEMY_TYPES.find(t => t.name === ce.typeName)
     if (type) getEnemies().push(createEnemy(ce.x, ce.y, type))
@@ -213,7 +215,14 @@ onStartChallenge((ch: Challenge) => {
 // ── Spawn enemies ──
 function spawnEnemy(type: typeof ENEMY_TYPES[number]): void {
   const player = getPlayer()
-  const pos = getSpawnPos(player.x, player.y)
+  // Moderate ring spawn 500-700px from player (matches the workshop "Spawn-Test" strip).
+  // Comfortable middle distance — not on top of the player, not all the way to the edge.
+  const angle = Math.random() * Math.PI * 2
+  const dist = 500 + Math.random() * 200
+  const sx = player.x + Math.cos(angle) * dist
+  const sy = player.y + Math.sin(angle) * dist
+  const radius = (type as any).radius ?? 40
+  const pos = findClearSpawnPos(sx, sy, radius, getEnemies(), player)
   getEnemies().push(createEnemy(pos.x, pos.y, type))
 }
 
@@ -393,7 +402,7 @@ window.addEventListener('keydown', e => {
   if (e.key === 'v') {
     // Debug: spawn a test summoner enemy
     const player = getPlayer()
-    const pos = getSpawnPos(player.x, player.y, 200)
+    const pos = getPerimeterSpawnPos(player.x, player.y, 300)
     const summoner = createEnemy(pos.x, pos.y, {
       name: 'Summoner',
       color: '#FFD740',
@@ -479,6 +488,11 @@ canvas.addEventListener('pointerdown', e => {
   const p = screenToCanvas(e.clientX, e.clientY)
   if (e.pointerType === 'touch') Input.notifyTouchInput()
   dismissAddToHomeMessage()
+  // Designer wall drag: starts on pointer-down (not click) since walls are click-drag-release.
+  // If the wall tool starts a drag here, suppress dash so the click doesn't double up.
+  if (getPhase() === 'designer' && e.button === 0 && challengeCanvasMouseDown?.(p.x, p.y, e.shiftKey)) {
+    Input.suppressLeftClick()
+  }
   // Designer: suppress dash if this click is for placement/selection (so player still dashes
   // when clicking empty arena to test interactions with spawn-test enemies).
   if (getPhase() === 'designer' && e.button === 0) {
@@ -543,6 +557,18 @@ canvas.addEventListener('pointerup', e => {
     canvas.releasePointerCapture(e.pointerId)
   }
   touchScrollEnd()
+  // Designer wall drag — commit the in-progress wall (if any) regardless of where the
+  // mouse-up landed, including outside the canvas.
+  if (getPhase() === 'designer' && e.button === 0) challengeCanvasMouseUp?.()
+})
+
+// Designer: right-click on the canvas removes whichever item the cursor is over — enemy
+// ghost first, then wall. Prevents the default browser context menu.
+canvas.addEventListener('contextmenu', e => {
+  if (getPhase() !== 'designer') return
+  e.preventDefault()
+  const p = screenToCanvas(e.clientX, e.clientY)
+  ChallengeBuilderMod.deleteAtScreen(p.x, p.y)
 })
 canvas.addEventListener('pointercancel', e => {
   if (e.pointerId === Input.getJoystickPointerId()) {
@@ -746,13 +772,26 @@ canvas.addEventListener('pointermove', e => {
   }
   handleUpgradeHover(p.x, p.y, canvas.width, canvas.height)
   handleShopHover(p.x, p.y, canvas.width, canvas.height)
-  challengeCanvasMouseMove?.(p.x, p.y)
+  challengeCanvasMouseMove?.(p.x, p.y, e.shiftKey)
 })
 
 canvas.addEventListener('wheel', e => {
   if (isRunComplete()) {
     scrollVictoryLeaderboard(e.deltaY * 0.5)
     e.preventDefault()
+  }
+  // Designer: scroll-wheel rotates the prefab being placed OR the currently-selected
+  // wall group around its bbox center. 5°/tick by default, Shift+scroll = 45°/tick.
+  // Prefab takes priority since it's the more transient state.
+  if (getPhase() === 'designer') {
+    const step = (e.shiftKey ? Math.PI / 4 : Math.PI / 36) * Math.sign(e.deltaY)
+    if (ChallengeBuilderMod.getPlacingPrefab()) {
+      ChallengeBuilderMod.rotatePrefab(step)
+      e.preventDefault()
+    } else if (ChallengeBuilderMod.getSelectedWallIdx() >= 0) {
+      ChallengeBuilderMod.rotateSelectedGroup(step)
+      e.preventDefault()
+    }
   }
 }, { passive: false })
 

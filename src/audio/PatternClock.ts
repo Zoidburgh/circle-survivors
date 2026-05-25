@@ -34,6 +34,16 @@ export function getLoopPosition(): number {
   return totalBeats % currentPattern.loopBeats
 }
 
+/** Monotonic beat counter — increases forever, never wraps. Used by wall motion and any
+ * other system whose cycle length differs from the song loop (e.g. a 12-beats/rev rotating
+ * wall in an 8-beat song would snap backwards every wrap if using getLoopPosition()). */
+export function getAbsoluteBeats(): number {
+  if (!currentPattern) return 0
+  const elapsed = getAudioTime() - getBeatZeroTime()
+  if (elapsed < 0) return 0
+  return elapsed / BEAT_SEC
+}
+
 export function getLoopLength(): number {
   return currentPattern?.loopBeats ?? 8
 }

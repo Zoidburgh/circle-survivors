@@ -14,7 +14,7 @@ export function tickLeaveToastCD(dt: number): void {
   if (revengeToastGlobalCD > 0) revengeToastGlobalCD -= dt
 }
 export function resetLeaveToastCD(): void { leaveToastGlobalCD = 0; revengeToastGlobalCD = 0 }
-import { clampToArena, getArenaShape, ARENA_CX, ARENA_CY } from '../game/Arena.ts'
+import { clampToArena, resolveWallCollision, getArenaShape, ARENA_CX, ARENA_CY } from '../game/Arena.ts'
 import { emit } from '../core/EventBus.ts'
 import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC, SHIELD_BREAK_FLASH } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
@@ -75,6 +75,9 @@ export interface Enemy {
   lungeDirY: number
   chillStacks: number
   chillDecayTimer: number
+  // Wall-spring launch impulse (px/s) — added to position each frame during launchTimer.
+  // Bypasses immovable / immobile gates so springs shove every enemy uniformly.
+  launchVx: number; launchVy: number; launchTimer: number
   // Chill Zone state (player upgrade). zoneSlowFrac is 0 or 0.5, set each frame by a presence
   // check against the player's active chill zone. immobileTimer > 0 means the enemy is frozen
   // in place (zero movement) but their attack/ring timers continue ticking normally — they're
@@ -108,6 +111,16 @@ export interface Enemy {
   revengeArmed: boolean // hit received, waiting for beat
   revengeTimer: number  // time since armed
   revengeAngle: number  // slowly rotating base angle for fire points
+  // Pusher trait — pulses on-beat, kinematically shoves entities (no damage). Runtime
+  // fields mirror the wall spring pattern so the firing/audio/grace logic in GameManager
+  // can be shared.
+  pusher: boolean
+  pusherBeats: number          // cycle in beats
+  pusherPhase: number          // beat offset
+  pusherStrength: number       // launch velocity in px/s
+  pusherLastFireBeat: number | null    // absolute beat of most recent fire (drives visuals + grace)
+  pusherJustFired: boolean             // transient — consumed by renderer for one-shot effects
+  pusherScheduledAudioBeat: number | null   // most recent beat we pre-scheduled audio for
   blinkTimer: number    // counts beats until next blink
   blinkGhostX: number   // destination / old position after teleport
   blinkGhostY: number
@@ -234,6 +247,7 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     lungeDirY: 0,
     chillStacks: 0,
     chillDecayTimer: 0,
+    launchVx: 0, launchVy: 0, launchTimer: 0,
     zoneSlowFrac: 0,
     immobileTimer: 0,
     immobileJustBroke: false,
@@ -261,6 +275,13 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     revengeArmed: false,
     revengeTimer: 0,
     revengeAngle: 0,
+    pusher: type.pusher ?? false,
+    pusherBeats: type.pusherBeats ?? 2,
+    pusherPhase: type.pusherPhase ?? 0,
+    pusherStrength: type.pusherStrength ?? 600,
+    pusherLastFireBeat: null,
+    pusherJustFired: false,
+    pusherScheduledAudioBeat: null,
     blinkTimer: type.blinkBeats ?? 4,
     blinkGhostX: 0,
     blinkGhostY: 0,
@@ -456,6 +477,25 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     enemy.immobileTimer -= dt
     if (enemy.immobileTimer <= 0) enemy.immobileJustBroke = true
   }
+  // Wall-spring launch — additive position change, bypasses every movement gate including
+  // immovable. Runs at the top of updateEnemy so heavy/spawning/immobile enemies still get
+  // shoved when a wall springs. Wall resolution at the bottom of updateEnemy handles any
+  // wall overlap the launch causes.
+  if (enemy.launchTimer > 0) {
+    enemy.launchTimer -= dt
+    const decay = Math.pow(0.03, dt)   // snappier — matches Player
+    enemy.launchVx *= decay
+    enemy.launchVy *= decay
+    const LAUNCH_FADE_TAIL = 0.10   // smooth fade — no abrupt snap (matches Player)
+    const fadeMult = enemy.launchTimer < LAUNCH_FADE_TAIL
+      ? Math.max(0, enemy.launchTimer / LAUNCH_FADE_TAIL)
+      : 1
+    enemy.x += enemy.launchVx * fadeMult * dt
+    enemy.y += enemy.launchVy * fadeMult * dt
+    if (enemy.launchTimer <= 0) {
+      enemy.launchVx = 0; enemy.launchVy = 0; enemy.launchTimer = 0
+    }
+  }
 
   // Chill stack decay
   if (enemy.chillStacks > 0) {
@@ -537,8 +577,14 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     if (enemy.hp - enemy.displayHp < 0.01) enemy.displayHp = enemy.hp
   }
 
-  // Immovable enemies skip all movement and separation
+  // Immovable enemies skip all movement and separation — EXCEPT walls. A rotating/moving
+  // wall must be able to shove a heavy out of its path; otherwise the wall passes through
+  // the heavy (or the player gets crushed against an unmovable obstacle). Walls override
+  // the immovable trait specifically for kinematic push-out.
   if (enemy.immovable) {
+    const ewr = resolveWallCollision(enemy.x, enemy.y, enemy.radius)
+    enemy.x = ewr.x
+    enemy.y = ewr.y
     // Still update rings
     if (enemy.spawnTimer >= 1) {
       for (let i = 0; i < enemy.rings.length; i++) {
@@ -593,6 +639,10 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     // Skip movement but still apply velocity dampening
     enemy.vx *= 0.9
     enemy.vy *= 0.9
+    // Walls still push us — handle in case a moving wall sweeps across the spawn point
+    const ewr = resolveWallCollision(enemy.x, enemy.y, enemy.radius)
+    enemy.x = ewr.x
+    enemy.y = ewr.y
     return
   }
 
@@ -718,8 +768,20 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
       const overlap = minDist - eDist
       const nx = ex / eDist
       const ny = ey / eDist
-      // Take full overlap if other is immovable, otherwise half
-      const pushFrac = otherEnemy.immovable ? 1.0 : 0.5
+      // Battering-ram separation: launched enemies plow through non-launched ones without
+      // losing momentum. Symmetric, since each side runs its own pass:
+      //   - immovable other → full self-push (unchanged, walls always stop you)
+      //   - self launched, other not → 0 self-push (carry through, other's pass shoves it)
+      //   - other launched, self not → full self-push (get out of the way)
+      //   - both launched → half (mild mutual nudge, both phase, no permanent stack)
+      //   - neither launched → half (current default)
+      const launchedSelf = enemy.launchTimer > 0
+      const launchedOther = otherEnemy.launchTimer > 0
+      let pushFrac: number
+      if (otherEnemy.immovable) pushFrac = 1.0
+      else if (launchedSelf && !launchedOther) pushFrac = 0
+      else if (!launchedSelf && launchedOther) pushFrac = 1.0
+      else pushFrac = 0.5
       enemy.x += nx * overlap * pushFrac
       enemy.y += ny * overlap * pushFrac
       if (isBounce) {
@@ -828,6 +890,38 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     if (bSpeed > 0.1) {
       enemy.bounceVx = (enemy.bounceVx / bSpeed) * enemy.moveSpeed
       enemy.bounceVy = (enemy.bounceVy / bSpeed) * enemy.moveSpeed
+    }
+  }
+  // Wall collision — push out of any internal walls in the arena. Runs once per frame
+  // (enemy speeds are well below per-frame wall thickness, so substepping isn't needed).
+  // For bouncer enemies, also reflect bounceVx/bounceVy about the push direction (which is
+  // the wall normal at the contact point) so they bounce off internal walls just like they
+  // bounce off arena edges.
+  const wallPreX = enemy.x
+  const wallPreY = enemy.y
+  const ewr = resolveWallCollision(enemy.x, enemy.y, enemy.radius)
+  enemy.x = ewr.x
+  enemy.y = ewr.y
+  if (isBounce) {
+    const pushX = enemy.x - wallPreX
+    const pushY = enemy.y - wallPreY
+    const pushLen2 = pushX * pushX + pushY * pushY
+    if (pushLen2 > 0.0001) {
+      const pushLen = Math.sqrt(pushLen2)
+      const nx = pushX / pushLen
+      const ny = pushY / pushLen
+      // Only flip when moving INTO the wall — guards against double-flip on consecutive frames
+      const dot = enemy.bounceVx * nx + enemy.bounceVy * ny
+      if (dot < 0) {
+        enemy.bounceVx -= 2 * dot * nx
+        enemy.bounceVy -= 2 * dot * ny
+        // Re-normalize to constant speed
+        const bs = Math.sqrt(enemy.bounceVx * enemy.bounceVx + enemy.bounceVy * enemy.bounceVy)
+        if (bs > 0.1) {
+          enemy.bounceVx = (enemy.bounceVx / bs) * enemy.moveSpeed
+          enemy.bounceVy = (enemy.bounceVy / bs) * enemy.moveSpeed
+        }
+      }
     }
   }
 

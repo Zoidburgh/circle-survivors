@@ -41,7 +41,12 @@ export function getRunTimer(): number { return runTimer }
 export function isRunTimerActive(): boolean { return runTimerActive }
 export function isRunComplete(): boolean { return runComplete }
 export function getRunFinalTime(): number { return runFinalTime }
-export function startRunTimer(): void { runTimerActive = true; runTimer = 0; runBeatCount = 0 }
+export function startRunTimer(): void {
+  // Never start the run timer outside actual play. Designer authoring should not start the
+  // clock just because the user spawned a test enemy that fires a summon or takes a beat-dash hit.
+  if (phase !== 'playing') return
+  runTimerActive = true; runTimer = 0; runBeatCount = 0
+}
 export function incrementRunBeat(): void { if (runTimerActive) runBeatCount++ }
 export function getRunBeatCount(): number { return runBeatCount }
 export function advanceRunTimer(dt: number): void { if (runTimerActive) runTimer += dt }

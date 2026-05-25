@@ -6,13 +6,13 @@ import type { Ring } from '../entities/Ring.ts'
 import { getRingExpansion, getRingAlpha, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { ENEMY_TYPES, getEnemyType } from '../entities/EnemyTypes.ts'
 import { complementColor } from '../utils/math.ts'
-import { getPattern, getLoopPosition, getLoopLength } from '../audio/PatternClock.ts'
+import { getPattern, getLoopPosition, getLoopLength, getAbsoluteBeats } from '../audio/PatternClock.ts'
 import { getPreviewEnemy } from '../game/EnemyDesigner.ts'
-import type { Camera } from '../game/Arena.ts'
-import { ARENA_W, ARENA_H, ARENA_RADIUS, ARENA_CX, ARENA_CY, PILL_R, PILL_HALF_W, CROSS_HW, CROSS_HE, getArenaShape, getHexVertices, getCrossVertices } from '../game/Arena.ts'
+import type { Camera, Wall } from '../game/Arena.ts'
+import { ARENA_W, ARENA_H, ARENA_RADIUS, ARENA_CX, ARENA_CY, PILL_R, PILL_HALF_W, CROSS_HW, CROSS_HE, getArenaShape, getHexVertices, getCrossVertices, getWalls, computeWallArc, resetWallsToRest, getWallSnapPoints } from '../game/Arena.ts'
 import { getBlockedArcs } from '../game/RingOcclusion.ts'
 import { getRitualGroups, getActiveIndex } from '../game/RitualNodes.ts'
-import { isPlaceMode, getPlacingEnemies, getSelectedPlacement, getChallenges, getActiveChallenge } from '../game/ChallengeBuilder.ts'
+import { isPlaceMode, getPlacingEnemies, getSelectedPlacement, getChallenges, getActiveChallenge, getWallDrag, getWallThickness, getPlaceTool, getHoveredWallIdx, getHoveredEnemyIdx, getSelectedWallIdx, getEndpointDrag, getWallCurveHandle, getPlacingPrefab, getPrefabCursor, getPrefabRotation, getSelectedWallPivotWorld, isPivotSetMode } from '../game/ChallengeBuilder.ts'
 import { getBestTime, getScoresForChallenge, formatTime, hasOnlineScores } from '../game/HighScores.ts'
 import type { Challenge } from '../game/ChallengeBuilder.ts'
 import type { BlockedArc } from '../game/RingOcclusion.ts'
@@ -44,6 +44,24 @@ let width = 0
 let height = 0
 let camX = 0
 let camY = 0
+// Designer zoom-out toggle — Z key. Lets the author see the whole arena at once, centered
+// on the arena center (not the player). When enabled, wall motion is frozen (see
+// GameManager.updateDesigner) so the designer can position elements against static walls.
+const DESIGNER_ZOOM = 0.4
+let designerZoomedOut = false
+export function isDesignerZoomedOut(): boolean { return designerZoomedOut }
+/** Current zoom factor for designer view — 1 normally, DESIGNER_ZOOM when zoomed out. Used
+ * by ChallengeBuilder's screenToWorld so clicks map to the right world point. */
+export function getDesignerZoomFactor(): number {
+  return (designerZoomedOut && getPhase() === 'designer') ? DESIGNER_ZOOM : 1
+}
+export function toggleDesignerZoomOut(): void {
+  designerZoomedOut = !designerZoomedOut
+  if (designerZoomedOut) {
+    // Snap walls back to their authored rest positions so the designer view always matches the JSON
+    resetWallsToRest()
+  }
+}
 
 // ── Particle system ──
 interface Particle {
@@ -1538,6 +1556,679 @@ export function spawnFrostCrack(x: number, y: number, radius: number): void {
   }
 }
 
+// One-shot particle burst when a wall spring fires. Particles spray perpendicular to the
+// wall surface in BOTH directions (out either side of the capsule) for a shockwave look.
+function spawnSpringFireBurst(w: Wall): void {
+  // Pillar — radial burst
+  const dxw = w.bx - w.ax
+  const dyw = w.by - w.ay
+  const segLen = Math.sqrt(dxw * dxw + dyw * dyw)
+  const isPillar = segLen < 0.5
+  const PARTICLES_PER_SIDE = 10
+  const SIDES = isPillar ? 1 : 2
+  for (let side = 0; side < SIDES; side++) {
+    // For pillars, scatter radially; for capsules, perpendicular to chord (both sides)
+    const sign = side === 0 ? 1 : -1
+    const perpX = isPillar ? 0 : -dyw / segLen * sign
+    const perpY = isPillar ? 0 : dxw / segLen * sign
+    for (let p = 0; p < PARTICLES_PER_SIDE; p++) {
+      // Position: somewhere along the wall length (for capsules), edge of pillar otherwise
+      let sx: number, sy: number
+      if (isPillar) {
+        const ang = Math.random() * Math.PI * 2
+        sx = w.ax + Math.cos(ang) * w.radius
+        sy = w.ay + Math.sin(ang) * w.radius
+      } else {
+        const t = Math.random()
+        const cx = w.ax + dxw * t
+        const cy = w.ay + dyw * t
+        sx = cx + perpX * w.radius
+        sy = cy + perpY * w.radius
+      }
+      // Velocity: outward (perpendicular for capsule, radial for pillar) + a bit of jitter
+      let vx: number, vy: number
+      const launchSpeed = 280 + Math.random() * 220
+      if (isPillar) {
+        const ang = Math.atan2(sy - w.ay, sx - w.ax)
+        vx = Math.cos(ang) * launchSpeed
+        vy = Math.sin(ang) * launchSpeed
+      } else {
+        vx = perpX * launchSpeed + (Math.random() - 0.5) * 60
+        vy = perpY * launchSpeed + (Math.random() - 0.5) * 60
+      }
+      spawnParticle(sx, sy, vx, vy,
+        200 + Math.floor(Math.random() * 55), 230 + Math.floor(Math.random() * 25), 255,
+        0.28 + Math.random() * 0.18, 3 + Math.random() * 2.5)
+    }
+  }
+}
+
+// Wall rendering — glowing rune-edged capsules. Four layered strokes per wall give the
+// cohesive cyan-energy aesthetic that matches the rest of the game's visual language
+// (anchors, recall streaks, chill zone). Pillars (degenerate capsules where ax=bx, ay=by)
+// are handled via concentric arcs since a zero-length stroke draws nothing.
+// Layer-by-layer rendering: ALL halos first, then ALL mid glows, then ALL rims, then ALL
+// bodies. This avoids the per-wall ordering bug where wall B's bright rim would draw on top
+// of wall A's body at shared endpoints, creating a visible cyan crossover. With all bodies
+// drawn last, joint-overlapping bodies cover any rim crossover, and the halo/rim form a
+// unified outline around the whole connected shape.
+function drawWalls(): void {
+  const walls = getWalls()
+  if (walls.length === 0) {
+    drawWallsOverlay()
+    return
+  }
+  const now = performance.now()
+  const pulse = 0.5 + 0.5 * Math.sin(now / 1800)
+  const haloAlpha = 0.10 + pulse * 0.04
+  const midAlpha = 0.22 + pulse * 0.06
+  const rimAlpha = 0.85 + pulse * 0.15
+  ctx.lineCap = 'round'
+
+  // Precompute per-wall screen-space data including arc info for bent walls + a per-wall
+  // visual-scale multiplier driven by spring state (compress on anticipation, expand on fire).
+  type WallDraw = {
+    w: Wall
+    ax: number; ay: number; bx: number; by: number
+    pillar: boolean
+    arc: { cx: number; cy: number; r: number; aA: number; aB: number; antiClockwise: boolean } | null
+    visScale: number
+    springFireT: number   // 0..1 — color-flash intensity, 1 on fire frame, decays across pulse
+  }
+  const drawList: WallDraw[] = []
+  const beatPosForSpring = getAbsoluteBeats()
+  for (const w of walls) {
+    const ax = w.ax - camX, ay = w.ay - camY
+    const bx = w.bx - camX, by = w.by - camY
+    const dxw = bx - ax, dyw = by - ay
+    const pillar = dxw * dxw + dyw * dyw < 0.5
+    const arcWorld = computeWallArc(w)
+    const arc = arcWorld ? {
+      cx: arcWorld.cx - camX, cy: arcWorld.cy - camY,
+      r: arcWorld.r, aA: arcWorld.aA, aB: arcWorld.aB, antiClockwise: arcWorld.antiClockwise,
+    } : null
+    // Spring visual — pure beat math (no timer). Adapts duration + amplitude to the wall's
+    // cycle so fast tempos get a tight, small pulse instead of a constantly-flailing wall.
+    // Three phases: post-fire pulse (expand peak), anticipation (compress before next fire),
+    // idle. Particle burst is gated by the springJustFired transient flag from Arena.
+    let visScale = 1
+    let springFireT = 0   // 1 at fire moment, 0 elsewhere (drives color flash intensity)
+    if (w.spring && w.springLastFireBeat != null) {
+      const cycle = w.spring.beatsPerCycle
+      // Pulse + anticipation durations cap at the original values for long cycles, but
+      // shrink to a fraction of the cycle for fast tempos so the animation can actually
+      // settle between fires.
+      const pulseDur = Math.min(0.20, cycle * 0.30)   // matches grace window (~0.22 beats) so the visual reads "actively pushing" for the full active time
+      const anticipDur = Math.min(0.3, cycle * 0.3)
+      const pulseAmpl = Math.min(0.13, cycle * 0.13)   // tighter — visual ≈ hitbox (was 18%)
+      const beatsSinceFire = beatPosForSpring - w.springLastFireBeat
+      const beatsUntilNext = (w.springLastFireBeat + cycle) - beatPosForSpring
+      if (beatsSinceFire >= 0 && beatsSinceFire < pulseDur) {
+        const t = beatsSinceFire / pulseDur   // 0 at fire → 1 at end of pulse
+        // Hammer profile: instant peak at fire (t=0), smooth quadratic decay to rest. Was a
+        // sine arch peaking at t=0.5, which meant the wall grew LARGER ~75ms after firing —
+        // confusing because the spring is already inert by then.
+        const ease = (1 - t) * (1 - t)
+        visScale = 1 + ease * pulseAmpl
+        springFireT = ease   // color flash follows the same curve
+      } else if (beatsUntilNext > 0 && beatsUntilNext < anticipDur) {
+        const a = 1 - beatsUntilNext / anticipDur
+        visScale = 1 - a * 0.06   // gentler anticipation squash
+      }
+      // Consume the one-shot fire flag — inner shockwave is rendered in pass 5 below;
+      // outside particle burst is intentionally suppressed (visual moved INSIDE the wall).
+      if (w.springJustFired) {
+        w.springJustFired = false
+      }
+    }
+    drawList.push({ w, ax, ay, bx, by, pillar, arc, visScale, springFireT })
+  }
+
+  function strokeWallLayer(d: WallDraw, padding: number, style: string, fixedWidth?: number): void {
+    const thick = d.w.radius * 2 * d.visScale
+    if (d.pillar) {
+      ctx.beginPath()
+      ctx.arc(d.ax, d.ay, (d.w.radius + padding / 2) * d.visScale, 0, Math.PI * 2)
+      ctx.fillStyle = style
+      ctx.fill()
+      return
+    }
+    const w = fixedWidth ?? (thick + padding)
+    if (w < 0.5) return   // guard tiny / negative widths
+    ctx.beginPath()
+    if (d.arc) {
+      ctx.arc(d.arc.cx, d.arc.cy, d.arc.r, d.arc.aA, d.arc.aB, !d.arc.antiClockwise)
+    } else {
+      ctx.moveTo(d.ax, d.ay)
+      ctx.lineTo(d.bx, d.by)
+    }
+    ctx.strokeStyle = style
+    ctx.lineWidth = w
+    ctx.stroke()
+  }
+
+  // Helper — spring fire intensity 0..1 (peaks at 1 on fire frame, decays to 0 by end of pulse)
+  function springFireGlow(d: WallDraw): number {
+    return d.springFireT
+  }
+
+  // Helper — inner shockwave on spring fire. Clips drawing to the wall body interior so
+  // the bright wave reads as energy radiating from inside the wall.
+  //   pillar  : concentric ring expanding from the center outward to the rim
+  //   capsule : two parallel bars sliding from the spine outward to the perpendicular rim
+  //   arc     : two concentric arcs (one going inward, one outward) from the spine arc
+  function drawInnerShockwave(d: WallDraw, progress: number): void {
+    const alpha = (1 - progress * progress)   // bright at fire moment, quadratic fade
+    if (alpha <= 0.01) return
+    const w = d.w
+    const r = Math.max(2, w.radius * d.visScale - 1)   // -1 px so the wave sits INSIDE the rim
+    // Layer widths scale with wall thickness so the shockwave reads proportionally on
+    // anything from a tiny pillar to a 240-radius wall. Minimums keep thin walls visible.
+    const glowW = Math.max(10, r * 0.60)
+    const coreW = Math.max(3.5, r * 0.24)
+    const hotW = Math.max(1.2, r * 0.08)
+    const glowColor = `rgba(255, 200, 90, ${alpha * 0.55})`
+    const coreColor = `rgba(255, 245, 200, ${alpha})`
+    const hotColor = `rgba(255, 255, 245, ${alpha * 0.9})`
+    ctx.save()
+    if (d.pillar) {
+      ctx.beginPath()
+      ctx.arc(d.ax, d.ay, r, 0, Math.PI * 2)
+      ctx.clip()
+      const ringR = progress * r
+      ctx.beginPath()
+      ctx.arc(d.ax, d.ay, ringR, 0, Math.PI * 2)
+      ctx.strokeStyle = glowColor
+      ctx.lineWidth = glowW
+      ctx.stroke()
+      ctx.strokeStyle = coreColor
+      ctx.lineWidth = coreW
+      ctx.stroke()
+      ctx.strokeStyle = hotColor
+      ctx.lineWidth = hotW
+      ctx.stroke()
+    } else if (d.arc) {
+      const a = d.arc
+      const rIn = Math.max(0.1, a.r - r)
+      const rOut = a.r + r
+      ctx.beginPath()
+      ctx.arc(a.cx, a.cy, rOut, a.aA, a.aB, a.antiClockwise)
+      ctx.arc(a.cx, a.cy, rIn, a.aB, a.aA, !a.antiClockwise)
+      ctx.closePath()
+      ctx.clip()
+      const outerR = a.r + progress * r
+      const innerR = Math.max(0.1, a.r - progress * r)
+      const drawArcPair = (style: string, width: number) => {
+        ctx.strokeStyle = style; ctx.lineWidth = width
+        ctx.beginPath(); ctx.arc(a.cx, a.cy, outerR, a.aA, a.aB, a.antiClockwise); ctx.stroke()
+        ctx.beginPath(); ctx.arc(a.cx, a.cy, innerR, a.aA, a.aB, a.antiClockwise); ctx.stroke()
+      }
+      drawArcPair(glowColor, glowW)
+      drawArcPair(coreColor, coreW)
+      drawArcPair(hotColor, hotW)
+    } else {
+      const dx = d.bx - d.ax, dy = d.by - d.ay
+      const len = Math.sqrt(dx * dx + dy * dy)
+      if (len < 0.5) { ctx.restore(); return }
+      const midX = (d.ax + d.bx) / 2
+      const midY = (d.ay + d.by) / 2
+      const angle = Math.atan2(dy, dx)
+      const halfLen = len / 2
+      ctx.translate(midX, midY)
+      ctx.rotate(angle)
+      ctx.beginPath()
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(-halfLen - r, -r, len + 2 * r, 2 * r, r)
+      } else {
+        ctx.moveTo(-halfLen, -r)
+        ctx.lineTo(halfLen, -r)
+        ctx.arc(halfLen, 0, r, -Math.PI / 2, Math.PI / 2)
+        ctx.lineTo(-halfLen, r)
+        ctx.arc(-halfLen, 0, r, Math.PI / 2, -Math.PI / 2)
+        ctx.closePath()
+      }
+      ctx.clip()
+      const offset = progress * r
+      const drawBarPair = (style: string, width: number) => {
+        ctx.strokeStyle = style; ctx.lineWidth = width
+        ctx.beginPath()
+        ctx.moveTo(-halfLen - r, +offset)
+        ctx.lineTo(+halfLen + r, +offset)
+        ctx.moveTo(-halfLen - r, -offset)
+        ctx.lineTo(+halfLen + r, -offset)
+        ctx.stroke()
+      }
+      drawBarPair(glowColor, glowW)
+      drawBarPair(coreColor, coreW)
+      drawBarPair(hotColor, hotW)
+    }
+    ctx.restore()
+  }
+  // Pass 1 — outer halos. Brighter alpha for passive bloom feel, but padding stays tight
+  // so the glow doesn't extend far past the rim. Spring-firing walls add a brighter gold
+  // halo on top.
+  const haloStyle = `rgba(80, 200, 250, ${haloAlpha + 0.08})`
+  for (const d of drawList) {
+    strokeWallLayer(d, 14, haloStyle)
+    const fire = springFireGlow(d)
+    if (fire > 0) strokeWallLayer(d, 22, `rgba(255, 200, 80, ${0.5 * fire})`)
+  }
+  // Pass 2 — mid glows
+  const midStyle = `rgba(120, 215, 250, ${midAlpha})`
+  for (const d of drawList) {
+    strokeWallLayer(d, 9, midStyle)
+    const fire = springFireGlow(d)
+    if (fire > 0) strokeWallLayer(d, 13, `rgba(255, 220, 100, ${0.7 * fire})`)
+  }
+  // Pass 3 — bright cyan rims (will be partially covered by bodies; only the perimeter shows).
+  // Spring-fire walls swap to bright white-gold for visceral color shift.
+  for (const d of drawList) {
+    const fire = springFireGlow(d)
+    const style = fire > 0
+      ? `rgba(${Math.floor(190 + 65 * fire)}, ${Math.floor(245 - 35 * fire)}, ${Math.floor(255 - 155 * fire)}, ${rimAlpha + 0.15 * fire})`
+      : `rgba(190, 245, 255, ${rimAlpha})`
+    strokeWallLayer(d, 4, style)
+  }
+  // Pass 4 — bodies. Default = dark navy. Spring-firing walls lerp toward bright orange so
+  // the bounce is unmissable. Drawn LAST so they cover any rim crossover at shared endpoints.
+  for (const d of drawList) {
+    const fire = springFireGlow(d)
+    const bodyStyle = fire > 0
+      ? `rgba(${Math.floor(35 + (255 - 35) * fire)}, ${Math.floor(50 + (175 - 50) * fire)}, ${Math.floor(70 - 70 * fire)}, 1)`
+      : 'rgba(35, 50, 70, 1)'
+    strokeWallLayer(d, 0, bodyStyle)
+  }
+  // Pass 5 — inner shockwave on spring fire. Bright wave expands from the spine outward to
+  // the rim, clipped to the wall body interior. Pillars get a concentric ring growing from
+  // center, capsules get two parallel bars sliding from the spine to the rim. Reads as
+  // "energy released from inside the wall" without spraying particles into the play area.
+  for (const d of drawList) {
+    const w = d.w
+    if (!w.spring || w.springLastFireBeat == null) continue
+    const cycle = w.spring.beatsPerCycle
+    // Shockwave duration slightly longer than the visual pulse (0.15 beats) so the wave
+    // has time to reach the rim before fading. Capped per cycle so fast tempos shrink it.
+    const shockDur = Math.min(0.22, cycle * 0.32)
+    const beatsSinceFire = beatPosForSpring - w.springLastFireBeat
+    if (beatsSinceFire < 0 || beatsSinceFire >= shockDur) continue
+    const progress = beatsSinceFire / shockDur   // 0 at fire → 1 at rim
+    drawInnerShockwave(d, progress)
+  }
+  // For rotating / pendulum walls, brighter outer rim flash + halo pulse so motion reads
+  // as "this thing is alive" even when momentarily near zero angular velocity (especially
+  // important for pendulums at the turnaround points where they pause). Checks groupMotion
+  // so every wall in a moving group flashes — not just the wall that owns the motion.
+  for (const d of drawList) {
+    const mt = d.w.groupMotion?.type
+    const hasMotion = mt === 'rotate' || mt === 'pendulum' || mt === 'tick'
+    const hasTranslation = !!d.w.groupTranslation
+    if (!hasMotion && !hasTranslation) continue
+    const motionPulse = 0.5 + 0.5 * Math.sin(now / 320)
+    strokeWallLayer(d, 6, `rgba(255, 215, 64, ${0.18 + motionPulse * 0.18})`)
+  }
+
+  ctx.lineCap = 'butt'
+  drawWallsOverlay()
+}
+
+// Designer-only overlays (hover-delete highlight + drag-ghost + selection handles).
+// Extracted so drawWalls can call it even when there are no placed walls (so the drag
+// ghost still renders on an empty arena).
+function drawWallsOverlay(): void {
+  if (getPhase() !== 'designer') return
+  const wallsRef = getWalls()
+
+  // No-clip indicator — dashed red rim around any wall tagged noClip. Designer-only visual
+  // cue that "this wall is isolated, won't auto-group with neighbors, isn't a snap target."
+  ctx.save()
+  ctx.setLineDash([5, 4])
+  ctx.lineCap = 'butt'
+  ctx.strokeStyle = 'rgba(255, 80, 80, 0.85)'
+  ctx.lineWidth = 2
+  for (const w of wallsRef) {
+    if (!w.noClip) continue
+    const ax = w.ax - camX, ay = w.ay - camY
+    const bx = w.bx - camX, by = w.by - camY
+    const dxw = bx - ax, dyw = by - ay
+    const isPillar = dxw * dxw + dyw * dyw < 0.5
+    if (isPillar) {
+      ctx.beginPath()
+      ctx.arc(ax, ay, w.radius + 3, 0, Math.PI * 2)
+      ctx.stroke()
+    } else {
+      ctx.lineCap = 'round'
+      ctx.lineWidth = w.radius * 2 + 6
+      ctx.beginPath()
+      ctx.moveTo(ax, ay); ctx.lineTo(bx, by)
+      // Outline as a thicker hollow stroke isn't trivial with line dash; use a thin dashed
+      // perimeter built from two parallel lines + arc caps instead. Approximation: thick
+      // dashed stroke around the spine reads as "danger ring" even if it's just a thick line.
+      ctx.strokeStyle = 'rgba(255, 80, 80, 0.18)'
+      ctx.stroke()
+      ctx.strokeStyle = 'rgba(255, 80, 80, 0.85)'
+      ctx.lineWidth = 2
+      ctx.lineCap = 'butt'
+    }
+  }
+  ctx.restore()
+
+  // Selection outline — gold pulsing band drawn under the hover red so a hovered selected
+  // wall still shows the red "will delete" treatment on top. The interactive HANDLES
+  // (endpoints + curve diamond) get drawn LATER, after the hover overlay, so they're never
+  // obscured by the red — the user always sees what they can click on.
+  const selIdx = getSelectedWallIdx()
+  let selData: { w: Wall; ax: number; ay: number; bx: number; by: number; thick: number; isPillar: boolean } | null = null
+  if (selIdx >= 0 && selIdx < wallsRef.length) {
+    const w = wallsRef[selIdx]!
+    const ax = w.ax - camX
+    const ay = w.ay - camY
+    const bx = w.bx - camX
+    const by = w.by - camY
+    const thick = w.radius * 2
+    const dxw = bx - ax
+    const dyw = by - ay
+    const isPillar = dxw * dxw + dyw * dyw < 0.5
+    selData = { w, ax, ay, bx, by, thick, isPillar }
+    const sPulse = 0.5 + 0.5 * Math.sin(performance.now() / 300)
+    ctx.lineCap = 'round'
+    if (isPillar) {
+      ctx.beginPath()
+      ctx.arc(ax, ay, w.radius + 5, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 215, 64, ${0.85 + sPulse * 0.15})`
+      ctx.lineWidth = 2
+      ctx.stroke()
+    } else {
+      ctx.beginPath()
+      ctx.moveTo(ax, ay); ctx.lineTo(bx, by)
+      ctx.strokeStyle = `rgba(255, 215, 64, ${0.85 + sPulse * 0.15})`
+      ctx.lineWidth = thick + 6
+      ctx.stroke()
+    }
+    ctx.lineCap = 'butt'
+  }
+
+  // Designer hover preview — red overlay on the wall the cursor is over so the player
+  // knows which one right-click would delete. Drawn additively to leave the wall visible.
+  {
+    const hi = getHoveredWallIdx()
+    if (hi >= 0 && hi < wallsRef.length) {
+      const w = wallsRef[hi]!
+      const ax = w.ax - camX
+      const ay = w.ay - camY
+      const bx = w.bx - camX
+      const by = w.by - camY
+      const thick = w.radius * 2
+      const dxw = bx - ax
+      const dyw = by - ay
+      const isPillar = dxw * dxw + dyw * dyw < 0.5
+      const hPulse = 0.5 + 0.5 * Math.sin(performance.now() / 220)
+      ctx.lineCap = 'round'
+      if (isPillar) {
+        // Red halo + outline ring
+        ctx.beginPath()
+        ctx.arc(ax, ay, w.radius + 8, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(255, 80, 80, ${0.28 + hPulse * 0.12})`
+        ctx.fill()
+        ctx.beginPath()
+        ctx.arc(ax, ay, w.radius + 2, 0, Math.PI * 2)
+        ctx.strokeStyle = `rgba(255, 100, 100, ${0.95})`
+        ctx.lineWidth = 2
+        ctx.stroke()
+      } else {
+        ctx.beginPath()
+        ctx.moveTo(ax, ay); ctx.lineTo(bx, by)
+        ctx.strokeStyle = `rgba(255, 80, 80, ${0.28 + hPulse * 0.12})`
+        ctx.lineWidth = thick + 14
+        ctx.stroke()
+        ctx.beginPath()
+        ctx.moveTo(ax, ay); ctx.lineTo(bx, by)
+        ctx.strokeStyle = `rgba(255, 100, 100, ${0.95})`
+        ctx.lineWidth = thick + 4
+        ctx.stroke()
+      }
+      ctx.lineCap = 'butt'
+    }
+  }
+
+  // Selection HANDLES — drawn AFTER the hover red overlay so a hovered selected wall still
+  // shows its endpoint + curve handles on top of the red (otherwise the red would swallow
+  // them and the user couldn't see what to click).
+  if (selData) {
+    const { w, ax, ay, bx, by, isPillar } = selData
+    // Dashed chord guide for bent walls — reference line showing the straight A→B chord
+    if (!isPillar && (w.bend ?? 0) !== 0) {
+      ctx.save()
+      ctx.setLineDash([5, 5])
+      ctx.beginPath()
+      ctx.moveTo(ax, ay); ctx.lineTo(bx, by)
+      ctx.strokeStyle = 'rgba(255, 215, 64, 0.5)'
+      ctx.lineWidth = 1
+      ctx.stroke()
+      ctx.restore()
+    }
+    // Endpoint handles — yellow squares with dark border
+    const drawHandle = (hx: number, hy: number) => {
+      const s = 14
+      ctx.fillStyle = 'rgba(255, 215, 64, 0.95)'
+      ctx.fillRect(hx - s / 2, hy - s / 2, s, s)
+      ctx.strokeStyle = 'rgba(40, 30, 0, 1)'
+      ctx.lineWidth = 1.5
+      ctx.strokeRect(hx - s / 2, hy - s / 2, s, s)
+    }
+    if (isPillar) drawHandle(ax, ay)
+    else { drawHandle(ax, ay); drawHandle(bx, by) }
+    // Curve handle — cyan diamond at the apex (or midpoint for a straight wall)
+    if (!isPillar) {
+      const apex = getWallCurveHandle(w)
+      const hx = apex.x - camX
+      const hy = apex.y - camY
+      const s = 8
+      ctx.save()
+      ctx.translate(hx, hy)
+      ctx.rotate(Math.PI / 4)
+      ctx.fillStyle = 'rgba(128, 216, 255, 0.95)'
+      ctx.fillRect(-s, -s, s * 2, s * 2)
+      ctx.strokeStyle = 'rgba(0, 40, 60, 1)'
+      ctx.lineWidth = 1.5
+      ctx.strokeRect(-s, -s, s * 2, s * 2)
+      ctx.restore()
+    }
+  }
+
+  // Designer-only: ghost preview of the in-progress wall drag. Dashed bright cyan capsule
+  // at the user-selected thickness so they see exactly what they'll get on release.
+  if (getPhase() === 'designer' && getPlaceTool() === 'wall') {
+    const drag = getWallDrag()
+    if (drag) {
+      const gThick = getWallThickness() * 2
+      const gax = drag.startX - camX
+      const gay = drag.startY - camY
+      const gbx = drag.curX - camX
+      const gby = drag.curY - camY
+      const gdx = gbx - gax
+      const gdy = gby - gay
+      const gLen2 = gdx * gdx + gdy * gdy
+      // Only draw if drag has measurable extent
+      if (gLen2 > 0.5) {
+        ctx.lineCap = 'round'
+        // Soft halo
+        ctx.beginPath()
+        ctx.moveTo(gax, gay); ctx.lineTo(gbx, gby)
+        ctx.strokeStyle = 'rgba(128, 216, 255, 0.20)'
+        ctx.lineWidth = gThick + 14
+        ctx.stroke()
+        // Dashed body fill (semi-transparent)
+        ctx.setLineDash([12, 8])
+        ctx.beginPath()
+        ctx.moveTo(gax, gay); ctx.lineTo(gbx, gby)
+        ctx.strokeStyle = 'rgba(128, 216, 255, 0.55)'
+        ctx.lineWidth = gThick
+        ctx.stroke()
+        // Crisp dashed center line
+        ctx.beginPath()
+        ctx.moveTo(gax, gay); ctx.lineTo(gbx, gby)
+        ctx.strokeStyle = 'rgba(220, 245, 255, 0.95)'
+        ctx.lineWidth = 1.5
+        ctx.stroke()
+        ctx.setLineDash([])
+        ctx.lineCap = 'butt'
+      }
+      // Endpoint markers (filled dots) so the snap targets are obvious
+      ctx.beginPath()
+      ctx.arc(gax, gay, 4, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(220, 245, 255, 0.95)'
+      ctx.fill()
+      ctx.beginPath()
+      ctx.arc(gbx, gby, 4, 0, Math.PI * 2)
+      ctx.fill()
+    }
+  }
+
+  // Prefab ghost preview — purple ghosts of all prefab walls translated + rotated to cursor.
+  // Each wall is drawn as a translucent capsule/arc at the same thickness it'll have on drop.
+  const prefab = getPlacingPrefab()
+  if (prefab) {
+    const cur = getPrefabCursor()
+    const rot = getPrefabRotation()
+    const cos = Math.cos(rot), sin = Math.sin(rot)
+    ctx.lineCap = 'round'
+    for (const w of prefab.walls) {
+      // Apply rotation around (0,0) to the relative coords, then translate to cursor
+      const rax = w.ax * cos - w.ay * sin
+      const ray = w.ax * sin + w.ay * cos
+      const rbx = w.bx * cos - w.by * sin
+      const rby = w.bx * sin + w.by * cos
+      const wx0 = rax + cur.x, wy0 = ray + cur.y
+      const wx1 = rbx + cur.x, wy1 = rby + cur.y
+      const ax = wx0 - camX, ay = wy0 - camY
+      const bx = wx1 - camX, by = wy1 - camY
+      const thick = w.radius * 2
+      const dxw = bx - ax, dyw = by - ay
+      const isPillar = dxw * dxw + dyw * dyw < 0.5
+      // Compute arc if bent — match the live renderer's geometry
+      const shifted: Wall = { ax: wx0, ay: wy0, bx: wx1, by: wy1, radius: w.radius, ...(w.bend != null ? { bend: w.bend } : {}) }
+      const arcWorld = computeWallArc(shifted)
+      ctx.beginPath()
+      if (isPillar) {
+        ctx.arc(ax, ay, w.radius, 0, Math.PI * 2)
+        ctx.fillStyle = 'rgba(180, 140, 255, 0.30)'
+        ctx.fill()
+      } else if (arcWorld) {
+        ctx.arc(arcWorld.cx - camX, arcWorld.cy - camY, arcWorld.r, arcWorld.aA, arcWorld.aB, !arcWorld.antiClockwise)
+        ctx.strokeStyle = 'rgba(180, 140, 255, 0.55)'
+        ctx.lineWidth = thick
+        ctx.stroke()
+      } else {
+        ctx.moveTo(ax, ay); ctx.lineTo(bx, by)
+        ctx.strokeStyle = 'rgba(180, 140, 255, 0.55)'
+        ctx.lineWidth = thick
+        ctx.stroke()
+      }
+    }
+    // Cursor crosshair (small + at cursor world position) so the drop anchor is visible
+    const cx = cur.x - camX
+    const cy = cur.y - camY
+    ctx.strokeStyle = 'rgba(220, 200, 255, 0.9)'
+    ctx.lineWidth = 1.5
+    ctx.beginPath()
+    ctx.moveTo(cx - 8, cy); ctx.lineTo(cx + 8, cy)
+    ctx.moveTo(cx, cy - 8); ctx.lineTo(cx, cy + 8)
+    ctx.stroke()
+    ctx.lineCap = 'butt'
+  }
+
+  // Pivot diamond + spokes — drawn when the selected wall's group has a motion config.
+  // Gold diamond at the actual rotation pivot (bbox center + offset). Faint spokes from
+  // the diamond to each wall in the group communicate the rotation relationship. When in
+  // pivot-set mode, the diamond pulses and a target ring appears at the cursor to invite
+  // a click — though we don't have the cursor position here, the pulse alone signals mode.
+  const pivot = getSelectedWallPivotWorld()
+  if (pivot) {
+    const px = pivot.x - camX
+    const py = pivot.y - camY
+    const inPivotMode = isPivotSetMode()
+    const atCenter = Math.abs(pivot.offset.x) < 0.5 && Math.abs(pivot.offset.y) < 0.5
+    // Spokes from pivot to every wall in the selected group's bbox extent
+    const selIdxP = getSelectedWallIdx()
+    if (selIdxP >= 0) {
+      // Reach across all walls in the group to draw spokes
+      ctx.save()
+      ctx.strokeStyle = 'rgba(255, 215, 64, 0.22)'
+      ctx.lineWidth = 1
+      ctx.setLineDash([3, 4])
+      // Without group info exposed to renderer, just draw a single spoke to the selected wall's midpoint.
+      const sw = wallsRef[selIdxP]
+      if (sw) {
+        const mx = (sw.ax + sw.bx) / 2 - camX
+        const my = (sw.ay + sw.by) / 2 - camY
+        ctx.beginPath()
+        ctx.moveTo(px, py)
+        ctx.lineTo(mx, my)
+        ctx.stroke()
+      }
+      ctx.restore()
+    }
+    // Diamond marker — bright gold when off-center or in pivot-set mode, dim grey when default
+    const pulse = inPivotMode ? (0.6 + 0.4 * Math.sin(performance.now() / 180)) : 1
+    ctx.save()
+    ctx.translate(px, py)
+    ctx.rotate(Math.PI / 4)
+    const s = 7
+    ctx.fillStyle = atCenter && !inPivotMode ? 'rgba(160, 160, 160, 0.9)' : `rgba(255, 215, 64, ${0.95 * pulse})`
+    ctx.fillRect(-s, -s, s * 2, s * 2)
+    ctx.strokeStyle = 'rgba(40, 30, 0, 1)'
+    ctx.lineWidth = 1.5
+    ctx.strokeRect(-s, -s, s * 2, s * 2)
+    ctx.restore()
+    // Inner dot at exact pivot point
+    ctx.beginPath()
+    ctx.arc(px, py, 1.8, 0, Math.PI * 2)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.95)'
+    ctx.fill()
+    // Outer ring when in pivot-set mode (signals "click to place")
+    if (inPivotMode) {
+      ctx.beginPath()
+      ctx.arc(px, py, 18 + 4 * Math.sin(performance.now() / 200), 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 215, 64, ${0.4 * pulse})`
+      ctx.lineWidth = 2
+      ctx.stroke()
+    }
+  }
+
+  // Snap point dots — drawn LAST so they sit on top of the gold selection outline, hover
+  // red, endpoint handles, and curve diamond. Otherwise the thick selection stroke covers
+  // every internal snap point and the user only sees handles at the endpoints. Cyan halo +
+  // bright core dot at every snap point of every wall (1 for pillar, 3 for short capsule,
+  // 5 for long capsule ≥ 40px). noClip walls return no points → no dots → visually obvious.
+  const showSnap = getSelectedWallIdx() >= 0 || !!getWallDrag() || !!getEndpointDrag() || getPlaceTool() === 'pillar'
+  if (showSnap) {
+    ctx.save()
+    for (const w of wallsRef) {
+      const pts = getWallSnapPoints(w)
+      for (const pt of pts) {
+        const sx = pt.x - camX, sy = pt.y - camY
+        // Halo
+        ctx.beginPath()
+        ctx.arc(sx, sy, 7, 0, Math.PI * 2)
+        ctx.fillStyle = 'rgba(120, 220, 255, 0.35)'
+        ctx.fill()
+        // Bright core dot
+        ctx.beginPath()
+        ctx.arc(sx, sy, 3.2, 0, Math.PI * 2)
+        ctx.fillStyle = 'rgba(180, 245, 255, 1)'
+        ctx.fill()
+        // Dark rim around core for contrast against the gold selection background
+        ctx.beginPath()
+        ctx.arc(sx, sy, 3.2, 0, Math.PI * 2)
+        ctx.strokeStyle = 'rgba(0, 40, 70, 0.9)'
+        ctx.lineWidth = 1
+        ctx.stroke()
+      }
+    }
+    ctx.restore()
+  }
+}
+
 function drawChillZone(): void {
   if (!chillZoneViz) return
   const cz = chillZoneViz
@@ -2261,7 +2952,16 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   frameDt = dt
   if (getPhase() === 'playing' || getPhase() === 'designer') gameTimeMs += dt * 1000
 
-  if (cam) {
+  // Designer zoom-out: center the camera on the arena (not the player) and scale down so
+  // more of the world fits on screen. `camX/camY` math stays unchanged for downstream draws,
+  // it just covers a larger world area when zoom < 1 (because the canvas is then scaled up
+  // by ctx.scale below — the world-to-screen calc is `(worldX - camX) * zoom`).
+  const isZoomedDesigner = designerZoomedOut && getPhase() === 'designer'
+  const renderZoom = isZoomedDesigner ? DESIGNER_ZOOM : 1
+  if (isZoomedDesigner) {
+    camX = ARENA_CX - width / (2 * renderZoom)
+    camY = ARENA_CY - height / (2 * renderZoom)
+  } else if (cam) {
     camX = cam.x - width / 2
     camY = cam.y - height / 2
   } else {
@@ -2293,6 +2993,13 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   ctx.fillStyle = `rgb(${bgR}, ${bgG}, ${bgB})`
   ctx.fillRect(0, 0, width, height)
 
+  // Designer zoom-out — scale world rendering so more of the arena fits on screen.
+  // HUD/UI rendered later is NOT scaled (we restore before drawHUD).
+  if (renderZoom !== 1) {
+    ctx.save()
+    ctx.scale(renderZoom, renderZoom)
+  }
+
   perfStart('grid')
   drawGrid(player)
   perfEnd('grid')
@@ -2309,6 +3016,8 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   }
 
   drawArenaBorder(player)
+  // Arena walls — drawn under all entities (floor layer), above the arena fill
+  drawWalls()
   // Chill Zone slow-field — on the arena floor, under enemies/orbs/player
   drawChillZone()
   perfStart('ripples')
@@ -2720,6 +3429,11 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     drawDesignerPreview(player)
     drawSpawnPanel()
     drawChallengePlacements()
+  }
+
+  // End designer zoom-out transform — HUD and UI render in unscaled screen space below
+  if (renderZoom !== 1) {
+    ctx.restore()
   }
 
   drawHUD(player, enemies, fps)
@@ -5151,7 +5865,22 @@ function drawShrine(enemy: Enemy, player: Player): void {
 function drawEnemy(enemy: Enemy, player: Player): void {
   let sx = enemy.x - camX
   let sy = enemy.y - camY
-  let r = enemy.radius
+  // Pusher visual pulse — matches the wall-spring pillar pulse math (instant peak at fire,
+  // (1-t)² decay, 10% max amplitude). Affects RENDERED radius only — actual collision and
+  // push trigger geometry still use enemy.radius (see GameManager.processPusherEnemies).
+  let pusherVisScale = 1
+  if (enemy.pusher && enemy.pusherLastFireBeat != null && !enemy.dying) {
+    const cycle = enemy.pusherBeats
+    const pulseDur = Math.min(0.20, cycle * 0.30)   // matches grace window — keeps visual alive for the full active push time
+    const pulseAmpl = Math.min(0.13, cycle * 0.13)
+    const beatsSinceFire = getAbsoluteBeats() - enemy.pusherLastFireBeat
+    if (beatsSinceFire >= 0 && beatsSinceFire < pulseDur) {
+      const t = beatsSinceFire / pulseDur
+      const ease = (1 - t) * (1 - t)
+      pusherVisScale = 1 + ease * pulseAmpl
+    }
+  }
+  let r = enemy.radius * pusherVisScale
 
   // Hit jitter — random position offset while flash is active
   if (enemy.hitFlash > 0) {
@@ -6007,6 +6736,43 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     }
   }
 
+  // Pusher shockwave — same inner-pulse visual as wall springs but tinted to the enemy's
+  // identity color. Concentric ring expands from the enemy's center to its rim, clipped
+  // to the body so it never spills outside. Three layers (glow / core / hot) matching the
+  // wall shockwave aesthetic; layer widths scale with enemy radius via the same formula.
+  if (enemy.pusher && !enemy.dying && enemy.pusherLastFireBeat != null && r > 4) {
+    const cycle = enemy.pusherBeats
+    const shockDur = Math.min(0.22, cycle * 0.32)   // matches wall shockwave duration
+    const beatsSinceFire = getAbsoluteBeats() - enemy.pusherLastFireBeat
+    if (beatsSinceFire >= 0 && beatsSinceFire < shockDur) {
+      const progress = beatsSinceFire / shockDur   // 0 at fire → 1 at rim
+      const alpha = (1 - progress * progress)
+      if (alpha > 0.01) {
+        const rEff = Math.max(2, r - 1)
+        const ringR = progress * rEff
+        const glowW = Math.max(8, rEff * 0.60)
+        const coreW = Math.max(3, rEff * 0.24)
+        const hotW = Math.max(1, rEff * 0.08)
+        // Tinted colors — glow is the pure enemy color, core lerps 40% toward gold, hot
+        // is near-white. Gives "energy from within, lit hot at the leading edge."
+        const lerp = (a: number, b: number, t: number) => Math.round(a + (b - a) * t)
+        const glowColor = `rgba(${hr}, ${hg}, ${hb}, ${alpha * 0.55})`
+        const coreColor = `rgba(${lerp(hr, 255, 0.4)}, ${lerp(hg, 245, 0.4)}, ${lerp(hb, 200, 0.4)}, ${alpha})`
+        const hotColor = `rgba(255, 255, 245, ${alpha * 0.9})`
+        ctx.save()
+        ctx.beginPath()
+        ctx.arc(sx, sy, rEff, 0, Math.PI * 2)
+        ctx.clip()
+        ctx.beginPath()
+        ctx.arc(sx, sy, ringR, 0, Math.PI * 2)
+        ctx.strokeStyle = glowColor; ctx.lineWidth = glowW; ctx.stroke()
+        ctx.strokeStyle = coreColor; ctx.lineWidth = coreW; ctx.stroke()
+        ctx.strokeStyle = hotColor; ctx.lineWidth = hotW; ctx.stroke()
+        ctx.restore()
+      }
+    }
+  }
+
   // Revenge indicator — glowing outward spikes
   if (enemy.revenge && !enemy.dying && r > 8) {
     const spikeCount = Math.min(enemy.revengeRings, 6)
@@ -6026,22 +6792,22 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const fG = Math.round(60 + fireFlash * 195)
       const fB = Math.round(40 + fireFlash * 215)
 
-      // Glow
+      // Glow — bumped alpha for more presence without widening the silhouette.
       ctx.beginPath()
       ctx.moveTo(baseX + Math.cos(angle + Math.PI / 2) * glowWidth, baseY + Math.sin(angle + Math.PI / 2) * glowWidth)
       ctx.lineTo(tipX, tipY)
       ctx.lineTo(baseX + Math.cos(angle - Math.PI / 2) * glowWidth, baseY + Math.sin(angle - Math.PI / 2) * glowWidth)
       ctx.closePath()
-      ctx.fillStyle = `rgba(${fR}, ${fG}, ${fB}, ${0.1 + pulse * 0.12 + fireFlash * 0.25})`
+      ctx.fillStyle = `rgba(${fR}, ${fG}, ${fB}, ${0.18 + pulse * 0.15 + fireFlash * 0.3})`
       ctx.fill()
 
-      // Core spike
+      // Core spike — brighter saturated red.
       ctx.beginPath()
       ctx.moveTo(baseX + Math.cos(angle + Math.PI / 2) * coreWidth, baseY + Math.sin(angle + Math.PI / 2) * coreWidth)
       ctx.lineTo(tipX, tipY)
       ctx.lineTo(baseX + Math.cos(angle - Math.PI / 2) * coreWidth, baseY + Math.sin(angle - Math.PI / 2) * coreWidth)
       ctx.closePath()
-      ctx.fillStyle = `rgba(${fR}, ${fG}, ${fB}, ${0.25 + pulse * 0.2 + fireFlash * 0.35})`
+      ctx.fillStyle = `rgba(${fR}, ${fG}, ${fB}, ${0.45 + pulse * 0.25 + fireFlash * 0.4})`
       ctx.fill()
     }
   }
@@ -7350,7 +8116,7 @@ function drawDesignerPreview(player: Player): void {
       ctx.lineTo(tx, ty)
       ctx.lineTo(bx + Math.cos(a - Math.PI / 2) * gw, by + Math.sin(a - Math.PI / 2) * gw)
       ctx.closePath()
-      ctx.fillStyle = `rgba(255, 60, 40, ${0.1 + pulse * 0.12})`
+      ctx.fillStyle = `rgba(255, 60, 40, ${0.18 + pulse * 0.15})`
       ctx.fill()
 
       ctx.beginPath()
@@ -7358,7 +8124,7 @@ function drawDesignerPreview(player: Player): void {
       ctx.lineTo(tx, ty)
       ctx.lineTo(bx + Math.cos(a - Math.PI / 2) * cw, by + Math.sin(a - Math.PI / 2) * cw)
       ctx.closePath()
-      ctx.fillStyle = `rgba(255, 80, 60, ${0.25 + pulse * 0.2})`
+      ctx.fillStyle = `rgba(255, 80, 60, ${0.45 + pulse * 0.25})`
       ctx.fill()
     }
 
@@ -9167,6 +9933,8 @@ function drawChallengePlacements(): void {
   if (getPhase() !== 'designer') return
   const placements = getPlacingEnemies()
   const selected = getSelectedPlacement()
+  const hovered = getHoveredEnemyIdx()
+  const hPulse = 0.5 + 0.5 * Math.sin(performance.now() / 220)
   for (let i = 0; i < placements.length; i++) {
     const e = placements[i]!
     const type = ENEMY_TYPES.find(t => t.name === e.typeName)
@@ -9174,6 +9942,7 @@ function drawChallengePlacements(): void {
     const sx = e.x - camX
     const sy = e.y - camY
     const isSelected = i === selected
+    const isHovered = i === hovered
     const hr = parseInt((type?.color ?? '#888888').slice(1, 3), 16)
     const hg = parseInt((type?.color ?? '#888888').slice(3, 5), 16)
     const hb = parseInt((type?.color ?? '#888888').slice(5, 7), 16)
@@ -9190,6 +9959,21 @@ function drawChallengePlacements(): void {
     ctx.stroke()
     ctx.setLineDash([])
     ctx.globalAlpha = 1
+
+    // Hover delete preview — pulsing red overlay matching the wall hover treatment so the
+    // user sees a uniform "right-click would delete this" affordance across both kinds of
+    // placements. Drawn after the ghost so it sits on top.
+    if (isHovered) {
+      ctx.beginPath()
+      ctx.arc(sx, sy, r + 8, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, 80, 80, ${0.28 + hPulse * 0.12})`
+      ctx.fill()
+      ctx.beginPath()
+      ctx.arc(sx, sy, r + 2, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 100, 100, 0.95)`
+      ctx.lineWidth = 2
+      ctx.stroke()
+    }
 
     // Name label
     ctx.font = '10px monospace'

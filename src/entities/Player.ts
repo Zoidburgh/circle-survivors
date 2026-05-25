@@ -10,7 +10,7 @@ import { showToast, triggerDashFailFlash } from '../render/Renderer.ts'
 let dashCDToastFired = false
 let dashCDBeginner = false
 export function resetDashCDToast(beginner = false): void { dashCDToastFired = false; dashCDBeginner = beginner }
-import { clampToArena, ARENA_W, ARENA_H, getArenaShape, ARENA_CX, ARENA_CY, ARENA_RADIUS } from '../game/Arena.ts'
+import { clampToArena, resolveWallCollision, ARENA_W, ARENA_H, getArenaShape, ARENA_CX, ARENA_CY, ARENA_RADIUS } from '../game/Arena.ts'
 import { applyDashMotion } from './DashMotion.ts'
 import { hasBonus } from '../game/UpgradeManager.ts'
 import {
@@ -81,6 +81,9 @@ export interface Player {
   dashTimer: number
   dashDirX: number
   dashDirY: number
+  // Wall-spring launch impulse — added to position each frame during launchTimer, decays
+  // exponentially. Bypasses normal movement gates so springs can shove the player even mid-dash.
+  launchVx: number; launchVy: number; launchTimer: number
   dashChainBoost: number  // per-dash distance multiplier (1.0 normal, 2.0 when chained with Slipstream)
                           // — set on dash start, applied multiplicatively on top of modifiers.dashDistanceMult
   // Echo Step state — beat-dash leapfrog mechanic. Anchor is the last spot the player beat-dashed
@@ -137,6 +140,7 @@ export function createPlayer(x: number, y: number): Player {
     dashTimer: -1,
     dashDirX: 0,
     dashDirY: 0,
+    launchVx: 0, launchVy: 0, launchTimer: 0,
     dashChainBoost: 1.0,
     anchorX: 0, anchorY: 0, anchorActive: false,
     recallTimer: -1, recallFromX: 0, recallFromY: 0, recallToX: 0, recallToY: 0,
@@ -182,6 +186,7 @@ export function resetPlayer(player: Player): void {
   player.dashTimer = -1
   player.dashDirX = 0
   player.dashDirY = 0
+  player.launchVx = 0; player.launchVy = 0; player.launchTimer = 0
   player.dashChainBoost = 1.0
   player.anchorActive = false
   player.recallTimer = -1
@@ -304,14 +309,28 @@ export function updatePlayer(player: Player, dt: number): void {
       player.y = player.recallFromY + (player.recallToY - player.recallFromY) * eased
     }
   } else if (player.dashTimer >= 0) {
-    applyDashMotion(player, dt, {
-      steerInput: Input.getMovementDir(),
-      // Multiplicative stacking: Long Dash and any other future +dashDistanceMult upgrades
-      // live in modifiers.dashDistanceMult; Slipstream's chain bonus sits in dashChainBoost.
-      // Compounding them means each upgrade keeps its full proportional effect on the others.
-      distanceMult: player.modifiers.dashDistanceMult * player.dashChainBoost,
-      speedMult: player.modifiers.speedMult,
-    })
+    // Substep the dash motion into 4 mini-steps and resolve walls after each. Stops the
+    // dash from tunneling through thin walls when distance-per-frame exceeds wall thickness
+    // (e.g. Slipstream-boosted dashes can move 20+ px/frame; default walls are ~36 px thick
+    // including player radius, so single-step would still resolve, but with thinner walls or
+    // future +dash-speed upgrades this future-proofs it cheaply).
+    const SUBSTEPS = 4
+    const subDt = dt / SUBSTEPS
+    const playerBodyR = PLAYER_RADIUS * player.modifiers.sizeMult
+    for (let s = 0; s < SUBSTEPS; s++) {
+      if (player.dashTimer < 0) break  // dash ended mid-substep
+      applyDashMotion(player, subDt, {
+        steerInput: Input.getMovementDir(),
+        // Multiplicative stacking: Long Dash and any other future +dashDistanceMult upgrades
+        // live in modifiers.dashDistanceMult; Slipstream's chain bonus sits in dashChainBoost.
+        // Compounding them means each upgrade keeps its full proportional effect on the others.
+        distanceMult: player.modifiers.dashDistanceMult * player.dashChainBoost,
+        speedMult: player.modifiers.speedMult,
+      })
+      const wr = resolveWallCollision(player.x, player.y, playerBodyR)
+      player.x = wr.x
+      player.y = wr.y
+    }
   } else {
     const dir = Input.getMovementDir()
     if (dir.x !== 0 || dir.y !== 0) {
@@ -361,6 +380,67 @@ export function updatePlayer(player: Player, dt: number): void {
     const clamped = clampToArena(player.x, player.y, bodyR)
     player.x = clamped.x
     player.y = clamped.y
+  }
+  // Wall-spring launch — peak velocity at fire, exponential decay, smooth fade-out tail.
+  // Directional Influence (DI): input vector accelerates the launch velocity directly so
+  // the player can bend the trajectory mid-bounce, not just shuffle on top of it. Without
+  // DI, launch (~500 px/s) outguns input (280 px/s) until decay knocks it below ~280, by
+  // which point the bounce is mostly over and you never felt in control.
+  if (player.launchTimer > 0) {
+    player.launchTimer -= dt
+    const steer = Input.getMovementDir()
+    if (steer.x !== 0 || steer.y !== 0) {
+      const STEER_ACCEL = 8500   // px/s² peak steering authority
+      // Asymmetric DI: input is split into a parallel-to-launch component and a perpendicular
+      // component. Perpendicular steering always has full authority (curves the arc freely).
+      // The PARALLEL component is full-authority when it's WITH the launch (boost), but the
+      // OPPOSING parallel component is gated by an early-launch lockout window so the bounce
+      // gets to assert itself before the player can cancel it dead.
+      // Window (elapsed = LAUNCH_DURATION - launchTimer, LAUNCH_DURATION = 0.28s):
+      //   0.00s → 0.08s : 100% opposition lockout (you cannot fight back at all)
+      //   0.08s → 0.20s : opposition authority ramps 0% → 100%
+      //   0.20s+        : full opposition authority
+      const lsp2 = player.launchVx * player.launchVx + player.launchVy * player.launchVy
+      if (lsp2 > 1) {
+        const lsp = Math.sqrt(lsp2)
+        const lnx = player.launchVx / lsp
+        const lny = player.launchVy / lsp
+        const along = steer.x * lnx + steer.y * lny    // >0 with launch, <0 opposing
+        const parX = along * lnx, parY = along * lny
+        const perpX = steer.x - parX, perpY = steer.y - parY
+        const elapsed = 0.28 - player.launchTimer
+        const oppMult = along < 0
+          ? Math.max(0, Math.min(1, (elapsed - 0.08) / 0.12))
+          : 1
+        player.launchVx += (parX * oppMult + perpX) * STEER_ACCEL * dt
+        player.launchVy += (parY * oppMult + perpY) * STEER_ACCEL * dt
+      } else {
+        // Launch already drained — restore full steering
+        player.launchVx += steer.x * STEER_ACCEL * dt
+        player.launchVy += steer.y * STEER_ACCEL * dt
+      }
+    }
+    const decay = Math.pow(0.03, dt)   // snappier — drops velocity faster (was 0.06)
+    player.launchVx *= decay
+    player.launchVy *= decay
+    const LAUNCH_FADE_TAIL = 0.10
+    const fadeMult = player.launchTimer < LAUNCH_FADE_TAIL
+      ? Math.max(0, player.launchTimer / LAUNCH_FADE_TAIL)
+      : 1
+    player.x += player.launchVx * fadeMult * dt
+    player.y += player.launchVy * fadeMult * dt
+    if (player.launchTimer <= 0) {
+      player.launchVx = 0; player.launchVy = 0; player.launchTimer = 0
+    }
+  }
+  // Wall collision — runs after arena clamp so walls inside the arena push out of any
+  // overlap. Skipped during the Echo Step recall (intentionally phases through walls — it's
+  // a teleport, not a movement). Dash motion already resolved walls per-substep above; this
+  // catches WASD movement, post-clamp wall overlap, and dash-end positions.
+  if (player.recallTimer < 0) {
+    const wr = resolveWallCollision(player.x, player.y, bodyR)
+    player.x = wr.x
+    player.y = wr.y
   }
 
   // Movement trail — distance-based, collapses when stationary

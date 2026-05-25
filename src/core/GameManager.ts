@@ -10,12 +10,14 @@ import { advancePatternClock } from '../audio/PatternClock.ts'
 import { getPlayer, getEnemies, getGrid, getCamera, getPhase, setPhase, getXpForNextLevel, startRunTimer, advanceRunTimer, isRunTimerActive, isRunComplete, completeRun, getRunTimer, isInDesignerTestPlay } from './GameState.ts'
 import { updateOrbs, cleanupOrbs, getOrbs, spawnOrb, collectOrb, resetOrbs } from '../entities/XPOrb.ts'
 import type { XPOrb } from '../entities/XPOrb.ts'
-import { updateCamera, clampToArena, getArenaShape, setArenaShape, findClearSpawnPos } from '../game/Arena.ts'
+import { updateCamera, clampToArena, getArenaShape, setArenaShape, findClearSpawnPos, resolveWallCollision, updateWalls, consumeSpringFires, computeWallArc, getWalls } from '../game/Arena.ts'
+import type { Wall } from '../game/Arena.ts'
 import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils/constants.ts'
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on, emit } from './EventBus.ts'
-import { shouldFire, timeUntilNextBeat, getLoopPosition } from '../audio/PatternClock.ts'
-import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playFuseStart, playRecallStart, playChillZonePlace, playIceShardBurst, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth } from '../audio/AudioEngine.ts'
+import { shouldFire, timeUntilNextBeat, getLoopPosition, getAbsoluteBeats } from '../audio/PatternClock.ts'
+import { getBeatZeroTime } from '../audio/BeatLoop.ts'
+import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playFuseStart, playRecallStart, playChillZonePlace, playIceShardBurst, playWallSpringFire, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth } from '../audio/AudioEngine.ts'
 import { resetProTip, showToast } from '../render/Renderer.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
 import { getScoresForChallenge, fetchOnlineScores } from '../game/HighScores.ts'
@@ -892,6 +894,367 @@ let totemSpawnCount = 0
 let totemSpawnWindowStart = 0
 let grimPatronFired = false
 
+// Closest point on a wall (straight capsule or arc) to a query point. Used by spring
+// processing to compute the wall normal at each entity contact.
+function closestPointOnWall(w: Wall, x: number, y: number): { x: number; y: number } {
+  const arc = computeWallArc(w)
+  if (arc) {
+    const dx = x - arc.cx
+    const dy = y - arc.cy
+    const dist = Math.sqrt(dx * dx + dy * dy)
+    if (dist < 0.01) return { x: arc.cx + arc.r, y: arc.cy }
+    // Approximate by projecting to arc circle; for spring purposes this is close enough
+    // even for points just past the arc endpoints — overlap test will reject far-off cases.
+    return { x: arc.cx + (dx / dist) * arc.r, y: arc.cy + (dy / dist) * arc.r }
+  }
+  const abx = w.bx - w.ax
+  const aby = w.by - w.ay
+  const apx = x - w.ax
+  const apy = y - w.ay
+  const ab2 = abx * abx + aby * aby
+  let t = 0
+  if (ab2 > 0.01) {
+    t = (apx * abx + apy * aby) / ab2
+    if (t < 0) t = 0
+    else if (t > 1) t = 1
+  }
+  return { x: w.ax + abx * t, y: w.ay + aby * t }
+}
+
+interface LaunchTarget { x: number; y: number; launchVx: number; launchVy: number; launchTimer: number }
+function applyLaunch(entity: LaunchTarget, dx: number, dy: number, dist2: number, strength: number): void {
+  let nx: number, ny: number
+  if (dist2 < 0.01) { nx = 1; ny = 0 }
+  else { const d = Math.sqrt(dist2); nx = dx / d; ny = dy / d }
+  // Anti-cancel: if existing launch is OPPOSING the spring direction, remove 70% of that
+  // opposition before adding the new impulse. Without this, two opposite-direction springs
+  // cancel exactly (Sum of forces = 0), and you ricochet between two walls feels broken.
+  // Cumulative behavior is preserved when launches are SAME-direction (projection > 0).
+  const projOnNormal = entity.launchVx * nx + entity.launchVy * ny
+  if (projOnNormal < 0) {
+    const removeFrac = 0.7
+    entity.launchVx -= projOnNormal * nx * removeFrac
+    entity.launchVy -= projOnNormal * ny * removeFrac
+  }
+  entity.launchVx += nx * strength
+  entity.launchVy += ny * strength
+  // 0.28s total = snappier punch (peak → ~30% via 0.04 decay) + smooth fade-tail. Player
+  // integration applies a fade multiplier in the last 0.10s so the launch eases to zero
+  // instead of snapping. Input runs in parallel → DI steers the trajectory mid-bounce.
+  entity.launchTimer = Math.max(entity.launchTimer, 0.28)
+}
+
+/** Resolve a single orb↔other collision using the battering-ram rules. The orb pass in
+ * GameManager runs in two places (real-game update + designer update), and both call this.
+ *
+ * Rules (consistent with Enemy↔Enemy separation in Enemy.ts):
+ *   - other is immovable enemy → orb takes full overlap, other unmoved
+ *   - orb launched, other not  → orb plows through (no self-push), other shoved fully aside
+ *   - other launched, orb not  → orb gets out of the way (full self-push), other unmoved
+ *   - both launched (or neither) → split 0.5/0.5 (mild mutual nudge to avoid permanent stack) */
+function resolveOrbCollision(
+  orb: XPOrb,
+  other: XPOrb | Enemy,
+  isEnemy: boolean,
+  nx: number,
+  ny: number,
+  total: number,
+): void {
+  const isImmovableEnemy = isEnemy && (other as Enemy).immovable
+  const launchedOrb = orb.launchTimer > 0
+  const launchedOther = other.launchTimer > 0
+  let orbPush: number, otherPush: number
+  if (isImmovableEnemy) {
+    orbPush = total; otherPush = 0
+  } else if (launchedOrb && !launchedOther) {
+    orbPush = 0; otherPush = total
+  } else if (!launchedOrb && launchedOther) {
+    orbPush = total; otherPush = 0
+  } else {
+    orbPush = total * 0.5; otherPush = total * 0.5
+  }
+  orb.x += nx * orbPush
+  orb.y += ny * orbPush
+  if (otherPush > 0) {
+    other.x -= nx * otherPush
+    other.y -= ny * otherPush
+  }
+}
+
+/** Drain queued spring fires from Arena and apply launch impulses to overlapping entities.
+ * Affects player, alive enemies (including immovable and immobilized), and orbs.
+ *
+ * `SPRING_TRIGGER_BUFFER` adds a small gap so the spring catches entities that are pressed
+ * against the wall. Wall collision pushes overlapping entities out to EXACTLY `wallR + entR`
+ * distance, so strict overlap (`d² < reach²`) misses anything resting on the wall surface —
+ * which is precisely the case the spring should fire on. 12px buffer = "very close, not
+ * strictly inside" — also catches fast-moving entities that briefly graze a wall mid-frame. */
+const SPRING_TRIGGER_BUFFER = 11
+// Grace window — after a spring fires, it stays "active" for this many beats. Any entity
+// that enters trigger range during the window gets pushed (once per fire). Catches the
+// case where a dash arrives at the wall right after the fire moment — without this, you'd
+// miss by a single frame and the spring would feel unreliable.
+const SPRING_GRACE_BEATS = 0.22
+// Per-fire entity tracker — keyed by wall, holds the set of entities already pushed by
+// the wall's current fire. WeakMap means walls can be garbage-collected without leaking.
+const springPushedThisFire = new WeakMap<Wall, Set<unknown>>()
+const HEAVY_RESIST = 0.5
+
+function tryPushSpring(
+  w: Wall,
+  player: ReturnType<typeof getPlayer>,
+  enemies: ReturnType<typeof getEnemies>,
+  orbs: ReturnType<typeof getOrbs>,
+  playerR: number,
+): void {
+  if (!w.spring) return
+  const pushed = springPushedThisFire.get(w)
+  if (!pushed) return
+  const strength = w.spring.strength
+  // The pushed-set tracks who is CURRENTLY in range and has already been launched by this
+  // fire. Important: when an entity leaves the trigger range, we REMOVE them from the set
+  // so that if they come back into range during the grace window (e.g. another spring
+  // bounces them back, or a pusher enemy chases them in), they get pushed again. Without
+  // this removal the set was permanently "sticky" per-fire and missed those re-entries.
+  if (player.recallTimer < 0) {
+    const cp = closestPointOnWall(w, player.x, player.y)
+    const dx = player.x - cp.x
+    const dy = player.y - cp.y
+    const d2 = dx * dx + dy * dy
+    const reach = w.radius + playerR + SPRING_TRIGGER_BUFFER
+    if (d2 < reach * reach) {
+      if (!pushed.has(player)) {
+        if (player.dashTimer >= 0) player.dashTimer = -1
+        applyLaunch(player, dx, dy, d2, strength)
+        pushed.add(player)
+      }
+    } else {
+      pushed.delete(player)
+    }
+  }
+  for (const e of enemies) {
+    if (!e.alive || e.dying) continue
+    const cp = closestPointOnWall(w, e.x, e.y)
+    const dx = e.x - cp.x
+    const dy = e.y - cp.y
+    const d2 = dx * dx + dy * dy
+    const reach = w.radius + e.radius + SPRING_TRIGGER_BUFFER
+    if (d2 < reach * reach) {
+      if (!pushed.has(e)) {
+        applyLaunch(e, dx, dy, d2, e.immovable ? strength * HEAVY_RESIST : strength)
+        pushed.add(e)
+      }
+    } else {
+      pushed.delete(e)
+    }
+  }
+  for (const o of orbs) {
+    if (!o.alive || o.dying) continue
+    const cp = closestPointOnWall(w, o.x, o.y)
+    const dx = o.x - cp.x
+    const dy = o.y - cp.y
+    const d2 = dx * dx + dy * dy
+    const reach = w.radius + o.radius + SPRING_TRIGGER_BUFFER
+    if (d2 < reach * reach) {
+      if (!pushed.has(o)) {
+        applyLaunch(o, dx, dy, d2, strength)
+        pushed.add(o)
+      }
+    } else {
+      pushed.delete(o)
+    }
+  }
+}
+
+function processSpringFires(): void {
+  const fires = consumeSpringFires()
+  const player0 = getPlayer()
+  const enemies0 = getEnemies()
+  const orbs0 = getOrbs()
+  const playerR0 = PLAYER_RADIUS * player0.modifiers.sizeMult
+  // Pass 1 — fresh fires: reset the wall's "pushed this fire" set, then push everything
+  // currently overlapping the trigger range.
+  if (fires.length > 0) {
+    for (const fire of fires) {
+      const w = fire.wall
+      if (!w.spring) continue
+      springPushedThisFire.set(w, new Set())
+      tryPushSpring(w, player0, enemies0, orbs0, playerR0)
+    }
+  }
+  // Pass 2 — grace window: re-check overlap for any spring whose last fire was within
+  // SPRING_GRACE_BEATS. Each entity is pushed at most once per fire (see tryPushSpring's
+  // `pushed.has(...)` checks). When the grace expires, drop the tracker so the next fire
+  // starts fresh.
+  const beatPosForGrace = getAbsoluteBeats()
+  const wallsLiveGrace = getWalls()
+  for (const w of wallsLiveGrace) {
+    if (!w.spring || w.springLastFireBeat == null) continue
+    if (!springPushedThisFire.has(w)) continue
+    const beatsSinceFire = beatPosForGrace - w.springLastFireBeat
+    if (beatsSinceFire <= 0) continue
+    if (beatsSinceFire > SPRING_GRACE_BEATS) {
+      springPushedThisFire.delete(w)
+      continue
+    }
+    tryPushSpring(w, player0, enemies0, orbs0, playerR0)
+  }
+
+  // Audio PRE-SCHEDULING — every frame, look at each spring wall's NEXT upcoming fire and
+  // schedule its audio in advance at the exact target time. Web Audio API plays scheduled-
+  // future audio sample-accurately (no output-latency hit). This is how the music itself
+  // stays tight to the beat. Lookahead of 0.5 beats = up to 500ms early at 60bpm — plenty
+  // of headroom for the audio system. Tracked per-wall via springScheduledAudioBeat so we
+  // don't re-schedule the same fire.
+  const beatPos = getAbsoluteBeats()
+  const AUDIO_LOOKAHEAD_BEATS = 0.5
+  const bz = getBeatZeroTime()
+  const wallsLive = getWalls()
+  for (const w of wallsLive) {
+    if (!w.spring || w.springLastFireBeat == null) continue
+    const nextFire = w.springLastFireBeat + w.spring.beatsPerCycle
+    if (nextFire - beatPos > AUDIO_LOOKAHEAD_BEATS) continue
+    if (nextFire <= beatPos) continue   // already past — handled by "play now" path below
+    if (w.springScheduledAudioBeat != null && w.springScheduledAudioBeat >= nextFire) continue
+    playWallSpringFire(bz + nextFire * BEAT_SEC)
+    w.springScheduledAudioBeat = nextFire
+  }
+  // Fallback for the FIRST fire of a fresh wall — no advance schedule was possible because
+  // we didn't know the lastFireBeat yet. Play asap on detection (slight latency for fire #1
+  // only; subsequent fires are pre-scheduled and locked to the music clock).
+  for (const fire of fires) {
+    if (fire.wall.spring && fire.wall.springScheduledAudioBeat !== fire.targetBeat) {
+      playWallSpringFire()   // asap; this fire's audio will be slightly late, but only once
+      fire.wall.springScheduledAudioBeat = fire.targetBeat
+      break   // playWallSpringFire is throttled — one call is enough for this frame
+    }
+  }
+}
+
+// Pusher enemies — kinematically shove nearby entities on-beat. Mirrors the wall spring
+// firing logic exactly (beat-aligned to the music's downbeat via BEAT_AUDIO_OFFSET, grace
+// window via WeakMap-pushed-set, audio pre-scheduled 0.5 beats ahead). Pushes are pure
+// kinematics — no damage, no shield break, no revenge trigger. Self-exclusion: a pusher
+// never pushes itself; otherwise pushes player, OTHER enemies (including other pushers),
+// and orbs.
+const PUSHER_BEAT_AUDIO_OFFSET = 0.37   // matches BeatLoop's music kick offset
+const pusherPushedThisFire = new WeakMap<Enemy, Set<unknown>>()
+
+function tryPushPusher(
+  source: Enemy,
+  player: ReturnType<typeof getPlayer>,
+  enemies: ReturnType<typeof getEnemies>,
+  orbs: ReturnType<typeof getOrbs>,
+  playerR: number,
+): void {
+  const pushed = pusherPushedThisFire.get(source)
+  if (!pushed) return
+  const strength = source.pusherStrength
+  // Same "remove on exit" pattern as tryPushSpring. Especially important here because the
+  // pusher itself can be launched into the player by another bounce — when that happens
+  // we want the player to get pushed again as the pusher catches up, even though the
+  // player was already pushed by this fire's initial Pass 1.
+  if (player.recallTimer < 0) {
+    const dx = player.x - source.x
+    const dy = player.y - source.y
+    const d2 = dx * dx + dy * dy
+    const reach = source.radius + playerR + SPRING_TRIGGER_BUFFER
+    if (d2 < reach * reach) {
+      if (!pushed.has(player)) {
+        if (player.dashTimer >= 0) player.dashTimer = -1
+        applyLaunch(player, dx, dy, d2, strength)
+        pushed.add(player)
+      }
+    } else {
+      pushed.delete(player)
+    }
+  }
+  for (const e of enemies) {
+    if (e === source || !e.alive || e.dying) continue
+    const dx = e.x - source.x
+    const dy = e.y - source.y
+    const d2 = dx * dx + dy * dy
+    const reach = source.radius + e.radius + SPRING_TRIGGER_BUFFER
+    if (d2 < reach * reach) {
+      if (!pushed.has(e)) {
+        applyLaunch(e, dx, dy, d2, e.immovable ? strength * HEAVY_RESIST : strength)
+        pushed.add(e)
+      }
+    } else {
+      pushed.delete(e)
+    }
+  }
+  for (const o of orbs) {
+    if (!o.alive || o.dying) continue
+    const dx = o.x - source.x
+    const dy = o.y - source.y
+    const d2 = dx * dx + dy * dy
+    const reach = source.radius + o.radius + SPRING_TRIGGER_BUFFER
+    if (d2 < reach * reach) {
+      if (!pushed.has(o)) {
+        applyLaunch(o, dx, dy, d2, strength)
+        pushed.add(o)
+      }
+    } else {
+      pushed.delete(o)
+    }
+  }
+}
+
+function processPusherEnemies(): void {
+  const beatPos = getAbsoluteBeats()
+  const player0 = getPlayer()
+  const enemies0 = getEnemies()
+  const orbs0 = getOrbs()
+  const playerR0 = PLAYER_RADIUS * player0.modifiers.sizeMult
+  const bz = getBeatZeroTime()
+  const AUDIO_LOOKAHEAD_BEATS = 0.5
+  // Pass 1 — detect new fires (beat-aligned). On fire: clear push tracker, mark transient
+  // flag, push currently overlapping entities.
+  for (const e of enemies0) {
+    if (!e.pusher || !e.alive || e.dying) continue
+    const cycle = e.pusherBeats
+    if (cycle <= 0) continue
+    const effectivePhase = e.pusherPhase + PUSHER_BEAT_AUDIO_OFFSET
+    let nextFire: number
+    if (e.pusherLastFireBeat == null) {
+      nextFire = Math.ceil((beatPos - effectivePhase) / cycle) * cycle + effectivePhase
+      if (nextFire <= beatPos) nextFire += cycle
+      e.pusherLastFireBeat = nextFire - cycle
+    } else {
+      nextFire = e.pusherLastFireBeat + cycle
+    }
+    if (beatPos >= nextFire) {
+      e.pusherLastFireBeat = nextFire
+      e.pusherJustFired = true
+      pusherPushedThisFire.set(e, new Set())
+      tryPushPusher(e, player0, enemies0, orbs0, playerR0)
+    }
+  }
+  // Pass 2 — grace window (same SPRING_GRACE_BEATS as walls — keeps push rules consistent).
+  for (const e of enemies0) {
+    if (!e.pusher || e.pusherLastFireBeat == null) continue
+    if (!pusherPushedThisFire.has(e)) continue
+    const beatsSinceFire = beatPos - e.pusherLastFireBeat
+    if (beatsSinceFire <= 0) continue
+    if (beatsSinceFire > SPRING_GRACE_BEATS) {
+      pusherPushedThisFire.delete(e)
+      continue
+    }
+    tryPushPusher(e, player0, enemies0, orbs0, playerR0)
+  }
+  // Pass 3 — audio pre-schedule (sample-accurate, locked to the music clock).
+  for (const e of enemies0) {
+    if (!e.pusher || e.pusherLastFireBeat == null) continue
+    const nextFire = e.pusherLastFireBeat + e.pusherBeats
+    if (nextFire - beatPos > AUDIO_LOOKAHEAD_BEATS) continue
+    if (nextFire <= beatPos) continue
+    if (e.pusherScheduledAudioBeat != null && e.pusherScheduledAudioBeat >= nextFire) continue
+    playWallSpringFire(bz + nextFire * BEAT_SEC)
+    e.pusherScheduledAudioBeat = nextFire
+  }
+}
+
 export function resetPendingEffects(): void {
   pendingExplosions.length = 0
   pendingRevenges.length = 0
@@ -975,6 +1338,15 @@ function updateDesigner(dt: number): void {
   tickAudioHealth()
   advanceGlobalTime(dt)
   advancePatternClock(dt)
+  // Tick wall motion in designer too (so test-play sees rotating walls without leaving the
+  // designer). Frozen when the user has zoomed out to see the whole arena — they want a
+  // stable view to author against. Uses absolute beats so wall cycles longer than the song
+  // loop don't snap backwards on wrap.
+  if (!Renderer.isDesignerZoomedOut()) {
+    updateWalls(getAbsoluteBeats())
+    processSpringFires()
+    processPusherEnemies()
+  }
   Input.flush()
   const player = getPlayer()
   const cam = getCamera()
@@ -1046,7 +1418,8 @@ function updateDesigner(dt: number): void {
       player.y -= ny * overlap * 0.15
     }
   }
-  // Orb separation (grid-accelerated, mirrors real-game pass)
+  // Orb separation (grid-accelerated, mirrors real-game pass). Uses resolveOrbCollision
+  // helper so the battering-ram rules stay in sync with the real-game pass below.
   for (const orb of orbs) {
     if (!orb.alive || orb.dying) continue
     const nearby = grid.query(orb)
@@ -1058,30 +1431,15 @@ function updateDesigner(dt: number): void {
       const dy = orb.y - other.y
       const dist = Math.sqrt(dx * dx + dy * dy)
       if (dist < minDist && dist > 0.1) {
-        const nx = dx / dist
-        const ny = dy / dist
-        const total = minDist - dist
-        // Heavy/immovable enemies absorb no push — orb takes the FULL overlap (see main pass for rationale).
-        const isImmovableEnemy = isEnemy && (other as Enemy).immovable
-        const orbPush = isImmovableEnemy ? total : total * 0.5
-        orb.x += nx * orbPush
-        orb.y += ny * orbPush
-        if (!isImmovableEnemy) {
-          const otherPush = total * 0.5
-          if (!isEnemy) {
-            const otherOrb = other as typeof orb
-            otherOrb.x -= nx * otherPush
-            otherOrb.y -= ny * otherPush
-          } else {
-            const oe = other as Enemy
-            oe.x -= nx * otherPush; oe.y -= ny * otherPush
-          }
-        }
+        resolveOrbCollision(orb, other as XPOrb | Enemy, isEnemy, dx / dist, dy / dist, minDist - dist)
       }
     }
     const oc = clampToArena(orb.x, orb.y, orb.radius)
     orb.x = oc.x
     orb.y = oc.y
+    const ow = resolveWallCollision(orb.x, orb.y, orb.radius)
+    orb.x = ow.x
+    orb.y = ow.y
   }
   cleanupOrbs()
   // Enemy-vs-enemy separation
@@ -1351,6 +1709,12 @@ export function update(dt: number): void {
   tickAudioHealth()  // auto-fix suspended AudioContext on mobile
   advanceGlobalTime(dt)
   advancePatternClock(dt)
+  // Tick wall motion (rotating walls etc.) using a monotonic absolute beat counter. Using
+  // getLoopPosition (modulo song-loop) would snap walls backwards when beatsPerCycle exceeds
+  // the song loop length — e.g. a 12-beats/rev rotation in an 8-beat song would reset every 8.
+  updateWalls(getAbsoluteBeats())
+  processSpringFires()
+  processPusherEnemies()
   updatePreviewEnemy(dt)
   updateRitualNodes(dt)
 
@@ -1867,6 +2231,10 @@ export function update(dt: number): void {
         const pull = Math.min(MAGNET_STRENGTH * dt, len - stopDist)  // don't overshoot into body
         orb.x += (dx / len) * pull
         orb.y += (dy / len) * pull
+        // Don't let magnet pull suck the orb through a wall
+        const ow = resolveWallCollision(orb.x, orb.y, orb.radius)
+        orb.x = ow.x
+        orb.y = ow.y
       }
     }
   }
@@ -2010,7 +2378,9 @@ export function update(dt: number): void {
       }
     }
 
-    // Orb separation (grid-accelerated, uses same grid build from top of pass)
+    // Orb separation (grid-accelerated, uses same grid build from top of pass). Uses
+    // resolveOrbCollision helper for battering-ram rules (matches designer pass + enemy
+    // separation in Enemy.ts).
     for (const orb of orbs) {
       if (!orb.alive || orb.dying) continue
       const nearby = grid.query(orb)
@@ -2022,35 +2392,16 @@ export function update(dt: number): void {
         const dy = orb.y - other.y
         const dist = Math.sqrt(dx * dx + dy * dy)
         if (dist < minDist && dist > 0.1) {
-          const nx = dx / dist
-          const ny = dy / dist
-          const total = minDist - dist
-          // Heavy/immovable enemies absorb no push — the orb must take the FULL overlap
-          // or it ends up half-buried and visibly clipped (worst case: orb wedged between
-          // two heavies, where each side only ever resolves half the penetration).
-          const isImmovableEnemy = isEnemy && (other as Enemy).immovable
-          const orbPush = isImmovableEnemy ? total : total * 0.5
-          orb.x += nx * orbPush
-          orb.y += ny * orbPush
-          if (!isImmovableEnemy) {
-            const otherPush = total * 0.5
-            if (!isEnemy) {
-              // Orb-orb: push the other orb too
-              const otherOrb = other as typeof orb
-              otherOrb.x -= nx * otherPush
-              otherOrb.y -= ny * otherPush
-            } else {
-              // Orb-enemy (non-immovable): push enemy too (same as enemy-enemy)
-              const oe = other as Enemy
-              oe.x -= nx * otherPush
-              oe.y -= ny * otherPush
-            }
-          }
+          resolveOrbCollision(orb, other as XPOrb | Enemy, isEnemy, dx / dist, dy / dist, minDist - dist)
         }
       }
       const oc = clampToArena(orb.x, orb.y, orb.radius)
       orb.x = oc.x
       orb.y = oc.y
+      // Walls
+      const ow = resolveWallCollision(orb.x, orb.y, orb.radius)
+      orb.x = ow.x
+      orb.y = ow.y
     }
 
     // Player vs enemies + orbs

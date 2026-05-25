@@ -14,6 +14,8 @@ export interface XPOrb {
   dying: boolean
   deathTimer: number
   consumedBy: 'player' | 'enemy' | null
+  // Wall-spring launch impulse (px/s) — added to position each frame during launchTimer
+  launchVx: number; launchVy: number; launchTimer: number
 }
 
 const ORB_RADIUS = PLAYER_RADIUS * 0.575
@@ -39,6 +41,7 @@ export function spawnOrb(x: number, y: number, value = 1, type: OrbType = 'xp'):
     dying: false,
     deathTimer: -1,
     consumedBy: null,
+    launchVx: 0, launchVy: 0, launchTimer: 0,
   })
 }
 
@@ -71,6 +74,22 @@ export function updateOrbs(dt: number): void {
       if (orb.spawnTimer > 1) orb.spawnTimer = 1
       const t = 1 - (1 - orb.spawnTimer) * (1 - orb.spawnTimer)
       orb.radius = orb.baseRadius * t
+    }
+    // Wall-spring launch — additive position change, decays exponentially
+    if (orb.launchTimer > 0) {
+      orb.launchTimer -= dt
+      const decay = Math.pow(0.03, dt)   // snappier — matches Player
+      orb.launchVx *= decay
+      orb.launchVy *= decay
+      const LAUNCH_FADE_TAIL = 0.10   // smooth fade — no abrupt snap (matches Player)
+      const fadeMult = orb.launchTimer < LAUNCH_FADE_TAIL
+        ? Math.max(0, orb.launchTimer / LAUNCH_FADE_TAIL)
+        : 1
+      orb.x += orb.launchVx * fadeMult * dt
+      orb.y += orb.launchVy * fadeMult * dt
+      if (orb.launchTimer <= 0) {
+        orb.launchVx = 0; orb.launchVy = 0; orb.launchTimer = 0
+      }
     }
   }
 }

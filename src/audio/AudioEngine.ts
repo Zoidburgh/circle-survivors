@@ -1482,6 +1482,48 @@ export function playFuseStart(): void {
   body.stop(t + 0.15)
 }
 
+// Wall-spring fire — percussive "thock" with INSTANT attack. The envelope's loudest moment
+// is at trigger (t=0), so the punch lands exactly when the spring fires. Previous version
+// had a 70ms pitch-swoop-up that pushed the perceptual peak ~70ms after trigger, making
+// every fire feel late even when timing was perfect.
+let lastSpringTime = 0
+export function playWallSpringFire(scheduleAt?: number): void {
+  ensureContext()
+  const c = ctx!
+  // Schedule at the requested ideal audio time if provided; clamp to currentTime if it's
+  // already in the past (best we can do without complex pre-scheduling).
+  const t = Math.max(c.currentTime, scheduleAt ?? c.currentTime)
+  if (t - lastSpringTime < 0.05) return   // anti-stack throttle
+  lastSpringTime = t
+
+  // Sub-thump — sine that PEAKS at t=0 and decays. Frequency drops from 150→50 (downward
+  // pitch envelope = "released" feel, like a snap). Gain is full at t=0 — no ramp-in.
+  const thump = c.createOscillator()
+  const thumpGain = c.createGain()
+  thump.type = 'sine'
+  thump.frequency.setValueAtTime(rPitch(150), t)
+  thump.frequency.exponentialRampToValueAtTime(rPitch(50), t + 0.15)
+  thumpGain.gain.setValueAtTime(rVol(0.6), t)              // instant peak — no attack ramp
+  thumpGain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
+  thump.connect(thumpGain)
+  thumpGain.connect(master)
+  thump.start(t)
+  thump.stop(t + 0.16)
+
+  // Brief high click — adds the sharp "edge" on the attack moment. Also peaks instantly.
+  const click = c.createOscillator()
+  const clickGain = c.createGain()
+  click.type = 'square'
+  click.frequency.setValueAtTime(rPitch(800), t)
+  click.frequency.exponentialRampToValueAtTime(rPitch(220), t + 0.04)
+  clickGain.gain.setValueAtTime(rVol(0.22), t)              // instant peak
+  clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.045)
+  click.connect(clickGain)
+  clickGain.connect(master)
+  click.start(t)
+  click.stop(t + 0.05)
+}
+
 // Soft icy whoosh — fires on Chill Zone placement. Low-volume "frosting over" texture so it
 // doesn't compete with the beat-dash boom that fires simultaneously.
 export function playChillZonePlace(): void {
