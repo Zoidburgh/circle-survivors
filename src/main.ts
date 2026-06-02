@@ -5,11 +5,11 @@ import { getSpawnPanelClick } from './render/Renderer.ts'
 import * as Audio from './audio/AudioEngine.ts'
 import { createEnemy } from './entities/Enemy.ts'
 import { ENEMY_TYPES } from './entities/EnemyTypes.ts'
-import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameState, getRunFinalTime, enterDesigner, exitDesigner, getDesignerReturnPhase, setDesignerPrevArenaShape, getDesignerPrevArenaShape, setInDesignerTestPlay, isInDesignerTestPlay, getCamera } from './core/GameState.ts'
+import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameState, getRunFinalTime, enterDesigner, exitDesigner, getDesignerReturnPhase, setDesignerPrevArenaShape, getDesignerPrevArenaShape, setInDesignerTestPlay, isInDesignerTestPlay, getCamera, getPausedReturnPhase, setPausedReturnPhase } from './core/GameState.ts'
 import { update, render, clearDesignerEphemerals } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
 import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, challengeCanvasMouseDown, challengeCanvasMouseUp, onStartChallenge, onTestPlay } from './game/EnemyDesigner.ts'
-import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd, startIrisTransition, startIrisOpen, isIrisActive, cycleProTip, getCsSelectedIndex, setCsSelectedIndex, navigateChallenge, showToast, isPortalClick, resetVictoryScroll } from './render/Renderer.ts'
+import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, startZoomDrag, updateZoomDrag, stopZoomDrag, setCameraZoom, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd, startIrisTransition, startIrisOpen, isIrisActive, cycleProTip, getCsSelectedIndex, setCsSelectedIndex, navigateChallenge, showToast, isPortalClick, resetVictoryScroll } from './render/Renderer.ts'
 import { setVolume } from './audio/AudioEngine.ts'
 import { submitScore, isNameClean, fetchOnlineScores } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
@@ -302,33 +302,47 @@ window.addEventListener('keydown', e => {
     e.preventDefault()
     return
   }
-  // Designer: Escape clears placement selection / exits place mode
+  // Designer: Escape first clears any active placement/selection state. If nothing to
+  // clear, falls through to the pause-toggle handler below so designer can open the pause
+  // menu (volume/zoom sliders, fullscreen, menu).
   if (getPhase() === 'designer' && e.key === 'Escape') {
+    let handled = false
     if (ChallengeBuilderMod.getSelectedPlacement() >= 0) {
       ChallengeBuilderMod.clearSelection()
+      handled = true
     }
     if (ChallengeBuilderMod.isPlaceMode()) {
       ChallengeBuilderMod.exitPlaceMode()
+      handled = true
     }
-    return
+    if (handled) return
+    // Otherwise fall through to pause-toggle
   }
   // Test Play: Escape cancels back to designer (skips pause)
   if (isInDesignerTestPlay() && getPhase() === 'playing' && e.key === 'Escape') {
     returnFromRun()
     return
   }
-  // Pause toggle
+  // Pause toggle — from playing or designer. Records where to return on resume.
   if (getPhase() === 'playing' && e.key === 'Escape') {
     Input.clearKeys()
+    setPausedReturnPhase('playing')
+    setPhase('paused')
+    return
+  }
+  if (getPhase() === 'designer' && e.key === 'Escape') {
+    Input.clearKeys()
+    setPausedReturnPhase('designer')
     setPhase('paused')
     return
   }
   if (getPhase() === 'paused') {
     if (e.key === 'Escape' || e.key === ' ') {
       Audio.ensureAudioContext()
-      setPhase('playing')
+      setPhase(getPausedReturnPhase())
     } else if (e.key === 'r' || e.key === 'R') {
-      restartChallenge()
+      // Restart only makes sense from in-run pause; ignore in designer pause
+      if (getPausedReturnPhase() === 'playing') restartChallenge()
     }
     return
   }
@@ -520,7 +534,10 @@ canvas.addEventListener('pointerdown', e => {
     handleVictoryScrollDragStart(p.x, p.y)
     if (e.pointerType === 'touch') touchScrollStart(p.y)
   }
-  if (getPhase() === 'title' || getPhase() === 'paused' || getPhase() === 'challenge_select') startVolumeDrag(p.x, p.y)
+  if (getPhase() === 'title' || getPhase() === 'paused' || getPhase() === 'challenge_select') {
+    startVolumeDrag(p.x, p.y)
+    startZoomDrag(p.x, p.y)
+  }
 
   // Touch tap handling — fires for all phases on touch devices
   if (e.pointerType === 'touch') {
@@ -528,6 +545,7 @@ canvas.addEventListener('pointerdown', e => {
       // Touch pause button — top-left 78x78
       if (p.x <= 95 && p.y <= 95) {
         Input.clearKeys()
+        setPausedReturnPhase('playing')
         setPhase('paused')
         return
       }
@@ -552,6 +570,7 @@ canvas.addEventListener('pointerdown', e => {
 canvas.addEventListener('pointerup', e => {
   handleVictoryScrollDragEnd()
   stopVolumeDrag()
+  stopZoomDrag()
   if (e.pointerId === Input.getJoystickPointerId()) {
     Input.touchJoystickEnd()
     canvas.releasePointerCapture(e.pointerId)
@@ -652,10 +671,13 @@ canvas.addEventListener('click', e => {
       if (c.y >= resumeY && c.y <= resumeY + btnH) {
         Audio.playUIClick()
         Audio.ensureAudioContext()
-        setPhase('playing')
+        // Resume back to whichever phase opened the pause menu (playing or designer).
+        setPhase(getPausedReturnPhase())
       } else if (c.y >= restartBtnY && c.y <= restartBtnY + btnH) {
         Audio.playUIClick()
-        restartChallenge()
+        // Restart only meaningful from in-run pause. From designer pause, just resume.
+        if (getPausedReturnPhase() === 'playing') restartChallenge()
+        else setPhase(getPausedReturnPhase())
       } else if (c.y >= menuBtnY && c.y <= menuBtnY + btnH) {
         Audio.playUIClick()
         returnFromRun()
@@ -766,6 +788,8 @@ canvas.addEventListener('pointermove', e => {
   touchScrollMove(p.y)
   const vol = updateVolumeDrag(p.x)
   if (vol !== null) setVolume(vol)
+  const zoom = updateZoomDrag(p.x)
+  if (zoom !== null) setCameraZoom(zoom)
   if (getPhase() === 'challenge_select') {
     handleChallengeSelectHover(p.x, p.y)
     return
@@ -799,6 +823,7 @@ canvas.addEventListener('wheel', e => {
 window.addEventListener('blur', () => {
   if (getPhase() === 'playing') {
     Input.clearKeys()
+    setPausedReturnPhase('playing')
     setPhase('paused')
   }
 })
@@ -810,6 +835,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     if (getPhase() === 'playing') {
       Input.clearKeys()
+      setPausedReturnPhase('playing')
       setPhase('paused')
     }
   } else {
@@ -821,6 +847,7 @@ document.addEventListener('visibilitychange', () => {
 function onFullscreenExit(): void {
   if (!document.fullscreenElement && getPhase() === 'playing') {
     Input.clearKeys()
+    setPausedReturnPhase('playing')
     setPhase('paused')
   }
 }
@@ -832,6 +859,7 @@ window.addEventListener('resize', () => {
   const isFullSize = window.innerWidth === screen.width && window.innerHeight === screen.height
   if (wasFullscreenSize && !isFullSize && getPhase() === 'playing') {
     Input.clearKeys()
+    setPausedReturnPhase('playing')
     setPhase('paused')
   }
   wasFullscreenSize = isFullSize

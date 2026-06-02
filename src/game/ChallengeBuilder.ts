@@ -4,7 +4,7 @@ import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
 import type { EnemyType } from '../entities/EnemyTypes.ts'
 import { getCamera, getPhase, getPlayer } from '../core/GameState.ts'
 import { setArenaShape, clampToArena, setWalls, ARENA_CX, ARENA_CY, getWallSnapPoints, SNAP_POINT_5_THRESHOLD } from '../game/Arena.ts'
-import type { ArenaShape, Camera, Wall, WallMotion, WallTranslation, WallSpring } from '../game/Arena.ts'
+import type { ArenaShape, Camera, Wall, WallMotion, WallTranslation, WallFade, WallSpring } from '../game/Arena.ts'
 import { getDesignerZoomFactor } from '../render/Renderer.ts'
 import defaultData from '../../data/enemies.json'
 
@@ -493,6 +493,30 @@ export function getSelectedWallTranslation(): WallTranslation | undefined {
   return undefined
 }
 
+/** Mutate the selected wall's fade config (or clear). Propagates to whole connected group. */
+export function setSelectedWallFade(fade: WallFade | undefined): void {
+  if (selectedWallIdx < 0 || selectedWallIdx >= placingWalls.length) return
+  const group = findConnectedWalls(selectedWallIdx)
+  for (const i of group) {
+    const w = placingWalls[i]!
+    if (fade) w.fade = { ...fade }
+    else delete w.fade
+  }
+  syncWallsToArena()
+}
+
+/** Read the selected wall's fade (fallback to peer in group). */
+export function getSelectedWallFade(): WallFade | undefined {
+  if (selectedWallIdx < 0 || selectedWallIdx >= placingWalls.length) return undefined
+  const own = placingWalls[selectedWallIdx]?.fade
+  if (own) return own
+  for (const i of findConnectedWalls(selectedWallIdx)) {
+    const f = placingWalls[i]?.fade
+    if (f) return f
+  }
+  return undefined
+}
+
 /** Mutate the selected wall's spring config (or clear it). Triggers sync to live arena. */
 export function setSelectedWallSpring(spring: WallSpring | undefined): void {
   if (selectedWallIdx < 0 || selectedWallIdx >= placingWalls.length) return
@@ -806,6 +830,7 @@ export function saveSelectedGroupAsPrefab(name: string): boolean {
     ...(w.bend != null ? { bend: w.bend } : {}),
     ...(w.motion ? { motion: { ...w.motion } } : {}),
     ...(w.translation ? { translation: { ...w.translation } } : {}),
+    ...(w.fade ? { fade: { ...w.fade } } : {}),
     ...(w.spring ? { spring: { ...w.spring } } : {}),
     ...(w.noClip ? { noClip: true } : {}),
   }))
@@ -910,6 +935,7 @@ export function dropPrefabAt(screenX: number, screenY: number): boolean {
       ...(w.bend != null ? { bend: w.bend } : {}),
       ...(rotatedMotion ? { motion: rotatedMotion } : {}),
       ...(rotatedTrans ? { translation: rotatedTrans } : {}),
+      ...(w.fade ? { fade: { ...w.fade } } : {}),
       ...(w.spring ? { spring: { ...w.spring } } : {}),
       ...(w.noClip ? { noClip: true } : {}),
     })

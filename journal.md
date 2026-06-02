@@ -324,4 +324,145 @@ Looks lit/saturated instead of smudged. Same change applied to designer preview 
 - **drawEnemy vs drawShrine confusion**: both functions start with the same prefix. Use `^function drawEnemy` grep to find the right one.
 - **Wall import in Renderer.ts**: added `import type { Camera, Wall } from '../game/Arena.ts'` — was missing, caused TS errors before.
 - **groupMotion vs motion**: runtime ALWAYS reads `groupMotion`. Designer reads `motion` but propagates via `setSelectedWallMotion`. Don't mix.
+
+---
+
+# Dev Journal — 2026-05-30
+
+Session focused on Reverb game-changer iteration and a broader collision-system fix for "stuck between heavies." Reverb evolved from an instant damage-replacement to a time-swept push wave with edge-riding physics and bouncer redirect; collision system unified around a single `HEAVY_YIELD` knob.
+
+---
+
+## 1. Reverb diagnostic — why edge enemies didn't budge
+
+Symptom: enemies clearly hit by the Reverb wave edge weren't moving, especially big ones and worse with beat-blast upgrades. Traced three compounding causes:
+
+1. **Launched ring fights itself** (the main culprit, `Enemy.ts` separation). Reverb launches the whole outer ring on the same frame; in separation, two enemies that were BOTH launched used `pushFrac = 0.5`, half-shoving each other every frame. A big enemy overlapping many neighbors had summed inward shoves cancelling its own outward launch. **Fix**: both-launched → `pushFrac = 0` (phase through each other; re-separate normally once launches expire).
+2. **Heavy resist halving**. Shared `HEAVY_RESIST = 0.5` made immovable enemies barely move at the edge. **Fix**: introduced local `REVERB_HEAVY_RESIST` (started 0.7, later 0.6) — Reverb is the player's signature knockback so heavies should still clearly fly.
+3. **Arena/wall clamp** — physical limit. Radial push throws edge enemies *toward* the nearest wall; a big enemy's large radius means the clamp pins it well before the visible boundary. Couldn't be eliminated, but mitigated by edge-slide (see §3).
+
+---
+
+## 2. Time-swept Reverb wave
+
+User: the push was instant on detonation while the visual ring swept outward over ~0.2s — enemies got pushed before the visual reached them. Restructured as a time-swept wave that lands in lockstep with the cyan ring.
+
+### `ShockWave` system (`GameManager.ts`)
+- Interface: `{x, y, pushRadius, pushStrength, edgeFrac, heavyResist, elapsed, pushedEnemies: WeakSet, pushedOrbs: WeakSet}`
+- `spawnShockWave()` registers from `detonateBeatDash`
+- `updateShockWaves(dt)` advances `elapsed`, computes `frontRadius`, pushes any entity whose body the front has just reached (then `WeakSet`-marks them so they're only pushed once)
+- Wired into both designer and main update loops + reset on restart
+
+### Timing mirrors Renderer's leading ring
+- `SHOCK_WAVE_DURATION = 0.42` (= Renderer `SHOCK_PUSH_DURATION`)
+- `SHOCK_WAVE_TRAVEL = 0.5` (= Renderer `RING_TRAVEL`)
+- `SHOCK_WAVE_TRAVEL_TIME = 0.21s` for front to sweep center → edge
+- Same ease-out: `frontRadius = pushRadius × (1 − (1 − frontProg)^2.4)`
+
+Detection: an entity is pushed when `dist − entity.radius ≤ frontRadius` (body-contact, not center-based) so big enemies the wave visibly grazes still qualify.
+
+---
+
+## 3. Edge-riding launch slide
+
+Pushed enemies stalled when rammed into walls (clamp ate the launch every frame). Added a velocity-space slide so launched entities ride the edge with whatever tangential momentum the approach angle preserves — like the player dash, but velocity-space instead of position-space.
+
+### `slideLaunchAlongWall(enemy, pushX, pushY)` (`Enemy.ts`, above `updateEnemy`)
+The wall's correction vector `(pushX, pushY) = corrected − pre` IS the local outward normal — works for curved (circle arena) and straight/angled edges automatically. If `dot(launchV, normal) < 0` (launch driving into wall), strip that component; keep tangential.
+
+Wired into 3 spots in `updateEnemy`:
+- Immovable wall block (early-return path)
+- Arena clamp
+- Internal wall collision
+
+Covers wall-springs, Reverb, and pusher launches automatically — they all funnel through `launchVx/Vy`. Bouncer `bounceVx` stays a separate channel that still reflects off walls (intentional — bouncers bounce).
+
+---
+
+## 4. Reverb tuning
+
+- `pushRadius`: `radius × 2.0` → `× 2.5` → `× 2.75`
+- `REVERB_HEAVY_RESIST`: 0.7 → 0.6
+- `PUSH_EDGE_FRAC = 0.35` (rim floor)
+- Push strength now scales with upgrades via `pushScale = sqrt(beatBlastMult × aoeMult)` — dampened sqrt curve. Base ×1.00, Quiet Storm alone ×1.41, Quiet Storm + max beat blast ×1.73.
+- `pushScale` threaded through `detonateBeatDash` (new optional param) and `PendingDetonation` (new field) so Aftershock detonations use the scale captured at dash time, not whatever upgrades exist at detonate time.
+
+---
+
+## 5. Reverb orb behavior
+
+User design: the AOE damage blast was what collected orbs; Reverb replaces that blast, so it should NOT collect — just push, and the player's ring pulse picks orbs up normally. Any orbs the wave nudges into the ring get collected naturally.
+
+Gated the orb-collect loop in `detonateBeatDash` behind `if (!reverbActive)`. Orbs in the outer push ring (between collect radius and 2.75× push radius) get shoved instead of vacuumed.
+
+---
+
+## 6. Bouncer redirect on any push
+
+Bouncing enemies use a separate `bounceVx/bounceVy` patrol channel. Without intervention a pushed bouncer would snap back to its old patrol direction once the launch decayed.
+
+Added at the end of `applyLaunch`: if entity has `movePattern === 'bounce'`, re-aim `bounceVx/Vy` to the push direction at constant `moveSpeed`. Covers all three push sources in one place:
+- Wall spring → bouncer continues traveling the way it was shoved
+- Reverb → bouncer's patrol re-aims outward
+- Pusher enemy → bouncer's patrol re-aims along the push
+
+Non-bouncers and orbs are skipped by the `movePattern === 'bounce'` guard.
+
+---
+
+## 7. Collision system unification — `HEAVY_YIELD`
+
+Diagnosed why orbs/enemies got stuck between heavies (sandwich case). Audit found **five separation passes** per frame, with inconsistent rules:
+
+| Pass | Location | Heavy-vs-normal (before) |
+|------|----------|--------------------------|
+| Enemy.ts in-line | `Enemy.ts:784-845` | Normal yields 100%, heavy unmoved |
+| Main loop "immovable" pass | `GameManager.ts:2415-2458` | Heavy 5% / normal 95% ✓ |
+| Main loop enemy-vs-enemy | `GameManager.ts:2461-...` | Normal yields 100%, heavy unmoved |
+| Designer enemy-vs-enemy | `GameManager.ts:1610-1645` | Normal yields 100%, heavy unmoved |
+| `resolveOrbCollision` | `GameManager.ts:1084-1111` | Orb yields 100%, heavy unmoved |
+
+Only the main-loop "immovable" pass had a 5/95 split. Everywhere else, two heavies could sandwich a normal/orb and the corrections from each side would oscillate the trapped entity in place forever. Orbs were the worst — NO 5%-drift existed for them anywhere, so an orb wedged between two heavies (or heavy + wall) was permanently stuck.
+
+### Fix
+Added `HEAVY_YIELD = 0.05` to `constants.ts` as the single tunable knob. Applied 95% / 5% split at all five spots so heavies absorb a small fraction of separation overlap — sandwich gap widens over a few frames, trapped entity escapes. Heavy still reads as "immovable" gameplay-wise (drift is bounded by the current overlap, self-limiting as gap opens).
+
+Touch points:
+- `resolveOrbCollision` immovable case: orb 95% / heavy 5%
+- `Enemy.ts` in-line separation: branched immovable out so the heavy also moves 5% (existing pushFrac branches unchanged)
+- Main loop enemy-vs-enemy immovable case: 95% / 5%
+- Designer enemy-vs-enemy both `oe.immovable` and `enemy.immovable` branches: 95% / 5%
+- Existing main-loop "immovable" pass: rewrote literal `0.05 / 0.95` to use `HEAVY_YIELD / (1 - HEAVY_YIELD)` — no behavior change, just unified the knob
+
+Why no double-counting in practice: pass-2 runs first, widens the gap; later passes find no overlap and don't fire. Heavy-vs-heavy left at 50/50 split (no change needed). Player-vs-heavy (`GameManager.ts:1657-1663`) intentionally untouched — uses literal `0.15` (heavy moves 15%, player moves 85%) as a separate feel decision.
+
+---
+
+## Constants added this session
+
+| Const | File | Value | Purpose |
+|-------|------|-------|---------|
+| `HEAVY_YIELD` | `constants.ts` | 0.05 | Heavy's share of positional separation overlap |
+| `REVERB_HEAVY_RESIST` | `GameManager.ts` (local) | 0.6 | Reverb-specific heavy launch multiplier (shared HEAVY_RESIST is 0.5) |
+| `SHOCK_WAVE_DURATION` | `GameManager.ts` | 0.42 | Mirrors Renderer SHOCK_PUSH_DURATION |
+| `SHOCK_WAVE_TRAVEL` | `GameManager.ts` | 0.5 | Mirrors Renderer RING_TRAVEL |
+| `SHOCK_WAVE_TRAVEL_TIME` | `GameManager.ts` | 0.21 | Front sweep time = duration × travel |
+| `PUSH_EDGE_FRAC` | `GameManager.ts` (local) | 0.35 | Reverb rim push floor |
+
+---
+
+## Architecture patterns added
+
+7. **Time-swept impulses**: instead of applying knockback instantly on detonation, register a wave with an expanding front and apply each entity's push when the front body-contacts it. `WeakSet` tracks already-pushed entities so each is only nudged once. Visual + physics stay in lockstep without sharing state — just matched timing constants.
+8. **Velocity-space wall slide**: project the launch velocity onto the wall tangent using the position correction vector as the normal. Works for any edge shape (curved/straight/angled) automatically — no per-shape branching.
+9. **Single-knob collision yield**: `HEAVY_YIELD` applied identically across all separation passes. Self-limiting (drift bounded by current overlap, shrinks as gap opens) so heavies still feel immovable.
+10. **Channel separation for bounce vs launch**: `bounceVx/Vy` (patrol/reflect) and `launchVx/Vy` (push/decay) are independent integrations. A launched bouncer slides its launch off walls while its bounce reflects, no conflict. Push sources redirect bounce direction once, at the moment of launch.
+
+---
+
+## Open / followups
+
+1. **Heavy-vs-wall wedges** (wall has zero compliance). Orb sandwiched between heavy and wall still tough — heavy can now drift, but wall doesn't. Could add a depenetration step that escalates push when overlap persists multiple frames.
+2. **Player-vs-heavy feel** uses literal `0.15` (heavy moves 15%). Currently not unified with `HEAVY_YIELD` on purpose — it's a feel decision separate from anti-stuck. Worth revisiting if Player-vs-heavy starts feeling inconsistent.
+3. **Pre-existing TS errors** have shifted with codebase growth — now at `Arena.ts:703`, `Arena.ts:794`, `ChallengeBuilder.ts:771` (same root cause: `exactOptionalPropertyTypes` on optional `bend` field).
 - **Pusher fields on Enemy**: created in Enemy.ts constructor (~line 280). If you add new pusher fields, update both `EnemyType` (saved) AND `Enemy` (runtime) interfaces AND the constructor defaults.

@@ -4,13 +4,13 @@ import { ATTACK_TOTAL_TIME, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { shouldFire } from '../audio/PatternClock.ts'
 import * as Input from '../game/InputManager.ts'
 import { emit } from '../core/EventBus.ts'
-import { playDash, playWindup } from '../audio/AudioEngine.ts'
+import { playDash, playWindup, playChargeReady } from '../audio/AudioEngine.ts'
 import { showToast, triggerDashFailFlash } from '../render/Renderer.ts'
 
 let dashCDToastFired = false
 let dashCDBeginner = false
 export function resetDashCDToast(beginner = false): void { dashCDToastFired = false; dashCDBeginner = beginner }
-import { clampToArena, resolveWallCollision, ARENA_W, ARENA_H, getArenaShape, ARENA_CX, ARENA_CY, ARENA_RADIUS } from '../game/Arena.ts'
+import { clampToArena, resolveWallCollision, clearPlayerWalls, appendPlayerWall, ARENA_W, ARENA_H, getArenaShape, ARENA_CX, ARENA_CY, ARENA_RADIUS } from '../game/Arena.ts'
 import { applyDashMotion } from './DashMotion.ts'
 import { hasBonus } from '../game/UpgradeManager.ts'
 import {
@@ -32,7 +32,7 @@ import { COLOR_PLAYER } from '../utils/constants.ts'
 
 const DASH_DISTANCE = 413
 const DASH_DURATION = 0.6
-export const DASH_CHARGE_TIME = 3.0  // seconds to regen one charge
+export const DASH_CHARGE_TIME = 2.8  // seconds to regen one charge
 export const DASH_MAX_CHARGES = 2
 // Echo Step (anchor-recall) — half-beat ghost-traversal back to the previously dropped anchor.
 // Tuned to half a beat so the recall lands on the half-subdivision after the dash beat,
@@ -112,6 +112,12 @@ export interface Player {
   // Extra rings from upgrades — separate from base attack
   extraRingTimers: number[]  // attackTimer per extra ring, -1 = idle
   extraRingCount: number     // how many extra ring slots active (0-4)
+  // Beat-dash late-grace tracking — seconds since each ring last crossed ATTACK_EXPAND_TIME.
+  // Decoupled from attackTimer so the on-beat dash window can extend PAST the ring's visual death
+  // (ATTACK_TOTAL_TIME=0.50s caps the visible linger to 0.05s, but we want 0.10s of late grace).
+  // Initialized to a large value so no false trigger before the first peak.
+  mainRingPeakAge: number
+  extraRingPeakAges: number[]
   dashDuration: number
   dashChargeTime: number
   dashDistance: number
@@ -123,7 +129,31 @@ export interface Player {
   shieldRechargeTime: number   // base 5s, modified by upgrades
   modifiers: PlayerModifiers
   dashJustReady: boolean[]     // flags set when a slot finishes charging
+  // Quiet Storm — stand still for CHARGE_DURATION seconds → next beat-dash gets 2× distance
+  // and 2× AOE radius. Visual: a loading ring at 2× the beat-dash AOE radius fills as the
+  // charge builds. Resets the moment the player moves.
+  chargeTimer: number             // seconds the player has been stationary (0..CHARGE_DURATION)
+  chargeReady: boolean            // true when chargeTimer >= CHARGE_DURATION
+  chargedDashActive: boolean      // set when a dash consumes the charge — read by beat-dash AOE handler
+  chargeReadyToastFired: boolean  // one-shot "ding" SFX flag so it only plays once per fill
+  // Trailblaze — active wall-drawing state during a chain-dash. While drawingWall is true,
+  // each frame appends a new thin wall segment from drawLastX/Y to the current position so
+  // the trail follows the dash's actual curve (not a straight start→end line).
+  drawingWall: boolean
+  drawLastX: number
+  drawLastY: number
+  // Dash input buffer — if dash is pressed while all slots are on CD, queue the press for a
+  // tiny grace window. If a slot recharges within that window the dash fires retroactively;
+  // otherwise the fail flash + toast fire on expiration. Forgives the player for pressing dash
+  // ~1-2 frames before a slot recharges. dashBufferOnBeat captures whether the original press
+  // was on-beat so the retroactive dash honors player intent — without it, the buffered fire
+  // would re-check on-beat at fire time and could miss the window the player actually hit.
+  dashBufferTimer: number
+  dashBufferOnBeat: boolean
 }
+export const CHARGE_DURATION = 3
+export const TRAILBLAZE_SEGMENT_LEN = 22   // px between segments — smaller = smoother curve, more walls
+export const DASH_BUFFER_DURATION = 0.05  // 50ms — small input grace window
 
 export function createPlayer(x: number, y: number): Player {
   return {
@@ -158,6 +188,8 @@ export function createPlayer(x: number, y: number): Player {
     speed: PLAYER_SPEED,
     extraRingTimers: [-1, -1, -1, -1],
     extraRingCount: 0,
+    mainRingPeakAge: 999,
+    extraRingPeakAges: [999, 999, 999, 999],
     dashDuration: DASH_DURATION,
     dashChargeTime: DASH_CHARGE_TIME,
     dashDistance: DASH_DISTANCE,
@@ -169,6 +201,15 @@ export function createPlayer(x: number, y: number): Player {
     shieldRechargeTime: SHIELD_RECHARGE_TIME,
     modifiers: createDefaultModifiers(),
     dashJustReady: Array(DASH_MAX_CHARGES).fill(false),
+    chargeTimer: 0,
+    chargeReady: false,
+    chargedDashActive: false,
+    chargeReadyToastFired: false,
+    drawingWall: false,
+    drawLastX: 0,
+    drawLastY: 0,
+    dashBufferTimer: 0,
+    dashBufferOnBeat: false,
   }
 }
 
@@ -188,6 +229,16 @@ export function resetPlayer(player: Player): void {
   player.dashDirY = 0
   player.launchVx = 0; player.launchVy = 0; player.launchTimer = 0
   player.dashChainBoost = 1.0
+  player.chargeTimer = 0
+  player.chargeReady = false
+  player.chargedDashActive = false
+  player.chargeReadyToastFired = false
+  player.drawingWall = false
+  player.drawLastX = 0
+  player.drawLastY = 0
+  player.dashBufferTimer = 0
+  player.dashBufferOnBeat = false
+  clearPlayerWalls()
   player.anchorActive = false
   player.recallTimer = -1
   player.dashMaxCharges = DASH_MAX_CHARGES
@@ -202,6 +253,8 @@ export function resetPlayer(player: Player): void {
   player.xp = 0
   player.extraRingTimers = [-1, -1, -1, -1]
   player.extraRingCount = 0
+  player.mainRingPeakAge = 999
+  player.extraRingPeakAges = [999, 999, 999, 999]
   player.damageCooldown = 0
   player.shieldCharges = 0
   player.shieldMaxCharges = SHIELD_MAX_CHARGES
@@ -326,8 +379,16 @@ export function updatePlayer(player: Player, dt: number): void {
         // Compounding them means each upgrade keeps its full proportional effect on the others.
         distanceMult: player.modifiers.dashDistanceMult * player.dashChainBoost,
         speedMult: player.modifiers.speedMult,
+        // Pivot — aggressive mid-dash steering so the dash can carve curves instead of
+        // committing to a straight lunge. 12× steers ~96% toward input per frame at 60fps (4
+        // substeps × 55% each), so direction snaps to WASD nearly instantly. useAngleSteer
+        // switches to atan2-based interpolation so axis-aligned 180° flips actually work (the
+        // component lerp + normalize path has a symmetry trap there that stalls progress). Off
+        // by default keeps non-Pivot dash feel identical.
+        steerStrengthMult: hasBonus('pivot') ? 12 : 1,
+        useAngleSteer: hasBonus('pivot'),
       })
-      const wr = resolveWallCollision(player.x, player.y, playerBodyR)
+      const wr = resolveWallCollision(player.x, player.y, playerBodyR, true)
       player.x = wr.x
       player.y = wr.y
     }
@@ -394,12 +455,17 @@ export function updatePlayer(player: Player, dt: number): void {
       // Asymmetric DI: input is split into a parallel-to-launch component and a perpendicular
       // component. Perpendicular steering always has full authority (curves the arc freely).
       // The PARALLEL component is full-authority when it's WITH the launch (boost), but the
-      // OPPOSING parallel component is gated by an early-launch lockout window so the bounce
-      // gets to assert itself before the player can cancel it dead.
+      // OPPOSING parallel component is gated by an early-launch lockout window AND CAPPED to
+      // a max so the player can NEVER fully cancel an outward push — they can slow it down
+      // but the launch will always carry some distance.
       // Window (elapsed = LAUNCH_DURATION - launchTimer, LAUNCH_DURATION = 0.28s):
-      //   0.00s → 0.08s : 100% opposition lockout (you cannot fight back at all)
-      //   0.08s → 0.20s : opposition authority ramps 0% → 100%
-      //   0.20s+        : full opposition authority
+      //   0.00s → 0.16s : 100% opposition lockout (you cannot fight back at all)
+      //   0.16s → 0.28s : opposition authority ramps 0% → OPP_MAX
+      //   0.28s+        : OPP_MAX opposition authority (capped, never 100%)
+      // Tuned so the bounce always commits — you can steer perpendicular (curve the arc)
+      // or boost in the launch direction at full authority, but resisting against the push
+      // is heavily gated and capped.
+      const OPP_MAX = 0.20     // hard cap on opposition authority — push is mostly uncancellable
       const lsp2 = player.launchVx * player.launchVx + player.launchVy * player.launchVy
       if (lsp2 > 1) {
         const lsp = Math.sqrt(lsp2)
@@ -410,7 +476,7 @@ export function updatePlayer(player: Player, dt: number): void {
         const perpX = steer.x - parX, perpY = steer.y - parY
         const elapsed = 0.28 - player.launchTimer
         const oppMult = along < 0
-          ? Math.max(0, Math.min(1, (elapsed - 0.08) / 0.12))
+          ? Math.max(0, Math.min(OPP_MAX, (elapsed - 0.16) / 0.12 * OPP_MAX))
           : 1
         player.launchVx += (parX * oppMult + perpX) * STEER_ACCEL * dt
         player.launchVy += (parY * oppMult + perpY) * STEER_ACCEL * dt
@@ -438,9 +504,75 @@ export function updatePlayer(player: Player, dt: number): void {
   // a teleport, not a movement). Dash motion already resolved walls per-substep above; this
   // catches WASD movement, post-clamp wall overlap, and dash-end positions.
   if (player.recallTimer < 0) {
-    const wr = resolveWallCollision(player.x, player.y, bodyR)
+    const wr = resolveWallCollision(player.x, player.y, bodyR, true)
     player.x = wr.x
     player.y = wr.y
+  }
+
+  // Post-dash tick — keep dashTimer counting down briefly past zero so visual lingers
+  // (Slipstream braid) can actually expire. applyDashMotion freezes the timer at ~-0.001
+  // the moment it crosses below zero, so without this the braid renders forever.
+  if (player.dashTimer < 0 && player.dashTimer > -1) {
+    player.dashTimer -= dt
+  }
+
+  // Trailblaze — drop wall segments along the dash path while drawing. Each segment connects
+  // the previous sample point to the current position. When the player has moved at least
+  // TRAILBLAZE_SEGMENT_LEN px from the last sample, commit a segment and advance the sample.
+  // Drawing ends when the dash does (dashTimer < 0) — the trail freezes in place.
+  if (player.drawingWall) {
+    if (player.dashTimer < 0) {
+      // Dash ended — commit one final segment to the current position if we still owe one,
+      // then stop drawing.
+      const dxF = player.x - player.drawLastX
+      const dyF = player.y - player.drawLastY
+      if (dxF * dxF + dyF * dyF >= 25) {
+        appendPlayerWall(player.drawLastX, player.drawLastY, player.x, player.y)
+      }
+      player.drawingWall = false
+    } else {
+      const dxL = player.x - player.drawLastX
+      const dyL = player.y - player.drawLastY
+      if (dxL * dxL + dyL * dyL >= TRAILBLAZE_SEGMENT_LEN * TRAILBLAZE_SEGMENT_LEN) {
+        appendPlayerWall(player.drawLastX, player.drawLastY, player.x, player.y)
+        player.drawLastX = player.x
+        player.drawLastY = player.y
+      }
+    }
+  }
+
+  // Quiet Storm charge — gated on the upgrade. Accumulates while truly stationary; once
+  // full, the charge STAYS READY (follows the player around) until consumed by the next
+  // on-beat dash. Moving while filling resets the timer; moving while already-ready does
+  // NOT cancel the readiness. Only an on-beat dash consumes it.
+  if (hasBonus('quietStorm')) {
+    if (!player.chargeReady) {
+      const moved = Math.abs(player.x - player.prevX) > 0.5 || Math.abs(player.y - player.prevY) > 0.5
+      const dashing = player.dashTimer >= 0
+      const recalling = player.recallTimer >= 0
+      const launched = player.launchTimer > 0
+      const inputActive = (Input.getMovementDir().x !== 0 || Input.getMovementDir().y !== 0)
+      const canCharge = !moved && !dashing && !recalling && !launched && !inputActive
+      if (canCharge) {
+        player.chargeTimer += dt
+        if (player.chargeTimer >= CHARGE_DURATION) {
+          player.chargeTimer = CHARGE_DURATION
+          player.chargeReady = true
+          if (!player.chargeReadyToastFired) {
+            player.chargeReadyToastFired = true
+            playChargeReady()
+          }
+        }
+      } else {
+        player.chargeTimer = 0
+      }
+    }
+    // chargeReady: persists across movement until consumed by on-beat dash (see dash-init).
+  } else {
+    // Upgrade not active — make sure no stale state lingers (e.g. upgrade was lost).
+    if (player.chargeTimer !== 0) player.chargeTimer = 0
+    if (player.chargeReady) player.chargeReady = false
+    if (player.chargeReadyToastFired) player.chargeReadyToastFired = false
   }
 
   // Movement trail — distance-based, collapses when stationary
@@ -480,11 +612,14 @@ export function updatePlayer(player: Player, dt: number): void {
     player.attackTimer += dt
     if (player.attackTimer >= ATTACK_EXPAND_TIME && player.attackTimer - dt < ATTACK_EXPAND_TIME) {
       emit('player:beat', player) // damage fires at ring peak
+      player.mainRingPeakAge = 0  // reset late-grace window on every peak crossing
     }
     if (player.attackTimer > ATTACK_TOTAL_TIME) {
       player.attackTimer = -1
     }
   }
+  // Always tick mainRingPeakAge — independent of ring life so late grace can extend past linger death
+  player.mainRingPeakAge += dt
 
   // Extra ring attacks — separate from base, added by upgrades
   for (let i = 0; i < player.extraRingCount; i++) {
@@ -496,11 +631,13 @@ export function updatePlayer(player: Player, dt: number): void {
       player.extraRingTimers[i]! += dt
       if (player.extraRingTimers[i]! >= ATTACK_EXPAND_TIME && player.extraRingTimers[i]! - dt < ATTACK_EXPAND_TIME) {
         emit('player:beat', player)
+        player.extraRingPeakAges[i] = 0
       }
       if (player.extraRingTimers[i]! > ATTACK_TOTAL_TIME) {
         player.extraRingTimers[i] = -1
       }
     }
+    player.extraRingPeakAges[i]! += dt
   }
 
   // Track last non-zero movement direction for dash buffering
@@ -511,7 +648,72 @@ export function updatePlayer(player: Player, dt: number): void {
     }
   }
 
-  // Dash input — need a charge AND not mid-dash
+  // Compute whether the current moment is in the on-beat dash window. Asymmetric grace,
+  // late side decoupled from ring lifecycle. Used at press time so a buffered dash can honor
+  // the player's actual intent (the window they pressed in) instead of re-checking at the
+  // later fire moment when the window may have just closed.
+  const computeOnBeat = (): boolean => {
+    const earlyGrace = player.attackTimer >= 0
+      && player.attackTimer >= ATTACK_EXPAND_TIME - 0.15
+      && player.attackTimer < ATTACK_EXPAND_TIME
+    const lateGrace = player.mainRingPeakAge < 0.13
+    if (earlyGrace || lateGrace) return true
+    for (let i = 0; i < player.extraRingCount; i++) {
+      const t = player.extraRingTimers[i]!
+      const eEarly = t >= 0 && t >= ATTACK_EXPAND_TIME - 0.15 && t < ATTACK_EXPAND_TIME
+      const eLate = player.extraRingPeakAges[i]! < 0.13
+      if (eEarly || eLate) return true
+    }
+    return false
+  }
+
+  // ── Dash fire helper — encapsulates the full dash-start sequence so live input and buffered
+  // input both go through the same code path. `onBeatDash` is captured at press time and
+  // passed in, so a buffered dash that fires a few ms later still counts as on-beat if the
+  // press itself was on-beat.
+  const fireDash = (readySlot: number, onBeatDash: boolean): void => {
+
+    // Slipstream chain boost — read BEFORE we overwrite dashTimer below. A new dash
+    // initiated while the previous one is still active "drafts" off it for +100% distance.
+    const isChainingDash = player.dashTimer >= 0
+    player.dashChainBoost = (isChainingDash && hasBonus('chainDash')) ? 2.0 : 1.0
+
+    // Trailblaze — chain-dash starts ACTIVELY DRAWING a wall trail along the new dash path
+    if (isChainingDash && hasBonus('drawWall')) {
+      clearPlayerWalls()
+      player.drawingWall = true
+      player.drawLastX = player.x
+      player.drawLastY = player.y
+    }
+
+    // Quiet Storm — only consumed on BEAT DASH.
+    if (player.chargeReady && onBeatDash) {
+      player.dashChainBoost *= 2.0
+      player.chargedDashActive = true
+      player.chargeReady = false
+      player.chargeTimer = 0
+      player.chargeReadyToastFired = false
+    } else {
+      player.chargedDashActive = false
+    }
+
+    player.dashDirX = Math.cos(player.facingAngle)
+    player.dashDirY = Math.sin(player.facingAngle)
+    player.dashPath = [{ x: player.x, y: player.y }]
+    player.dashStartX = player.x
+    player.dashStartY = player.y
+    player.dashTimer = player.dashDuration
+    player.dashSlots[readySlot] = player.dashChargeTime * player.modifiers.dashChargeMult
+    playDash()
+
+    if (onBeatDash) emit('player:beatDash', player)
+  }
+
+  // Recall (Echo Step) clears any pending buffered dash — the warp is locked input and we
+  // don't want a stale buffer firing on exit.
+  if (player.recallTimer >= 0) player.dashBufferTimer = 0
+
+  // Dash input — need a charge AND not mid-recall
   if (Input.consumeLeftClick() || Input.consumeSpace()) {
     // Echo Step: ignore dash input mid-recall; the player is in a locked warp.
     if (player.recallTimer >= 0) {
@@ -519,48 +721,44 @@ export function updatePlayer(player: Player, dt: number): void {
       return
     }
     const readySlot = player.dashSlots.findIndex(t => t <= 0)
-    if (readySlot < 0) {
-      // No dash available — flash the pies red as visual feedback
-      triggerDashFailFlash()
-      // Notify on beginner only
-      if (!dashCDToastFired && dashCDBeginner) {
-        dashCDToastFired = true
-        showToast('DASH on CD!', { y: 0.14, duration: 1.5, size: 42, id: 'dash_cd', color: [0, 200, 255], style: 'glow', glowWords: ['DASH', 'CD!'], glowColor: [100, 255, 120] })
-      }
-    }
+    // Capture on-beat at THE MOMENT OF THE PRESS. Used by both immediate fire and (if buffered)
+    // the retroactive fire when a slot recharges within the grace window.
+    const onBeatAtPress = computeOnBeat()
     if (readySlot >= 0) {
-      // Check if dash is on-beat (ring is near peak)
-      const nearPeak = player.attackTimer >= 0 && Math.abs(player.attackTimer - ATTACK_EXPAND_TIME) < 0.15
-      // Also check extra ring timers
-      let extraNearPeak = false
-      for (let i = 0; i < player.extraRingCount; i++) {
-        if (player.extraRingTimers[i]! >= 0 && Math.abs(player.extraRingTimers[i]! - ATTACK_EXPAND_TIME) < 0.15) {
-          extraNearPeak = true
+      // Live input + slot ready → fire immediately. Clear any in-flight buffer.
+      player.dashBufferTimer = 0
+      fireDash(readySlot, onBeatAtPress)
+    } else {
+      // No slot ready → buffer the press + the on-beat state for a tiny grace window.
+      player.dashBufferTimer = DASH_BUFFER_DURATION
+      player.dashBufferOnBeat = onBeatAtPress
+    }
+  }
+
+  // Buffer service — runs every frame whether input was pressed or not. If a slot became
+  // ready while the buffer is alive, fire the dash retroactively using the on-beat state we
+  // captured at press time (player.dashBufferOnBeat). Otherwise tick the timer and fire the
+  // deferred fail feedback when it expires.
+  if (player.dashBufferTimer > 0 && player.recallTimer < 0) {
+    const readySlot = player.dashSlots.findIndex(t => t <= 0)
+    if (readySlot >= 0) {
+      const bufferedOnBeat = player.dashBufferOnBeat
+      player.dashBufferTimer = 0
+      player.dashBufferOnBeat = false
+      fireDash(readySlot, bufferedOnBeat)
+    } else {
+      player.dashBufferTimer -= dt
+      if (player.dashBufferTimer <= 0) {
+        // Grace expired with no slot — NOW deliver the fail feedback that we held back.
+        player.dashBufferTimer = 0
+        triggerDashFailFlash()
+        if (!dashCDToastFired && dashCDBeginner) {
+          dashCDToastFired = true
+          showToast('DASH on CD!', { y: 0.14, duration: 1.5, size: 42, id: 'dash_cd', color: [0, 200, 255], style: 'glow', glowWords: ['DASH', 'CD!'], glowColor: [100, 255, 120] })
         }
-      }
-      const onBeatDash = nearPeak || extraNearPeak
-
-      // Slipstream chain boost — read BEFORE we overwrite dashTimer below. A new dash
-      // initiated while the previous one is still active "drafts" off it for +100% distance.
-      // The boost stays set for the whole new dash (it's used by applyDashMotion every frame),
-      // and gets re-evaluated on the next initiation.
-      const isChainingDash = player.dashTimer >= 0
-      player.dashChainBoost = (isChainingDash && hasBonus('chainDash')) ? 2.0 : 1.0
-
-      player.dashDirX = Math.cos(player.facingAngle)
-      player.dashDirY = Math.sin(player.facingAngle)
-      player.dashPath = [{ x: player.x, y: player.y }]
-      player.dashStartX = player.x
-      player.dashStartY = player.y
-      player.dashTimer = player.dashDuration
-      player.dashSlots[readySlot] = player.dashChargeTime * player.modifiers.dashChargeMult
-      playDash()
-
-      // On-beat dash — emit shockwave event
-      if (onBeatDash) {
-        emit('player:beatDash', player)
       }
     }
   }
+
   Input.consumeRightClick()
 }

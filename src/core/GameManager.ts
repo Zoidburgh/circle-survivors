@@ -12,12 +12,12 @@ import { updateOrbs, cleanupOrbs, getOrbs, spawnOrb, collectOrb, resetOrbs } fro
 import type { XPOrb } from '../entities/XPOrb.ts'
 import { updateCamera, clampToArena, getArenaShape, setArenaShape, findClearSpawnPos, resolveWallCollision, updateWalls, consumeSpringFires, computeWallArc, getWalls } from '../game/Arena.ts'
 import type { Wall } from '../game/Arena.ts'
-import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC } from '../utils/constants.ts'
+import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC, HEAVY_YIELD, DASH_SHOT_SPEED, DASH_SHOT_RADIUS_MULT } from '../utils/constants.ts'
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat, getLoopPosition, getAbsoluteBeats } from '../audio/PatternClock.ts'
 import { getBeatZeroTime } from '../audio/BeatLoop.ts'
-import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playFuseStart, playRecallStart, playChillZonePlace, playIceShardBurst, playWallSpringFire, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth } from '../audio/AudioEngine.ts'
+import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playFuseStart, playRecallStart, playChillZonePlace, playIceShardBurst, playWallSpringFire, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth, playBoing, playShockPush, playDashShotFire, startDashShotCrackle, stopDashShotCrackle } from '../audio/AudioEngine.ts'
 import { resetProTip, showToast } from '../render/Renderer.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
 import { getScoresForChallenge, fetchOnlineScores } from '../game/HighScores.ts'
@@ -277,11 +277,169 @@ export interface PendingDetonation {
   y: number
   radius: number
   damage: number
+  pushScale: number // Reverb push-strength multiplier (beatBlastMult × Quiet Storm AOE), captured at dash time
   timer: number     // counts down to 0
   lifetime: number  // original delay — used for pie-fill progress
 }
 const pendingDetonations: PendingDetonation[] = []
 export function getPendingDetonations(): readonly PendingDetonation[] { return pendingDetonations }
+
+// Reverb shock-push — a TIME-SWEPT push wave. Instead of shoving every enemy on detonation
+// frame (which threw enemies before the visual ring reached them), we expand a front outward
+// over time and push each entity only when the front touches its body — in lockstep with the
+// cyan visual. Timing/easing MUST mirror the Renderer's shock-push leading ring so push ==
+// what you see: front reaches the full radius at SHOCK_WAVE_TRAVEL_TIME with the same ease-out.
+interface ShockWave {
+  x: number
+  y: number
+  pushRadius: number
+  pushStrength: number
+  edgeFrac: number      // minimum falloff at the rim
+  heavyResist: number   // multiplier applied to immovable enemies
+  elapsed: number
+  pushedEnemies: WeakSet<Enemy>
+  pushedOrbs: WeakSet<XPOrb>
+}
+const shockWaves: ShockWave[] = []
+const SHOCK_WAVE_DURATION = 0.42                                   // mirrors Renderer SHOCK_PUSH_DURATION
+const SHOCK_WAVE_TRAVEL = 0.5                                      // mirrors Renderer RING_TRAVEL
+const SHOCK_WAVE_TRAVEL_TIME = SHOCK_WAVE_DURATION * SHOCK_WAVE_TRAVEL  // front sweeps center→edge in this time
+
+function spawnShockWave(x: number, y: number, pushRadius: number, pushStrength: number, edgeFrac: number, heavyResist: number): void {
+  shockWaves.push({ x, y, pushRadius, pushStrength, edgeFrac, heavyResist, elapsed: 0, pushedEnemies: new WeakSet(), pushedOrbs: new WeakSet() })
+}
+
+// Advance active shock waves and push any entity the front has just reached. Called from BOTH
+// the main update loop and the designer update loop (Reverb can fire in either).
+function updateShockWaves(dt: number): void {
+  if (shockWaves.length === 0) return
+  const enemies = getEnemies()
+  const orbs = getOrbs()
+  for (let i = shockWaves.length - 1; i >= 0; i--) {
+    const w = shockWaves[i]!
+    w.elapsed += dt
+    const frontProg = Math.min(1, w.elapsed / SHOCK_WAVE_TRAVEL_TIME)
+    const frontRadius = w.pushRadius * (1 - Math.pow(1 - frontProg, 2.4))   // ease-out — matches visual leading ring
+    for (const enemy of enemies) {
+      if (!enemy.alive || enemy.dying) continue
+      if (w.pushedEnemies.has(enemy)) continue
+      const dx = enemy.x - w.x
+      const dy = enemy.y - w.y
+      const d2 = dx * dx + dy * dy
+      const dist = Math.sqrt(d2)
+      if (dist - enemy.radius > frontRadius) continue   // front hasn't reached the body yet (also defers out-of-range until retire)
+      const falloff = Math.max(w.edgeFrac, 1 - dist / w.pushRadius)
+      const str = w.pushStrength * falloff * (enemy.immovable ? w.heavyResist : 1)
+      applyLaunch(enemy, dx, dy, d2, str)
+      w.pushedEnemies.add(enemy)
+    }
+    for (const orb of orbs) {
+      if (!orb.alive || orb.dying) continue
+      if (w.pushedOrbs.has(orb)) continue
+      const dx = orb.x - w.x
+      const dy = orb.y - w.y
+      const d2 = dx * dx + dy * dy
+      const dist = Math.sqrt(d2)
+      if (dist - orb.radius > frontRadius) continue
+      const falloff = Math.max(w.edgeFrac, 1 - dist / w.pushRadius)
+      applyLaunch(orb, dx, dy, d2, w.pushStrength * falloff)
+      w.pushedOrbs.add(orb)
+    }
+    // Front has reached full radius — every in-range entity got pushed on this frame; retire.
+    if (w.elapsed >= SHOCK_WAVE_TRAVEL_TIME) {
+      shockWaves[i] = shockWaves[shockWaves.length - 1]!
+      shockWaves.pop()
+    }
+  }
+}
+
+// Dash-shot (Bolt upgrade) — replaces the beat-dash AOE with a projectile that flies in the dash
+// direction and explodes 1 beat later (2 with Aftershock). Passes through walls. No damage in
+// flight. The visual radius swells from a small core up to targetRadius as it travels (ease-in
+// — slow start, ramps up near impact), telegraphing the blast area for the last fraction of the
+// flight. On expiry it calls applyBeatDashImpact at its current position so the explosion uses
+// the same damage/orb/visual path as a normal beat-dash (and Reverb still composes if active).
+interface DashShotProjectile {
+  x: number; y: number
+  vx: number; vy: number
+  elapsed: number
+  lifetime: number
+  targetRadius: number  // final explosion radius (= the beat-dash radius captured at spawn)
+  damage: number
+  pushScale: number     // forwarded to applyBeatDashImpact so Reverb (if also active) scales right
+  crackleId: number     // sustained lightning crackle audio — stopped when projectile detonates
+}
+const dashShotProjectiles: DashShotProjectile[] = []
+
+function spawnDashShot(x: number, y: number, dirX: number, dirY: number, targetRadius: number, damage: number, pushScale: number): void {
+  // Normalize the direction defensively (dashDirX/Y is unit, but cheap to ensure).
+  const len = Math.sqrt(dirX * dirX + dirY * dirY)
+  if (len < 0.001) return   // no direction → nothing to fire (caught earlier by the dispatcher, but safe)
+  const nx = dirX / len, ny = dirY / len
+  // Normal Bolt: 1 beat flight. Aftershock: 2 beats flight, but speed × 0.5 so total distance
+  // stays the same — projectile reaches the same spot, just drifts slower and explodes one beat
+  // later. Composed here rather than via pendingDetonations so the player's-position pie
+  // wouldn't telegraph an explosion that doesn't happen there.
+  const aftershock = hasBonus('aftershock')
+  const lifetime = BEAT_SEC * (aftershock ? 2 : 1)
+  const speed = DASH_SHOT_SPEED * (aftershock ? 0.5 : 1)
+  const vx = nx * speed
+  const vy = ny * speed
+  // Bolt's explosion is bigger than the in-place beat-dash blast (chunkier impact at the
+  // destination). beatBlastMult and Quiet Storm scalings are already baked into targetRadius.
+  const blastRadius = targetRadius * DASH_SHOT_RADIUS_MULT
+  const crackleId = startDashShotCrackle(lifetime)
+  dashShotProjectiles.push({
+    x, y,
+    vx, vy,
+    elapsed: 0, lifetime,
+    targetRadius: blastRadius, damage, pushScale, crackleId,
+  })
+  // Register the visual mirror in the Renderer (its own list, ticks the same dt). Sim still
+  // owns the truth — Renderer just draws. The boom on impact is fired by applyBeatDashImpact
+  // (triggerBeatDashFlash + spawnVolatileParticles), same channel as a normal beat-dash.
+  // reverbMode flag: when Reverb is also active, the renderer swaps the gold palette to cyan
+  // so the projectile reads as the same lightning vocabulary as Reverb's push wave.
+  Renderer.addDashShotViz(x, y, vx, vy, blastRadius, lifetime, hasBonus('shockPush'), aftershock)
+  // Spawn feedback — the "I hit the beat" punch. Three layered effects so the on-beat fire
+  // reads across audio + visual channels: sharp electric SFX, a cone of gold sparks shooting
+  // forward (muzzle plume), plus the bright disc + lightning lance already drawn by the viz.
+  playDashShotFire()
+  const SPARK_COUNT = 14
+  for (let s = 0; s < SPARK_COUNT; s++) {
+    // Cone spread ±25° around the dash direction
+    const spread = (Math.random() - 0.5) * 0.85
+    const cs = Math.cos(spread), sn = Math.sin(spread)
+    const dirNx = nx * cs - ny * sn
+    const dirNy = nx * sn + ny * cs
+    const sp = 220 + Math.random() * 420
+    Renderer.spawnParticleExport(
+      x + (Math.random() - 0.5) * 10,
+      y + (Math.random() - 0.5) * 10,
+      dirNx * sp, dirNy * sp,
+      255, 230 + Math.floor(Math.random() * 25), 130 + Math.floor(Math.random() * 70),
+      0.22 + Math.random() * 0.22,
+      3 + Math.random() * 3,
+    )
+  }
+}
+
+// Advance projectiles and detonate any whose lifetime has expired. Called from both update loops.
+function updateDashShots(dt: number): void {
+  if (dashShotProjectiles.length === 0) return
+  for (let i = dashShotProjectiles.length - 1; i >= 0; i--) {
+    const p = dashShotProjectiles[i]!
+    p.elapsed += dt
+    p.x += p.vx * dt
+    p.y += p.vy * dt
+    if (p.elapsed >= p.lifetime) {
+      stopDashShotCrackle(p.crackleId)
+      applyBeatDashImpact(p.x, p.y, p.targetRadius, p.damage, p.pushScale)
+      dashShotProjectiles[i] = dashShotProjectiles[dashShotProjectiles.length - 1]!
+      dashShotProjectiles.pop()
+    }
+  }
+}
 
 // Chill Zone (player upgrade) — single persistent slow-field. Each beat-dash replaces the
 // active zone with a new one at the detonate position. When replaced, the OLD zone's
@@ -494,65 +652,129 @@ function placeBeatDash(player: Player, shockRadius: number): void {
 // Runs immediately for instant beat-dashes and on a delay (next beat) when Aftershock is active.
 // Position/radius/damage are passed in so a delayed detonation fires at the PINNED location
 // (where the player dashed FROM), not wherever the player is at detonate time.
-function detonateBeatDash(x: number, y: number, radius: number, damage: number): void {
+// Dispatcher — routes the beat-dash event to its actual behavior:
+//   - Dash-shot (Bolt) → spawn a projectile that explodes 1 beat later (2 with Aftershock)
+//   - Otherwise → apply the impact right here at (x, y)
+// Reverb is handled INSIDE applyBeatDashImpact so it composes correctly with Dash-shot
+// (Bolt + Reverb = the projectile explodes as a push wave at its destination).
+function detonateBeatDash(x: number, y: number, radius: number, damage: number, pushScale: number = 1, dirX: number = 0, dirY: number = 0): void {
+  // Skip dashShot path if no direction was supplied (e.g. an Aftershock queued from before the
+  // upgrade was picked) — fall back to a normal impact instead of spawning a stationary projectile.
+  if (hasBonus('dashShot') && (dirX !== 0 || dirY !== 0)) {
+    spawnDashShot(x, y, dirX, dirY, radius, damage, pushScale)
+    return
+  }
+  applyBeatDashImpact(x, y, radius, damage, pushScale)
+}
+
+// The actual beat-dash impact — damage, orb collect, blast visual/audio, Reverb branch. Called
+// directly by detonateBeatDash for normal/Reverb dashes, and by updateDashShots when a Dash-shot
+// projectile expires (so the explosion lands at the projectile's destination, not the dash origin).
+function applyBeatDashImpact(x: number, y: number, radius: number, damage: number, pushScale: number = 1): void {
   const player = getPlayer()
   const enemies = getEnemies()
+  // Reverb REPLACES the beat-dash damage explosion entirely — beat dash deals NO damage and
+  // instead emits the push wave (see push block below). All beat-dash radius upgrades still
+  // scale it (radius is passed in pre-scaled by beatBlastMult + Quiet Storm). Without Reverb,
+  // the beat dash works as before (damage explosion).
+  const reverbActive = hasBonus('shockPush')
   let beatDashHitCount = 0
-  for (const enemy of enemies) {
-    if (!enemy.alive || enemy.dying) continue
-    if (enemy.isShrine || enemy.summon) continue  // handled at placement; skip here so a delayed
-                                                  // detonation can't double-tag a shrine/node
-    const dx = enemy.x - x
-    const dy = enemy.y - y
-    const hitRange = radius + enemy.radius
-    if (dx * dx + dy * dy <= hitRange * hitRange) {
-      beatDashHitCount++
-      const wasDying = enemy.dying
-      damageEnemy(enemy, damage)
-      enemy.beatDashFlash = HIT_FLASH_DURATION
-      enemy.beatDashJustHit = true
-      // Start run timer on first damage dealt
-      if (!isRunTimerActive() && !isRunComplete()) {
-        startRunTimer()
-      }
-      // Totem spawn on hit
-      if (enemy.totemSpawn) {
-        emit('totem:spawn', enemy)
-      }
-      // Revenge on hit
-      if (enemy.revenge) {
-        emit('enemy:revenge', enemy)
-      }
-      if (enemy.dying && !wasDying) {
-        spawnDrops(enemy, 1, spawnOrb)
+  if (!reverbActive) {
+    for (const enemy of enemies) {
+      if (!enemy.alive || enemy.dying) continue
+      if (enemy.isShrine || enemy.summon) continue  // handled at placement; skip here so a delayed
+                                                    // detonation can't double-tag a shrine/node
+      const dx = enemy.x - x
+      const dy = enemy.y - y
+      const hitRange = radius + enemy.radius
+      if (dx * dx + dy * dy <= hitRange * hitRange) {
+        beatDashHitCount++
+        const wasDying = enemy.dying
+        damageEnemy(enemy, damage)
+        enemy.beatDashFlash = HIT_FLASH_DURATION
+        enemy.beatDashJustHit = true
+        // Start run timer on first damage dealt
+        if (!isRunTimerActive() && !isRunComplete()) {
+          startRunTimer()
+        }
+        // Totem spawn on hit
+        if (enemy.totemSpawn) {
+          emit('totem:spawn', enemy)
+        }
+        // Revenge on hit
+        if (enemy.revenge) {
+          emit('enemy:revenge', enemy)
+        }
+        if (enemy.dying && !wasDying) {
+          spawnDrops(enemy, 1, spawnOrb)
+        }
       }
     }
-  }
-  // Beat-dash beatdown — 5+ enemies hit with AOE
-  if (beatDashHitCount >= 5 && beatDashBeatdownCD <= 0) {
-    beatDashBeatdownCD = 30
-    showToast('BEAT-DASH BEATDOWN!', { y: 0.14, duration: 1.5, size: 42, id: `beatdown_${challengeElapsed}`, color: [100, 255, 120], style: 'combo' })
+    // Beat-dash beatdown — 5+ enemies hit with AOE
+    if (beatDashHitCount >= 5 && beatDashBeatdownCD <= 0) {
+      beatDashBeatdownCD = 30
+      showToast('BEAT-DASH BEATDOWN!', { y: 0.14, duration: 1.5, size: 42, id: `beatdown_${challengeElapsed}`, color: [100, 255, 120], style: 'combo' })
+    }
   }
 
-  // Collect orbs in blast area
-  const allOrbs = getOrbs()
-  for (const orb of allOrbs) {
-    if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
-    const odx = orb.x - x
-    const ody = orb.y - y
-    if (odx * odx + ody * ody <= (radius + orb.radius) * (radius + orb.radius)) {
-      collectOrb(orb)
-      if (orb.orbType === 'hp') {
-        player.hp = Math.min(player.hp + 1, player.maxHp)
-      } else {
-        player.xp += orb.value * player.modifiers.xpMult
+  // Collect orbs in blast area — ONLY when Reverb is OFF. The beat-dash AOE explosion is what
+  // vacuums orbs; Reverb replaces that explosion with a push wave, so it must NOT collect orbs.
+  // Instead the wave just shoves them (see push wave below), and the player's ring pulse picks
+  // them up as normal — any the wave nudges into the ring get collected naturally.
+  if (!reverbActive) {
+    const allOrbs = getOrbs()
+    for (const orb of allOrbs) {
+      if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
+      const odx = orb.x - x
+      const ody = orb.y - y
+      if (odx * odx + ody * ody <= (radius + orb.radius) * (radius + orb.radius)) {
+        collectOrb(orb)
+        if (orb.orbType === 'hp') {
+          player.hp = Math.min(player.hp + 1, player.maxHp)
+        } else {
+          player.xp += orb.value * player.modifiers.xpMult
+        }
       }
     }
   }
-  // SFX + Visual — shockwave flash on top of everything + particles
+  // Reverb — the beat-dash push wave (REPLACES the damage explosion; see reverbActive gate
+  // on the damage loop above). Push radius is 2× the would-be damage radius, scaling with
+  // every beat-dash radius upgrade (beatBlastMult) and Quiet Storm's 2×. Player not affected
+  // (source). Heavy enemies get HEAVY_RESIST.
+  if (reverbActive) {
+    const pushRadius = radius * 2.75        // beat-dash AOE size (was 2.5×, +10%)
+    const pushStrength = 6000 * pushScale   // base (at center); scales with AOE upgrades so a bigger wave hits harder. Falloff scales it down toward the edge
+    // Distance falloff — full strength at the dash center, dropping to PUSH_EDGE_FRAC at the
+    // outer edge of the push radius. So slamming an enemy point-blank flings it hard; an
+    // enemy barely caught at the rim just gets nudged.
+    const PUSH_EDGE_FRAC = 0.35       // minimum push fraction at the outer rim
+    // Reverb is the player's signature knockback, so heavies should still clearly FLY — use a
+    // gentler resist here than the shared HEAVY_RESIST (0.5). At 0.6 a heavy edge-hit gets
+    // 6000×0.35×0.6 ≈ 1260 px/s instead of 1050, enough to read as a real shove on a big body.
+    const REVERB_HEAVY_RESIST = 0.6
+    // Spawn a TIME-SWEPT wave rather than pushing instantly: updateShockWaves() shoves each
+    // enemy/orb only once the expanding front reaches its body, so the knockback lands in
+    // lockstep with the visual ring instead of all at once before it makes contact. The
+    // matching cyan visual + SFX start now at detonation.
+    spawnShockWave(x, y, pushRadius, pushStrength, PUSH_EDGE_FRAC, REVERB_HEAVY_RESIST)
+    Renderer.triggerShockPush(x, y, pushRadius)
+    // Blue lightning burst at the explosion focal point — same arc vocabulary as Bolt's
+    // crackle, fixed in place, ~0.3s burst. Sized to ~45% of the push radius so it reads as
+    // a concentrated discharge at the center of the push wave.
+    Renderer.triggerBlueLightning(x, y, pushRadius * 0.45)
+    playShockPush()
+  }
+
+  // SFX + Visual — the gold damage-explosion flash + particles only when Reverb is NOT
+  // active. With Reverb, the cyan push wave (triggered above) IS the beat-dash visual.
   playBeatDash()
-  Renderer.triggerBeatDashFlash(x, y, radius)
-  Renderer.spawnVolatileParticles(x, y, radius, 0, 230, 255)
+  if (!reverbActive) {
+    Renderer.triggerBeatDashFlash(x, y, radius)
+    Renderer.spawnVolatileParticles(x, y, radius, 0, 230, 255)
+  }
+  // Background ripple — fires for BOTH paths (normal gold flash AND Reverb cyan push) so the
+  // floor wave reads on every beat-blast regardless of which AOE visual is showing.
+  Renderer.triggerBackgroundRipple(x, y)
 
   // Chill Zone — replace the active slow-field. If a previous zone existed, ice-shard burst
   // it: every enemy currently inside gets immobileTimer = BEAT_SEC (frozen feet for one beat,
@@ -588,22 +810,41 @@ function detonateBeatDash(x: number, y: number, radius: number, damage: number):
 // On-beat dash shockwave — area damage at dash start position.
 // With Aftershock: detonation is delayed by one beat and shown as a ticking-pie telegraph.
 on('player:beatDash', (player: Player) => {
+  // Screen-space "you nailed the beat" confirmation — vignette pulse + corner brackets. Fires
+  // the moment the on-beat dash registers (independent of the AOE/aftershock-pie/Bolt branch
+  // below) so the player sees the confirmation even if the actual explosion is delayed.
+  Renderer.triggerBeatDashConfirm()
   // Beat-dash radius scales with beatBlastMult only — NOT ringRadiusMult. Ring-range
   // upgrades already grow the main ring; coupling them to the beat-dash too would let one
   // upgrade pull double duty.
-  const shockRadius = player.ring.radius * 0.7 * player.modifiers.beatBlastMult
+  // Quiet Storm: if the dash consumed a full charge, double the AOE radius (visual ring
+  // already telegraphed this 2× area during the charge fill). chargedDashActive flag is
+  // set at dash initiation and cleared here so it only buffs ONE beat-dash event.
+  const aoeMult = player.chargedDashActive ? 2.0 : 1.0
+  const shockRadius = player.ring.radius * 0.7 * player.modifiers.beatBlastMult * aoeMult
   const damage = player.damage * player.modifiers.damageMult
+  // Reverb push strength scales with the same upgrades that grow the AOE (beat blast + Quiet
+  // Storm) so a bigger wave hits harder, but dampened by ^0.35 (gentler than sqrt) so the push
+  // doesn't ramp too fast at high stacks. 1.0 at base. Examples: ×1.5 raw → ×1.15 push, ×2.0
+  // (Quiet Storm) → ×1.27, ×3.0 (Quiet Storm + max beat blast) → ×1.46.
+  const pushScale = Math.pow(player.modifiers.beatBlastMult * aoeMult, 0.35)
+  if (player.chargedDashActive) player.chargedDashActive = false
   placeBeatDash(player, shockRadius)
-  if (hasBonus('aftershock')) {
+  // With Bolt (Dash-shot): bypass Aftershock's pendingDetonations queue entirely. Aftershock's
+  // pie telegraphs the explosion AT THE PLAYER, but with Bolt the explosion happens at the
+  // projectile's destination — the pie at player position would be misleading. Bolt composes
+  // Aftershock by doubling the projectile lifetime instead (handled in spawnDashShot).
+  const useAftershockPie = hasBonus('aftershock') && !hasBonus('dashShot')
+  if (useAftershockPie) {
     pendingDetonations.push({
       x: player.x, y: player.y,
-      radius: shockRadius, damage,
+      radius: shockRadius, damage, pushScale,
       timer: BEAT_SEC, lifetime: BEAT_SEC,
     })
     Renderer.addPendingDetonation(player.x, player.y, shockRadius, BEAT_SEC)
     playFuseStart()
   } else {
-    detonateBeatDash(player.x, player.y, shockRadius, damage)
+    detonateBeatDash(player.x, player.y, shockRadius, damage, pushScale, player.dashDirX, player.dashDirY)
   }
 
   // Echo Step — leapfrog anchor system. Capture the dash position as the NEW anchor; if a
@@ -942,6 +1183,16 @@ function applyLaunch(entity: LaunchTarget, dx: number, dy: number, dist2: number
   // integration applies a fade multiplier in the last 0.10s so the launch eases to zero
   // instead of snapping. Input runs in parallel → DI steers the trajectory mid-bounce.
   entity.launchTimer = Math.max(entity.launchTimer, 0.28)
+  // Bouncer redirect: a bouncing enemy's patrol heading (bounceVx/Vy) is a SEPARATE channel
+  // from the launch, so once the launch decays it would snap back to its old bounce angle. Any
+  // push (wall spring, Reverb, pusher enemy) all route through here, so re-aim the bounce
+  // heading to the push direction — the bouncer keeps travelling the way it was shoved, at its
+  // constant patrol speed. Walls/other bouncers still reflect it from there as normal.
+  if ('movePattern' in entity && (entity as Enemy).movePattern === 'bounce') {
+    const b = entity as Enemy
+    b.bounceVx = nx * b.moveSpeed
+    b.bounceVy = ny * b.moveSpeed
+  }
 }
 
 /** Resolve a single orb↔other collision using the battering-ram rules. The orb pass in
@@ -965,7 +1216,9 @@ function resolveOrbCollision(
   const launchedOther = other.launchTimer > 0
   let orbPush: number, otherPush: number
   if (isImmovableEnemy) {
-    orbPush = total; otherPush = 0
+    // Heavy yields HEAVY_YIELD so an orb pinned against / between heavies can carve its own
+    // space instead of oscillating with no exit. Heavy still reads as immovable visually.
+    orbPush = total * (1 - HEAVY_YIELD); otherPush = total * HEAVY_YIELD
   } else if (launchedOrb && !launchedOther) {
     orbPush = 0; otherPush = total
   } else if (!launchedOrb && launchedOther) {
@@ -1027,6 +1280,7 @@ function tryPushSpring(
         if (player.dashTimer >= 0) player.dashTimer = -1
         applyLaunch(player, dx, dy, d2, strength)
         pushed.add(player)
+        playBoing(true)   // player bounce — loud
       }
     } else {
       pushed.delete(player)
@@ -1043,6 +1297,7 @@ function tryPushSpring(
       if (!pushed.has(e)) {
         applyLaunch(e, dx, dy, d2, e.immovable ? strength * HEAVY_RESIST : strength)
         pushed.add(e)
+        playBoing(false)   // enemy bounce — quieter, throttled
       }
     } else {
       pushed.delete(e)
@@ -1164,6 +1419,7 @@ function tryPushPusher(
         if (player.dashTimer >= 0) player.dashTimer = -1
         applyLaunch(player, dx, dy, d2, strength)
         pushed.add(player)
+        playBoing(true)   // player bounce — loud
       }
     } else {
       pushed.delete(player)
@@ -1179,6 +1435,7 @@ function tryPushPusher(
       if (!pushed.has(e)) {
         applyLaunch(e, dx, dy, d2, e.immovable ? strength * HEAVY_RESIST : strength)
         pushed.add(e)
+        playBoing(false)
       }
     } else {
       pushed.delete(e)
@@ -1260,6 +1517,9 @@ export function resetPendingEffects(): void {
   pendingRevenges.length = 0
   pendingShrineSpawns.length = 0
   pendingDetonations.length = 0
+  shockWaves.length = 0
+  for (const p of dashShotProjectiles) stopDashShotCrackle(p.crackleId)   // silence any in-flight bolts before clearing the list
+  dashShotProjectiles.length = 0
   activeChillZone = null
   Renderer.clearChillZoneViz()
   lowHpToastFired = false
@@ -1353,6 +1613,8 @@ function updateDesigner(dt: number): void {
   const enemies = getEnemies()
   const grid = getGrid()
   updatePlayer(player, dt)
+  updateShockWaves(dt)   // Reverb push wave — pushes enemies/orbs as the expanding front reaches them
+  updateDashShots(dt)    // Bolt projectiles — advance and detonate on lifetime expiry
   // Tick all alive enemies (spawn-test ephemerals AND any children they summon — totems,
   // shrines, summoners. Without this, summoned children stay frozen at spawn radius 1 = "tiny specs").
   // Player can take damage normally — but won't die because death check is gated to phase 'playing'.
@@ -1365,13 +1627,34 @@ function updateDesigner(dt: number): void {
   }
   // Process queued volatile explosions so designer-spawned exploders actually detonate
   processVolatileExplosions(player, enemies, dt)
+  // Process pending revenge rings — without this, revenge enemies in designer queue their
+  // rings but the ring damage never gets applied (mirrors the main-loop pass).
+  for (let i = pendingRevenges.length - 1; i >= 0; i--) {
+    const pr = pendingRevenges[i]!
+    pr.timer += dt
+    if (pr.timer >= pr.expandTime) {
+      for (const origin of pr.origins) {
+        const pdx = player.x - origin.x
+        const pdy = player.y - origin.y
+        const pDist = Math.sqrt(pdx * pdx + pdy * pdy)
+        if (Math.abs(pDist - pr.radius) < player.hitRadius) {
+          if (!(player.dashTimer >= 0 && hasBonus('ghostDash'))) {
+            if (hurtPlayer(player, pr.damage)) playPlayerHit()
+          }
+          break
+        }
+      }
+      pendingRevenges[i] = pendingRevenges[pendingRevenges.length - 1]!
+      pendingRevenges.pop()
+    }
+  }
   // Process pending Aftershock detonations in designer too — without this the fuse pie
   // ticks visually (see Renderer designer-phase check) but the boom never fires.
   for (let i = pendingDetonations.length - 1; i >= 0; i--) {
     const pd = pendingDetonations[i]!
     pd.timer -= dt
     if (pd.timer <= 0) {
-      detonateBeatDash(pd.x, pd.y, pd.radius, pd.damage)
+      detonateBeatDash(pd.x, pd.y, pd.radius, pd.damage, pd.pushScale)
       pendingDetonations[i] = pendingDetonations[pendingDetonations.length - 1]!
       pendingDetonations.pop()
     }
@@ -1464,9 +1747,12 @@ function updateDesigner(dt: number): void {
           enemy.x += nx * overlap * 0.5; enemy.y += ny * overlap * 0.5
           oe.x    -= nx * overlap * 0.5; oe.y    -= ny * overlap * 0.5
         } else if (oe.immovable) {
-          enemy.x += nx * overlap; enemy.y += ny * overlap
+          // Heavy yields HEAVY_YIELD so a normal pinned can carve space instead of vibrating.
+          enemy.x += nx * overlap * (1 - HEAVY_YIELD); enemy.y += ny * overlap * (1 - HEAVY_YIELD)
+          oe.x    -= nx * overlap * HEAVY_YIELD;       oe.y    -= ny * overlap * HEAVY_YIELD
         } else if (enemy.immovable) {
-          oe.x -= nx * overlap; oe.y -= ny * overlap
+          oe.x    -= nx * overlap * (1 - HEAVY_YIELD); oe.y    -= ny * overlap * (1 - HEAVY_YIELD)
+          enemy.x += nx * overlap * HEAVY_YIELD;       enemy.y += ny * overlap * HEAVY_YIELD
         } else {
           const aDashing = enemy.dodge && enemy.dashTimer >= 0
           const bDashing = oe.dodge && oe.dashTimer >= 0
@@ -1526,7 +1812,7 @@ function updateDesigner(dt: number): void {
     if (!e.alive && !e.dying) enemies.splice(i, 1)
   }
   const dir = Input.getMovementDir()
-  updateCamera(cam, player.x, player.y, dir.x, dir.y, Renderer.getLogicalSize().w, Renderer.getLogicalSize().h, dt)
+  updateCamera(cam, player.x, player.y, dir.x, dir.y, Renderer.getLogicalSize().w, Renderer.getLogicalSize().h, dt, Renderer.getCameraZoom())
   updatePreviewEnemy(dt)
 }
 
@@ -1663,7 +1949,7 @@ export function update(dt: number): void {
     const pd = pendingDetonations[i]!
     pd.timer -= dt
     if (pd.timer <= 0) {
-      detonateBeatDash(pd.x, pd.y, pd.radius, pd.damage)
+      detonateBeatDash(pd.x, pd.y, pd.radius, pd.damage, pd.pushScale)
       pendingDetonations[i] = pendingDetonations[pendingDetonations.length - 1]!
       pendingDetonations.pop()
     }
@@ -1744,6 +2030,9 @@ export function update(dt: number): void {
   perfStart('u_player')
   updatePlayer(player, dt)
   perfEnd('u_player')
+
+  updateShockWaves(dt)   // Reverb push wave — pushes enemies/orbs as the expanding front reaches them
+  updateDashShots(dt)    // Bolt projectiles — advance and detonate on lifetime expiry
 
   // Danger music — dark layer when low HP
   updateDangerMusic(player.hp / player.maxHp)
@@ -2130,7 +2419,7 @@ export function update(dt: number): void {
   }
 
   const dir = Input.getMovementDir()
-  updateCamera(cam, player.x, player.y, dir.x, dir.y, Renderer.getLogicalSize().w, Renderer.getLogicalSize().h, dt)
+  updateCamera(cam, player.x, player.y, dir.x, dir.y, Renderer.getLogicalSize().w, Renderer.getLogicalSize().h, dt, Renderer.getCameraZoom())
 
   // Process revenge ring damage at peak (BEAT_SEC after spawn)
   for (let i = pendingRevenges.length - 1; i >= 0; i--) {
@@ -2276,11 +2565,11 @@ export function update(dt: number): void {
             oe.x -= nx * overlap * 0.5
             oe.y -= ny * overlap * 0.5
           } else {
-            // Immovable barely moves (10%), other takes the rest (90%)
-            enemy.x += nx * overlap * 0.05
-            enemy.y += ny * overlap * 0.05
-            oe.x -= nx * overlap * 0.95
-            oe.y -= ny * overlap * 0.95
+            // Immovable barely moves (HEAVY_YIELD), other takes the rest
+            enemy.x += nx * overlap * HEAVY_YIELD
+            enemy.y += ny * overlap * HEAVY_YIELD
+            oe.x -= nx * overlap * (1 - HEAVY_YIELD)
+            oe.y -= ny * overlap * (1 - HEAVY_YIELD)
             // Reflect bounce velocity off immovable
             if (oe.movePattern === 'bounce') {
               const bnx = -nx  // normal points from oe toward immovable
@@ -2315,10 +2604,13 @@ export function update(dt: number): void {
           const nx = dx / dist
           const ny = dy / dist
           if (oe.immovable) {
-            // This enemy yields fully to immovable other
+            // Heavy yields HEAVY_YIELD so a normal pinned against / between heavies can carve
+            // its own space instead of vibrating forever. Self takes the rest of the overlap.
             const overlap = minDist - dist
-            enemy.x += nx * overlap
-            enemy.y += ny * overlap
+            enemy.x += nx * overlap * (1 - HEAVY_YIELD)
+            enemy.y += ny * overlap * (1 - HEAVY_YIELD)
+            oe.x -= nx * overlap * HEAVY_YIELD
+            oe.y -= ny * overlap * HEAVY_YIELD
             // Reflect bounce velocity off immovable
             if (enemy.movePattern === 'bounce') {
               const dot = enemy.bounceVx * nx + enemy.bounceVy * ny

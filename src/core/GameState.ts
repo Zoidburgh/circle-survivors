@@ -19,6 +19,11 @@ const grid = new SpatialGrid(GRID_CELL_SIZE)
 const camera: Camera = createCamera()
 let phase: GamePhase = 'title'
 let designerReturnPhase: GamePhase = 'title'
+// Where to return when leaving the pause menu — set by whoever opens it. 'playing' for the
+// classic in-run pause, 'designer' if the user opens pause from the designer.
+let pausedReturnPhase: GamePhase = 'playing'
+export function getPausedReturnPhase(): GamePhase { return pausedReturnPhase }
+export function setPausedReturnPhase(p: GamePhase): void { pausedReturnPhase = p }
 let designerPrevArenaShape: string | null = null
 let inDesignerTestPlay = false
 let xpForNextLevel = 15

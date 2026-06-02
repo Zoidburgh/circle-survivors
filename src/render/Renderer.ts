@@ -9,7 +9,7 @@ import { complementColor } from '../utils/math.ts'
 import { getPattern, getLoopPosition, getLoopLength, getAbsoluteBeats } from '../audio/PatternClock.ts'
 import { getPreviewEnemy } from '../game/EnemyDesigner.ts'
 import type { Camera, Wall } from '../game/Arena.ts'
-import { ARENA_W, ARENA_H, ARENA_RADIUS, ARENA_CX, ARENA_CY, PILL_R, PILL_HALF_W, CROSS_HW, CROSS_HE, getArenaShape, getHexVertices, getCrossVertices, getWalls, computeWallArc, resetWallsToRest, getWallSnapPoints } from '../game/Arena.ts'
+import { ARENA_W, ARENA_H, ARENA_RADIUS, ARENA_CX, ARENA_CY, PILL_R, PILL_HALF_W, CROSS_HW, CROSS_HE, getArenaShape, getHexVertices, getCrossVertices, getWalls, computeWallArc, resetWallsToRest, getWallSnapPoints, WALL_DEATH_DURATION_MS } from '../game/Arena.ts'
 import { getBlockedArcs } from '../game/RingOcclusion.ts'
 import { getRitualGroups, getActiveIndex } from '../game/RitualNodes.ts'
 import { isPlaceMode, getPlacingEnemies, getSelectedPlacement, getChallenges, getActiveChallenge, getWallDrag, getWallThickness, getPlaceTool, getHoveredWallIdx, getHoveredEnemyIdx, getSelectedWallIdx, getEndpointDrag, getWallCurveHandle, getPlacingPrefab, getPrefabCursor, getPrefabRotation, getSelectedWallPivotWorld, isPivotSetMode } from '../game/ChallengeBuilder.ts'
@@ -50,6 +50,28 @@ let camY = 0
 const DESIGNER_ZOOM = 0.4
 let designerZoomedOut = false
 export function isDesignerZoomedOut(): boolean { return designerZoomedOut }
+
+// Player-facing camera zoom — independent of designer zoom. Applied during normal play
+// (not when designer is zoomed out, which overrides). Range 0.5..1.2 — below 0.5 the world
+// is too small to read, above 1.2 the view is too tight. Persisted in localStorage so the
+// setting carries across runs.
+const CAMERA_ZOOM_MIN = 0.5
+const CAMERA_ZOOM_MAX = 1.2
+const CAMERA_ZOOM_DEFAULT = 0.85   // slightly wider than the historical 1.0 default
+let cameraZoom = (() => {
+  const saved = parseFloat(localStorage.getItem('beatback_camera_zoom') ?? '')
+  if (Number.isFinite(saved) && saved >= CAMERA_ZOOM_MIN && saved <= CAMERA_ZOOM_MAX) return saved
+  return CAMERA_ZOOM_DEFAULT
+})()
+export function getCameraZoom(): number { return cameraZoom }
+export function setCameraZoom(z: number): void {
+  const clamped = Math.max(CAMERA_ZOOM_MIN, Math.min(CAMERA_ZOOM_MAX, z))
+  cameraZoom = clamped
+  localStorage.setItem('beatback_camera_zoom', clamped.toFixed(3))
+}
+export function getCameraZoomRange(): { min: number; max: number; def: number } {
+  return { min: CAMERA_ZOOM_MIN, max: CAMERA_ZOOM_MAX, def: CAMERA_ZOOM_DEFAULT }
+}
 /** Current zoom factor for designer view — 1 normally, DESIGNER_ZOOM when zoomed out. Used
  * by ChallengeBuilder's screenToWorld so clicks map to the right world point. */
 export function getDesignerZoomFactor(): number {
@@ -81,6 +103,10 @@ const particles: Particle[] = []
 const MAX_PARTICLES = PARTICLE_CAP
 let lastDt = 0.016
 let borderWaveIntensity = 0
+// Spike-on-trigger from triggerBeatDashConfirm to make the arena border pulse + waveform
+// punch through the warm-gold beat-dash flash that would otherwise drown them out. Decays
+// each frame in drawArenaBorder so it lasts ~0.6s (matches the confirm flash lifetime).
+let beatDashBorderBoost = 0
 let globalBeatPulse = 0  // 0→1 on ring fire, decays — used by all beat-sync visuals
 let titleTime = 0         // time since title screen started
 let titleBeatPulse = 0    // beat pulse for title screen
@@ -153,6 +179,30 @@ export function triggerDashFailFlash(): void { dashFailFlash = 0.25 }
 let beatDashX = 0
 let beatDashY = 0
 let beatDashRadius = 0
+// Background ripple — soft wide brightness band that travels outward from the beat-blast
+// origin THROUGH the floor/grid. Visually distinct from a ring attack (no defined edge, very
+// wide gradient, color matches the grid). Drawn between grid lines and the dark vignette so
+// the floor texture appears to be briefly lit by the wave passing through.
+interface BgRipple { x: number; y: number; time: number; lifetime: number }
+let bgRipple: BgRipple | null = null
+const BG_RIPPLE_LIFETIME = 1.0
+const BG_RIPPLE_MAX_RADIUS = 2400
+export function triggerBackgroundRipple(x: number, y: number): void {
+  bgRipple = { x, y, time: 0, lifetime: BG_RIPPLE_LIFETIME }
+}
+// Reverb shock-push ring — expanding cyan ring at the push radius, separate from the gold
+// damage AOE so the player sees the (larger) push zone.
+let shockPushFlash = 0
+let shockPushX = 0
+let shockPushY = 0
+let shockPushRadius = 0
+const SHOCK_PUSH_DURATION = 0.42
+export function triggerShockPush(x: number, y: number, radius: number): void {
+  shockPushFlash = SHOCK_PUSH_DURATION
+  shockPushX = x
+  shockPushY = y
+  shockPushRadius = radius
+}
 let dashSweepRadius = 0
 let ringPeakX = 0  // player position at ring peak — for aligned post-peak effects
 let ringPeakY = 0
@@ -1156,6 +1206,803 @@ export function addPendingDetonation(x: number, y: number, radius: number, lifet
   pendingDetVizList.push({ x, y, radius, timer: lifetime, lifetime })
 }
 
+// Dash-shot (Bolt) projectile visual — bright gold core flying along the dash vector with a
+// soft motion trail and a faint preview ring that swells toward the final blast radius. Sim
+// (GameManager.spawnDashShot) calls addDashShotViz with start pos, velocity, target radius,
+// and lifetime. Renderer ticks position/elapsed and draws each frame; viz removes itself on
+// expiry. The actual boom (gold flash + volatile particles) is still fired by the sim via
+// triggerBeatDashFlash / spawnVolatileParticles, same channel as a normal beat-dash.
+interface DashShotViz {
+  x: number; y: number
+  vx: number; vy: number
+  targetRadius: number
+  elapsed: number
+  lifetime: number
+  spawnX: number; spawnY: number   // fixed origin of the discharge — anchors the lance + muzzle disc
+  lanceTimer: number                // counts down — jagged arc from spawn → current pos while > 0
+  muzzleTimer: number               // counts down — bright disc at spawn while > 0
+  reverbMode: boolean               // true when Reverb is also active — palette-swap gold → cyan
+  aftershock: boolean               // true when Aftershock is also active — first beat shows a moving aftershock pie,
+                                    // bolt visuals dim during pie phase and crossfade in around t = 1.0s. Lifetime = 2 beats.
+}
+const dashShotVizList: DashShotViz[] = []
+const DASH_SHOT_MIN_VIS_R = 20
+const LANCE_DURATION = 0.16   // discharge arc duration (~10 frames at 60fps)
+const MUZZLE_DURATION = 0.10  // muzzle disc duration
+
+export function addDashShotViz(x: number, y: number, vx: number, vy: number, targetRadius: number, lifetime: number, reverbMode: boolean, aftershock: boolean = false): void {
+  dashShotVizList.push({
+    x, y, vx, vy, targetRadius, elapsed: 0, lifetime,
+    spawnX: x, spawnY: y,
+    lanceTimer: LANCE_DURATION,
+    muzzleTimer: MUZZLE_DURATION,
+    reverbMode,
+    aftershock,
+  })
+}
+
+// Blue lightning burst — short-lived crackling discharge at a point. Used by Reverb to give
+// the beat-blast a lightning moment (same arc vocabulary as the Bolt projectile, but always
+// blue, fixed in place, and timed to ~0.3s). Triggers from applyBeatDashImpact's Reverb branch.
+interface LightningBurst { x: number; y: number; radius: number; timer: number; lifetime: number }
+const lightningBursts: LightningBurst[] = []
+const LIGHTNING_BURST_DURATION = 0.32
+export function triggerBlueLightning(x: number, y: number, radius: number): void {
+  lightningBursts.push({ x, y, radius, timer: 0, lifetime: LIGHTNING_BURST_DURATION })
+}
+
+// Beat-dash on-beat screen confirmation — fires the moment the player nails a beat dash. Two
+// layered effects, both in screen space and tuned to be peripheral (no center obstruction):
+//   1) Soft warm-gold vignette pulse around the edges (radial gradient — transparent center,
+//      gold rim). Reads as the world briefly lit up. Heavy lifting.
+//   2) Four small angular corner brackets that snap inward and fade out. HUD-style "lock"
+//      accent — adds a hint of system-confirmed snap without committing to full HUD frame.
+// Both share one timer + one trigger so the effects stay synced and cheap.
+const BEAT_DASH_CONFIRM_DURATION = 0.60
+let beatDashConfirmTimer = 0
+
+// Ice embers — cool-color sparks that burst outward from the board rim when an on-beat dash
+// registers. Contrasts the warm gold vignette (temperature split) and decelerates as it flies
+// outward, fading. Cyan-dominant with white + pink tier mix to tie into the bracket palette.
+interface Ember {
+  x: number; y: number              // world coords
+  vx: number; vy: number            // world units / sec
+  life: number; lifetime: number
+  size: number                      // base radius (px in world space — gets * z when drawn)
+  tier: number                      // 0 = cyan, 1 = white, 2 = pink
+}
+const embers: Ember[] = []
+const EMBER_COUNT = 140   // burst size — generous for a one-shot, decays fast
+
+// Distance from arena center to its rim at the given angle. Proper per-shape geometry so the
+// spawn point sits on the actual board edge (not inside it).
+function arenaRimDistance(angle: number): number {
+  const shape = getArenaShape()
+  const cs = Math.abs(Math.cos(angle))
+  const sn = Math.abs(Math.sin(angle))
+  if (shape === 'circle' || shape === 'hex') return ARENA_RADIUS
+  if (shape === 'pill') {
+    // Capsule = horizontal stadium (two semicircular caps + straight top/bottom). A ray from
+    // origin hits the flat top/bottom edge if its slope is steep enough, otherwise it hits a cap.
+    // Branch condition: sn * PILL_HALF_W >= cs * PILL_R means the ray reaches y=PILL_R before
+    // x=PILL_HALF_W → hits flat edge first. Else it enters the cap region.
+    if (sn * PILL_HALF_W >= cs * PILL_R) {
+      return PILL_R / Math.max(sn, 0.001)
+    }
+    // Cap hit: solve |t*(cs,sn) - (PILL_HALF_W, 0)|² = PILL_R²
+    //   t² - 2 t cs PILL_HALF_W + (PILL_HALF_W² - PILL_R²) = 0
+    //   t = cs * PILL_HALF_W + sqrt(PILL_R² - PILL_HALF_W² * sn²)
+    const disc = PILL_R * PILL_R - PILL_HALF_W * PILL_HALF_W * sn * sn
+    return cs * PILL_HALF_W + Math.sqrt(Math.max(0, disc))
+  }
+  if (shape === 'cross') {
+    // Cross = union of two perpendicular rectangles (horizontal HE×HW + vertical HW×HE).
+    // A point is in the cross while it's inside at least one rect — so the exit distance is
+    // max(exit-from-horizontal-rect, exit-from-vertical-rect). At 45° both equal CROSS_HW/sin45°,
+    // which lands at the concave inner corner (correct).
+    const csC = cs > 0.001 ? 1 / cs : Infinity
+    const snC = sn > 0.001 ? 1 / sn : Infinity
+    const tH = Math.min(CROSS_HE * csC, CROSS_HW * snC)
+    const tV = Math.min(CROSS_HW * csC, CROSS_HE * snC)
+    return Math.max(tH, tV)
+  }
+  // default rect
+  const halfW = ARENA_W / 2, halfH = ARENA_H / 2
+  const tx = cs > 0.001 ? halfW / cs : Infinity
+  const ty = sn > 0.001 ? halfH / sn : Infinity
+  return Math.min(tx, ty)
+}
+
+function spawnEmberBurst(): void {
+  for (let i = 0; i < EMBER_COUNT; i++) {
+    const angle = Math.random() * Math.PI * 2
+    const r = arenaRimDistance(angle)
+    const cx = Math.cos(angle), sn = Math.sin(angle)
+    const spawnX = ARENA_CX + cx * r
+    const spawnY = ARENA_CY + sn * r
+    // Outward velocity with a small tangential jitter so they don't fan in perfect radial lines.
+    // Aggressive speed so they really shoot out fast — combined with very light drag (below in
+    // tickAndDrawEmbers) they sail across the screen before the lifetime fade catches them.
+    const speed = 490 + Math.random() * 560
+    const tangentJitter = (Math.random() - 0.5) * 0.45   // ±0.225 rad of off-axis spread
+    const va = angle + tangentJitter
+    const vx = Math.cos(va) * speed
+    const vy = Math.sin(va) * speed
+    const lifetime = 0.55 + Math.random() * 0.75
+    const tierRoll = Math.random()
+    const tier = tierRoll < 0.65 ? 0 : tierRoll < 0.90 ? 1 : 2   // 65% cyan, 25% white, 10% pink
+    const size = 1.6 + Math.random() * 2.4
+    embers.push({ x: spawnX, y: spawnY, vx, vy, life: 0, lifetime, size, tier })
+  }
+}
+
+export function triggerBeatDashConfirm(): void {
+  beatDashConfirmTimer = BEAT_DASH_CONFIRM_DURATION
+  spawnEmberBurst()
+  // Punch the arena border so its pulse + waveform read THROUGH the warm-gold flash. Boost
+  // is additive to the regular beat pulse, decays each frame in drawArenaBorder.
+  beatDashBorderBoost = 1.0
+  // Also spike borderWaveIntensity directly so the waveform line gets a guaranteed strong
+  // crest right now (don't wait for the normal ring-peak ramp), capped by max-with-current
+  // so we never weaken an in-flight wave.
+  if (1.30 > borderWaveIntensity) borderWaveIntensity = 1.30
+}
+
+// Tick + draw ember particles. Caller is responsible for setting globalCompositeOperation =
+// 'lighter' if additive blending is desired (drawn during the main flash) — drawEmbersOnly
+// (below) handles that for the standalone post-flash case.
+function tickAndDrawEmbers(dt: number): void {
+  if (embers.length === 0) return
+  const isZoomedDesignerE = designerZoomedOut && getPhase() === 'designer'
+  const zE = isZoomedDesignerE ? DESIGNER_ZOOM : cameraZoom
+  for (let i = embers.length - 1; i >= 0; i--) {
+    const e = embers[i]!
+    e.life += dt
+    if (e.life >= e.lifetime) {
+      embers[i] = embers[embers.length - 1]!
+      embers.pop()
+      continue
+    }
+    // Outward decel via exponential drag. Very light drag (~7% velocity decay per second) so
+    // the sparks keep almost all their momentum and rocket out across the screen before fading.
+    const drag = Math.pow(0.88, dt)
+    e.vx *= drag
+    e.vy *= drag
+    e.x += e.vx * dt
+    e.y += e.vy * dt
+    // Quick fade-in (first 10% of life), long ease-out
+    const lt = e.life / e.lifetime
+    const fadeIn = Math.min(1, lt / 0.10)
+    const fadeOut = Math.pow(1 - lt, 1.6)
+    const alpha = fadeIn * fadeOut
+    if (alpha <= 0.01) continue
+    const sx = (e.x - camX) * zE
+    const sy = (e.y - camY) * zE
+    const r = e.size * zE * (1 + lt * 0.5)
+    // All three tiers are now pink variations — hot pink dominant, light pink + deep magenta
+    // for tonal variety so the burst reads as pink without being monotone.
+    let coreR = 255, coreG = 200, coreB = 235
+    let glowR = 255, glowG = 110, glowB = 200
+    if (e.tier === 0) {
+      // Hot pink — main color
+      coreR = 255; coreG = 180; coreB = 220
+      glowR = 255; glowG = 80;  glowB = 190
+    } else if (e.tier === 1) {
+      // Soft pink-white — bright highlight
+      coreR = 255; coreG = 230; coreB = 245
+      glowR = 255; glowG = 170; glowB = 215
+    } else {
+      // Deep magenta — saturated accent
+      coreR = 255; coreG = 150; coreB = 210
+      glowR = 230; glowG = 50;  glowB = 170
+    }
+    const haloR = r * 4.5
+    const gGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, haloR)
+    gGrad.addColorStop(0, `rgba(${glowR}, ${glowG}, ${glowB}, ${0.45 * alpha})`)
+    gGrad.addColorStop(0.4, `rgba(${glowR}, ${glowG}, ${glowB}, ${0.18 * alpha})`)
+    gGrad.addColorStop(1, `rgba(${glowR}, ${glowG}, ${glowB}, 0)`)
+    ctx.fillStyle = gGrad
+    ctx.beginPath()
+    ctx.arc(sx, sy, haloR, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = `rgba(${coreR}, ${coreG}, ${coreB}, ${0.95 * alpha})`
+    ctx.beginPath()
+    ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.fill()
+  }
+}
+
+// Standalone ember pass — used when the vignette flash has expired but embers are still alive.
+// Sets up the additive blend itself since we're not inside the main confirm function's setup.
+function drawEmbersOnly(dt: number): void {
+  if (embers.length === 0) return
+  const prevComp = ctx.globalCompositeOperation
+  ctx.globalCompositeOperation = 'lighter'
+  tickAndDrawEmbers(dt)
+  ctx.globalCompositeOperation = prevComp
+}
+function updateAndDrawBeatDashConfirm(dt: number): void {
+  // Embers may outlast the vignette flash — keep ticking them even when the timer is dead.
+  // Tick + draw them in their own pass before returning if the main flash is over.
+  if (beatDashConfirmTimer <= 0 && embers.length === 0) return
+  if (beatDashConfirmTimer > 0) {
+    beatDashConfirmTimer -= dt
+  }
+  if (beatDashConfirmTimer <= 0 && embers.length > 0) {
+    drawEmbersOnly(dt)
+    return
+  }
+  if (beatDashConfirmTimer <= 0) return
+  const t = beatDashConfirmTimer / BEAT_DASH_CONFIRM_DURATION   // 1 → 0
+  // Envelope — single smooth peak, no flicker. progress runs 0→1 over the lifetime.
+  //   Attack:  ease-out ramp up to full over the first 10% of duration (~60ms at 0.6s)
+  //   Decay:   gentler ease-out fade to zero over the remaining 90% — exponent 1.5 lingers
+  //            longer in the mid-tail than 2.2 did, so the fade feels smooth and warm.
+  // Multiplied together: at peak (progress=0.10) attack=1 AND decay=1, so env=1.
+  const progress = 1 - t
+  const attackT = Math.min(1, progress / 0.10)
+  const attack = 1 - Math.pow(1 - attackT, 2)
+  const decayProg = Math.max(0, (progress - 0.10) / 0.90)
+  const decay = Math.pow(1 - decayProg, 1.5)
+  const env = attack * decay
+  const prevComp = ctx.globalCompositeOperation
+  ctx.globalCompositeOperation = 'lighter'
+
+  // (1) Vignette — bright warm-gold radial glow ONLY outside the arena board. We clip the draw
+  // to (full screen) MINUS (arena shape in screen space) so the play area stays untouched and
+  // the flash reads as the world around the board lighting up. With the board covering the
+  // vignette inside its bounds, we can let the gradient be uniformly bright — no inner falloff
+  // needed since the board itself handles "no light on play area."
+  {
+    const cx = width * 0.5
+    const cy = height * 0.5
+    const outerR = Math.hypot(cx, cy)            // distance to corner
+    // Map arena world-space bounds to screen space (the world-transform has been restored to
+    // identity by this point; we apply the zoom manually). Designer zoom-out path uses
+    // DESIGNER_ZOOM; everything else uses cameraZoom.
+    const isZoomedDesigner = designerZoomedOut && getPhase() === 'designer'
+    const z = isZoomedDesigner ? DESIGNER_ZOOM : cameraZoom
+    ctx.save()
+    // Build the clip path: outer rect (full screen) + inner shape (arena). With evenodd fill
+    // rule on the clip, the area INSIDE the arena is excluded — only the outside gets painted.
+    ctx.beginPath()
+    ctx.rect(0, 0, width, height)
+    const shape = getArenaShape()
+    if (shape === 'circle') {
+      ctx.arc((ARENA_CX - camX) * z, (ARENA_CY - camY) * z, ARENA_RADIUS * z, 0, Math.PI * 2)
+    } else if (shape === 'hex') {
+      const verts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
+      ctx.moveTo((verts[0]!.x - camX) * z, (verts[0]!.y - camY) * z)
+      for (let i = 1; i < verts.length; i++) {
+        ctx.lineTo((verts[i]!.x - camX) * z, (verts[i]!.y - camY) * z)
+      }
+      ctx.closePath()
+    } else if (shape === 'cross') {
+      const verts = getCrossVertices(ARENA_CX, ARENA_CY)
+      ctx.moveTo((verts[0]!.x - camX) * z, (verts[0]!.y - camY) * z)
+      for (let i = 1; i < verts.length; i++) {
+        ctx.lineTo((verts[i]!.x - camX) * z, (verts[i]!.y - camY) * z)
+      }
+      ctx.closePath()
+    } else if (shape === 'pill') {
+      // Pill = capsule (two semicircular caps + straight top/bottom). Tracing the ACTUAL outline
+      // (not the bounding rect) so the right-angle corner spaces between the rounded caps and
+      // the screen corners get flashed. Was previously bounding-rect — those corners ended up
+      // inside the clip exclusion, leaving the flash with visible gaps at the curve corners.
+      const cyP = (ARENA_CY - camY) * z
+      const xL = (ARENA_CX - PILL_HALF_W - camX) * z
+      const xR = (ARENA_CX + PILL_HALF_W - camX) * z
+      const rP = PILL_R * z
+      ctx.moveTo(xL, cyP - rP)
+      ctx.lineTo(xR, cyP - rP)
+      ctx.arc(xR, cyP, rP, -Math.PI / 2, Math.PI / 2)
+      ctx.lineTo(xL, cyP + rP)
+      ctx.arc(xL, cyP, rP, Math.PI / 2, Math.PI * 1.5)
+      ctx.closePath()
+    } else {
+      // Default rect arena
+      ctx.rect(-camX * z, -camY * z, ARENA_W * z, ARENA_H * z)
+    }
+    ctx.clip('evenodd')
+    // Flat-ish fill so the alpha is uniform across the entire outside-the-board region —
+    // the flash sits flush right against the curve edge (not dimmer near the curve like a
+    // center-anchored radial gradient would be). Tiny gradient just for visual richness, not
+    // for falloff: center is 0.80, corners are 0.82 — essentially uniform.
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, outerR)
+    g.addColorStop(0, `rgba(255, 220, 115, ${0.80 * env})`)
+    g.addColorStop(1, `rgba(255, 200, 95, ${0.82 * env})`)
+    ctx.fillStyle = g
+    ctx.fillRect(0, 0, width, height)
+
+    // Inner rim accent — bright stroke traced along the OUTSIDE of the arena curve, so the
+    // flash reads as a glowing border hugging the board. Still inside the same clip (which
+    // excludes the arena interior) so the stroke only paints on the outside-the-curve side.
+    ctx.strokeStyle = `rgba(255, 245, 200, ${0.70 * env})`
+    ctx.lineWidth = 6
+    ctx.beginPath()
+    if (shape === 'circle') {
+      ctx.arc((ARENA_CX - camX) * z, (ARENA_CY - camY) * z, ARENA_RADIUS * z, 0, Math.PI * 2)
+    } else if (shape === 'hex') {
+      const verts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
+      ctx.moveTo((verts[0]!.x - camX) * z, (verts[0]!.y - camY) * z)
+      for (let i = 1; i < verts.length; i++) {
+        ctx.lineTo((verts[i]!.x - camX) * z, (verts[i]!.y - camY) * z)
+      }
+      ctx.closePath()
+    } else if (shape === 'cross') {
+      const verts = getCrossVertices(ARENA_CX, ARENA_CY)
+      ctx.moveTo((verts[0]!.x - camX) * z, (verts[0]!.y - camY) * z)
+      for (let i = 1; i < verts.length; i++) {
+        ctx.lineTo((verts[i]!.x - camX) * z, (verts[i]!.y - camY) * z)
+      }
+      ctx.closePath()
+    } else if (shape === 'pill') {
+      const cyP = (ARENA_CY - camY) * z
+      const xL = (ARENA_CX - PILL_HALF_W - camX) * z
+      const xR = (ARENA_CX + PILL_HALF_W - camX) * z
+      const rP = PILL_R * z
+      ctx.moveTo(xL, cyP - rP)
+      ctx.lineTo(xR, cyP - rP)
+      ctx.arc(xR, cyP, rP, -Math.PI / 2, Math.PI / 2)
+      ctx.lineTo(xL, cyP + rP)
+      ctx.arc(xL, cyP, rP, Math.PI / 2, Math.PI * 1.5)
+      ctx.closePath()
+    } else {
+      ctx.rect(-camX * z, -camY * z, ARENA_W * z, ARENA_H * z)
+    }
+    ctx.stroke()
+    ctx.restore()
+  }
+
+  // (1.5) Ice embers — cool sparks bursting outward from the board rim.
+  tickAndDrawEmbers(dt)
+
+  // (2) Corner brackets — L-shaped angular accents at each corner. Hot magenta (true yellow-
+  // contrast pink) outer glow, golden core, white-hot inner streak. Shake combines:
+  //   - Outward impact punch:  corners blast OUTWARD toward the edge on trigger, decaying in
+  //                             ~60ms — gives a directional "kick" rather than aimless jitter.
+  //   - Sine-based rumble:     two-axis ~16Hz oscillation with per-corner phase offsets, so the
+  //                             corners shake independently (not in lockstep). Decays with env^0.65
+  //                             so the shake persists into the fade tail instead of dying instantly.
+  //   - Small random spice:    tiny per-frame jitter on top of the sine for organic chaos.
+  // All three pinkglow/yellow/white-streak passes share the SAME computed offsets per corner so
+  // the colors stay aligned (no rainbow ghosting).
+  {
+    const margin = 58                                                  // distance from screen edge — pulled inward toward middle
+    const armLen = 72 + (1 - env) * 16                                 // 2× bigger — arms reach further into the screen
+    const baseW = 12 + env * 5                                         // 2× thicker base
+    ctx.lineCap = 'round'
+    const corners = [
+      { x: margin,         y: margin,         dx:  1, dy:  1, phase: 0.0 },   // top-left
+      { x: width - margin, y: margin,         dx: -1, dy:  1, phase: 1.3 },   // top-right
+      { x: margin,         y: height - margin, dx:  1, dy: -1, phase: 2.7 },   // bottom-left
+      { x: width - margin, y: height - margin, dx: -1, dy: -1, phase: 4.1 },   // bottom-right
+    ]
+    // ── Shake math ──
+    // shakePhase: ~12Hz oscillation driver. Calmer than before so the rumble reads as polish,
+    // not chaos. progress×30 over 0.6s gives ~4.8 full cycles.
+    const shakePhase = progress * 30
+    // Amplitude curve: pow(env, 0.6) decays slower than env, so the rumble lingers into the
+    // fade tail. 5.5px peak (down from 9px) — readable shake without overwhelming the brackets.
+    const shakeAmp = Math.pow(env, 0.6) * 5.5
+    // Impact punch: outward shove right at trigger, decays in ~60ms (first 10% of life).
+    // 9px kick (down from 14px) — still feels like a hit without being a jolt.
+    const punchT = Math.max(0, 1 - progress / 0.10)
+    const punchOut = Math.pow(punchT, 1.8) * 9
+    // Per-corner computed shake offsets (sin rumble + tiny random spice + outward punch)
+    const offs = corners.map((c) => {
+      const sx = Math.cos(shakePhase + c.phase) * shakeAmp
+              + Math.cos(shakePhase * 2.3 + c.phase * 1.7) * shakeAmp * 0.25
+              + (Math.random() - 0.5) * shakeAmp * 0.25
+              - c.dx * punchOut
+      const sy = Math.sin(shakePhase * 1.3 + c.phase * 1.4) * shakeAmp
+              + Math.sin(shakePhase * 2.1 + c.phase) * shakeAmp * 0.25
+              + (Math.random() - 0.5) * shakeAmp * 0.25
+              - c.dy * punchOut
+      return { sx, sy }
+    })
+
+    // Pass 1a — ice-blue outermost glow (wide, soft). Cold cyan halo contrasts the warm gold
+    // vignette behind it — temperature split reads as "the world chilled around the impact."
+    ctx.strokeStyle = `rgba(120, 200, 255, ${env * 0.18})`
+    ctx.lineWidth = baseW * 3.6
+    for (let i = 0; i < corners.length; i++) {
+      const c = corners[i]!, o = offs[i]!
+      const cx = c.x + o.sx, cy = c.y + o.sy
+      ctx.beginPath()
+      ctx.moveTo(cx, cy); ctx.lineTo(cx + c.dx * armLen, cy)
+      ctx.moveTo(cx, cy); ctx.lineTo(cx, cy + c.dy * armLen)
+      ctx.stroke()
+    }
+    // Pass 1b — ice mid halo (slightly more saturated cyan)
+    ctx.strokeStyle = `rgba(90, 180, 245, ${env * 0.45})`
+    ctx.lineWidth = baseW * 2.2
+    for (let i = 0; i < corners.length; i++) {
+      const c = corners[i]!, o = offs[i]!
+      const cx = c.x + o.sx, cy = c.y + o.sy
+      ctx.beginPath()
+      ctx.moveTo(cx, cy); ctx.lineTo(cx + c.dx * armLen, cy)
+      ctx.moveTo(cx, cy); ctx.lineTo(cx, cy + c.dy * armLen)
+      ctx.stroke()
+    }
+
+    // Pass 1c — pink accent stripe between the cyan halo and the white core. Thin enough to
+    // ride visibly on top of the cyan without dominating; with additive 'lighter' the overlap
+    // with cyan blends toward a soft lavender-cool-pink, giving the bracket a richer
+    // temperature gradient. Saturated hot pink keeps the warm note pulling.
+    ctx.strokeStyle = `rgba(255, 90, 200, ${env * 0.72})`
+    ctx.lineWidth = baseW * 1.65
+    for (let i = 0; i < corners.length; i++) {
+      const c = corners[i]!, o = offs[i]!
+      const cx = c.x + o.sx, cy = c.y + o.sy
+      ctx.beginPath()
+      ctx.moveTo(cx, cy); ctx.lineTo(cx + c.dx * armLen, cy)
+      ctx.moveTo(cx, cy); ctx.lineTo(cx, cy + c.dy * armLen)
+      ctx.stroke()
+    }
+
+    // Pass 2 — cool-white core stroke (near-white with a faint blue tint)
+    ctx.strokeStyle = `rgba(220, 240, 255, ${env * 0.95})`
+    ctx.lineWidth = baseW
+    for (let i = 0; i < corners.length; i++) {
+      const c = corners[i]!, o = offs[i]!
+      const cx = c.x + o.sx, cy = c.y + o.sy
+      ctx.beginPath()
+      ctx.moveTo(cx, cy); ctx.lineTo(cx + c.dx * armLen, cy)
+      ctx.moveTo(cx, cy); ctx.lineTo(cx, cy + c.dy * armLen)
+      ctx.stroke()
+    }
+
+    // Pass 3 — pure white inner streak
+    ctx.strokeStyle = `rgba(255, 255, 255, ${env * 0.9})`
+    ctx.lineWidth = Math.max(1.5, baseW * 0.45)
+    for (let i = 0; i < corners.length; i++) {
+      const c = corners[i]!, o = offs[i]!
+      const cx = c.x + o.sx, cy = c.y + o.sy
+      ctx.beginPath()
+      ctx.moveTo(cx, cy); ctx.lineTo(cx + c.dx * armLen, cy)
+      ctx.moveTo(cx, cy); ctx.lineTo(cx, cy + c.dy * armLen)
+      ctx.stroke()
+    }
+    ctx.lineCap = 'butt'
+  }
+
+  ctx.globalCompositeOperation = prevComp
+}
+function updateAndDrawLightningBursts(dt: number): void {
+  if (lightningBursts.length === 0) return
+  const simActive = getPhase() === 'playing' || getPhase() === 'designer'
+  for (let i = lightningBursts.length - 1; i >= 0; i--) {
+    const b = lightningBursts[i]!
+    if (simActive) b.timer += dt
+    if (b.timer >= b.lifetime) {
+      lightningBursts[i] = lightningBursts[lightningBursts.length - 1]!
+      lightningBursts.pop()
+      continue
+    }
+    const t = b.timer / b.lifetime
+    const peakCurve = Math.sin(t * Math.PI)   // 0 → 1 → 0, peaks mid-burst
+    const bsx = b.x - camX
+    const bsy = b.y - camY
+    const prevComp = ctx.globalCompositeOperation
+    ctx.globalCompositeOperation = 'lighter'
+    // Central flash bloom — sells the "discharge here" focal point
+    const flashR = b.radius * 0.45 * peakCurve
+    if (flashR > 2) {
+      const fGrad = ctx.createRadialGradient(bsx, bsy, 0, bsx, bsy, flashR * 1.6)
+      fGrad.addColorStop(0, `rgba(220, 245, 255, ${0.55 * peakCurve})`)
+      fGrad.addColorStop(0.55, `rgba(100, 200, 255, ${0.28 * peakCurve})`)
+      fGrad.addColorStop(1, 'rgba(60, 180, 255, 0)')
+      ctx.fillStyle = fGrad
+      ctx.beginPath()
+      ctx.arc(bsx, bsy, flashR * 1.6, 0, Math.PI * 2)
+      ctx.fill()
+    }
+    // Crackling arcs radiating outward — same jagged-polyline style as Bolt's ball lightning,
+    // but always blue, and the arcs reach toward the blast radius (not contained to a ball).
+    const arcCount = 12 + Math.floor(peakCurve * 10)
+    for (let a = 0; a < arcCount; a++) {
+      const angle = Math.random() * Math.PI * 2
+      const lenMult = 0.55 + Math.random() * 0.45
+      const tipX = bsx + Math.cos(angle) * b.radius * lenMult
+      const tipY = bsy + Math.sin(angle) * b.radius * lenMult
+      const dxA = tipX - bsx, dyA = tipY - bsy
+      const plen = Math.sqrt(dxA * dxA + dyA * dyA)
+      const pnx = plen > 0.01 ? -dyA / plen : 0
+      const pny = plen > 0.01 ?  dxA / plen : 0
+      const jitter = b.radius * 0.06
+      const segments = 6
+      ctx.beginPath()
+      ctx.moveTo(bsx, bsy)
+      for (let s = 1; s < segments; s++) {
+        const ts = s / segments
+        const j = (Math.random() - 0.5) * 2 * jitter
+        ctx.lineTo(bsx + dxA * ts + pnx * j, bsy + dyA * ts + pny * j)
+      }
+      ctx.lineTo(tipX, tipY)
+      const arcAlpha = (0.5 + Math.random() * 0.4) * peakCurve
+      ctx.strokeStyle = `rgba(190, 235, 255, ${arcAlpha})`
+      ctx.lineWidth = 1.2 + Math.random() * 1.6
+      ctx.stroke()
+      // Hot white inner streak on ~half of arcs
+      if (Math.random() < 0.45) {
+        ctx.strokeStyle = `rgba(255, 255, 250, ${arcAlpha * 0.6})`
+        ctx.lineWidth = 0.6
+        ctx.stroke()
+      }
+    }
+    ctx.globalCompositeOperation = prevComp
+  }
+}
+
+function updateAndDrawDashShots(dt: number): void {
+  if (dashShotVizList.length === 0) return
+  const simActive = getPhase() === 'playing' || getPhase() === 'designer'
+  for (let i = dashShotVizList.length - 1; i >= 0; i--) {
+    const p = dashShotVizList[i]!
+    if (simActive) {
+      p.elapsed += dt
+      p.x += p.vx * dt
+      p.y += p.vy * dt
+      if (p.lanceTimer > 0) p.lanceTimer -= dt
+      if (p.muzzleTimer > 0) p.muzzleTimer -= dt
+    }
+    if (p.elapsed >= p.lifetime) {
+      dashShotVizList[i] = dashShotVizList[dashShotVizList.length - 1]!
+      dashShotVizList.pop()
+      continue
+    }
+    const sx = p.x - camX
+    const sy = p.y - camY
+    const prog = p.elapsed / p.lifetime
+    const eased = Math.pow(prog, 1.5)   // ease-in — matches sim's growth curve
+    const visR = DASH_SHOT_MIN_VIS_R + (p.targetRadius - DASH_SHOT_MIN_VIS_R) * eased
+    // Late-stage urgency — hotter, crazier as detonation nears
+    const late = Math.max(0, (prog - 0.7) / 0.3)
+    // Ball-lightning sphere radius — the energetic body the arcs play around. Distinct from
+    // visR (the preview of where the explosion will be) so the ball itself stays a readable
+    // size even though the explosion will be bigger.
+    const ballR = (24 + eased * 28 + late * 12) * 1.2
+    const prevComp = ctx.globalCompositeOperation
+    ctx.globalCompositeOperation = 'lighter'
+    // Palette — gold for the standalone Bolt, cyan when Reverb is also active so the projectile
+    // reads as Reverb's same lightning vocabulary. Only the "warm" gold layers swap; the
+    // electric blue-white arcs and the lance were already on the cool side and stay as-is.
+    const pal = p.reverbMode
+      ? { bright: '215, 245, 255', mid: '130, 220, 255', deep: '60, 180, 255', accent: '64, 200, 255', core: '245, 255, 255', trail: '180, 240, 255', trailFade: '120, 215, 255' }
+      : { bright: '255, 240, 180', mid: '255, 220, 130', deep: '255, 180, 60', accent: '255, 215, 64', core: '255, 255, 245', trail: '255, 240, 180', trailFade: '255, 220, 120' }
+
+    // Aftershock + Bolt — first beat the projectile is dressed as a moving aftershock pie
+    // (orange/red ticking wedge), then crossfades into the full bolt visual around t = BEAT_SEC.
+    // boltIntensity dims the ball-lightning layers during the pie phase; muzzle + lance still
+    // play at full strength because they're the discharge moment.
+    // Non-aftershock bolt: boltIntensity = 1, pieAlpha = 0 — old behavior preserved.
+    let boltIntensity = 1
+    let pieAlpha = 0
+    if (p.aftershock) {
+      const crossStart = BEAT_SEC * 0.75
+      const crossEnd = BEAT_SEC * 1.25
+      boltIntensity = Math.max(0, Math.min(1, (p.elapsed - crossStart) / (crossEnd - crossStart)))
+      pieAlpha = Math.max(0, Math.min(1, (crossEnd - p.elapsed) / (crossEnd - crossStart)))
+    }
+
+    // Muzzle flash — bright bloom at the spawn point, brief flash so the on-beat fire reads
+    if (p.muzzleTimer > 0) {
+      const msx = p.spawnX - camX
+      const msy = p.spawnY - camY
+      const mAlpha = p.muzzleTimer / MUZZLE_DURATION   // 1 → 0
+      const mR = 40 + (1 - mAlpha) * 22   // bloom expands a touch as it fades
+      const mGrad = ctx.createRadialGradient(msx, msy, 0, msx, msy, mR)
+      mGrad.addColorStop(0, `rgba(${pal.bright}, ${0.9 * mAlpha})`)
+      mGrad.addColorStop(0.4, `rgba(${pal.mid}, ${0.55 * mAlpha})`)
+      mGrad.addColorStop(1, `rgba(${pal.deep}, 0)`)
+      ctx.fillStyle = mGrad
+      ctx.beginPath()
+      ctx.arc(msx, msy, mR, 0, Math.PI * 2)
+      ctx.fill()
+    }
+
+    // Lightning lance — jagged blue-white arc from spawn point to current projectile position.
+    // Sells "the energy just left my body" for the first ~10 frames after spawn. Re-randomized
+    // each frame so it crackles.
+    if (p.lanceTimer > 0) {
+      const lsx = p.spawnX - camX
+      const lsy = p.spawnY - camY
+      const lAlpha = p.lanceTimer / LANCE_DURATION
+      const dxL = sx - lsx, dyL = sy - lsy
+      const plenL = Math.sqrt(dxL * dxL + dyL * dyL)
+      if (plenL > 2) {
+        const pnxL = -dyL / plenL
+        const pnyL = dxL / plenL
+        const jitterL = 6 + plenL * 0.08
+        const segments = Math.max(4, Math.min(12, Math.floor(plenL / 30)))
+        ctx.beginPath()
+        ctx.moveTo(lsx, lsy)
+        for (let s = 1; s < segments; s++) {
+          const tL = s / segments
+          const jL = (Math.random() - 0.5) * 2 * jitterL
+          ctx.lineTo(lsx + dxL * tL + pnxL * jL, lsy + dyL * tL + pnyL * jL)
+        }
+        ctx.lineTo(sx, sy)
+        ctx.strokeStyle = `rgba(200, 240, 255, ${0.85 * lAlpha})`
+        ctx.lineWidth = 2.2 + lAlpha * 1.5
+        ctx.stroke()
+        // Hot white inner streak on top
+        ctx.strokeStyle = `rgba(255, 255, 250, ${0.9 * lAlpha})`
+        ctx.lineWidth = 0.9
+        ctx.stroke()
+      }
+    }
+
+    // ── Dimmable bolt layers — wrapped in globalAlpha so Aftershock's pie phase fades them out
+    // smoothly. Skipped entirely if boltIntensity is 0 (saves work during pure-pie stretch).
+    const prevAlpha = ctx.globalAlpha
+    if (boltIntensity > 0.005) {
+      ctx.globalAlpha = prevAlpha * boltIntensity
+    // Motion trail — short fading gradient line behind the orb
+    const trailLen = 0.10
+    const tailX = sx - p.vx * trailLen
+    const tailY = sy - p.vy * trailLen
+    const trailGrad = ctx.createLinearGradient(tailX, tailY, sx, sy)
+    trailGrad.addColorStop(0, `rgba(${pal.trailFade}, 0)`)
+    trailGrad.addColorStop(1, `rgba(${pal.trail}, ${0.45 + late * 0.3})`)
+    ctx.strokeStyle = trailGrad
+    ctx.lineWidth = 6 + late * 4
+    ctx.lineCap = 'round'
+    ctx.beginPath()
+    ctx.moveTo(tailX, tailY)
+    ctx.lineTo(sx, sy)
+    ctx.stroke()
+    ctx.lineCap = 'butt'
+
+    // Outer aura halo — soft radial glow, gently breathing. Palette-aware so Reverb mode shows
+    // a cool cyan glow instead of warm gold.
+    const slowPulse = 0.85 + 0.15 * Math.sin(performance.now() / 110)
+    const haloR = ballR * 2.8 * slowPulse
+    const haloGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, haloR)
+    haloGrad.addColorStop(0, `rgba(${pal.mid}, ${0.28 + late * 0.18})`)
+    haloGrad.addColorStop(0.55, `rgba(${pal.deep}, ${0.12 + late * 0.1})`)
+    haloGrad.addColorStop(1, `rgba(${pal.deep}, 0)`)
+    ctx.fillStyle = haloGrad
+    ctx.beginPath()
+    ctx.arc(sx, sy, haloR, 0, Math.PI * 2)
+    ctx.fill()
+
+    // Electric arcs — chaotic blue-white lightning bolts radiating from the core, fully
+    // re-randomized every frame for that crackling "alive" feel. Count + intensity grow late.
+    const arcCount = 7 + Math.floor(late * 6)
+    for (let a = 0; a < arcCount; a++) {
+      const angle = Math.random() * Math.PI * 2
+      const lenMult = 0.65 + Math.random() * 0.7   // some arcs short, some reach past ballR
+      const tipX = sx + Math.cos(angle) * ballR * lenMult
+      const tipY = sy + Math.sin(angle) * ballR * lenMult
+      const dxA = tipX - sx, dyA = tipY - sy
+      // Perpendicular unit for jitter offsets
+      const plen = Math.sqrt(dxA * dxA + dyA * dyA)
+      const pnx = plen > 0.01 ? -dyA / plen : 0
+      const pny = plen > 0.01 ?  dxA / plen : 0
+      const jitter = ballR * 0.22
+      // Polyline with random perpendicular offsets — jagged lightning shape
+      const segments = 5
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      for (let s = 1; s < segments; s++) {
+        const t = s / segments
+        const j = (Math.random() - 0.5) * 2 * jitter
+        ctx.lineTo(sx + dxA * t + pnx * j, sy + dyA * t + pny * j)
+      }
+      ctx.lineTo(tipX, tipY)
+      const arcAlpha = (0.45 + Math.random() * 0.45) * (0.7 + late * 0.3)
+      ctx.strokeStyle = `rgba(190, 235, 255, ${arcAlpha})`
+      ctx.lineWidth = 0.9 + Math.random() * 1.6
+      ctx.stroke()
+      // Bright white inner streak on top of about half the arcs — gives "hot core" pop
+      if (Math.random() < 0.5) {
+        ctx.strokeStyle = `rgba(255, 255, 245, ${arcAlpha * 0.6})`
+        ctx.lineWidth = 0.6
+        ctx.stroke()
+      }
+    }
+
+    // Tight inner glow — bright halo right around the white/cool-white core
+    const innerR = ballR * 0.75
+    const innerGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, innerR)
+    innerGrad.addColorStop(0, `rgba(${pal.core}, ${0.85 + late * 0.15})`)
+    innerGrad.addColorStop(0.5, `rgba(${pal.bright}, ${0.45 + late * 0.2})`)
+    innerGrad.addColorStop(1, `rgba(${pal.mid}, 0)`)
+    ctx.fillStyle = innerGrad
+    ctx.beginPath()
+    ctx.arc(sx, sy, innerR, 0, Math.PI * 2)
+    ctx.fill()
+
+    // White-hot core — small ultra-bright orb, fast pulse. (cool-white tint in Reverb mode)
+    const fastPulse = 0.85 + 0.15 * Math.sin(performance.now() / 55)
+    const coreR = (5 + late * 4) * fastPulse
+    ctx.fillStyle = `rgba(${pal.core}, 0.95)`
+    ctx.beginPath()
+    ctx.arc(sx, sy, coreR, 0, Math.PI * 2)
+    ctx.fill()
+
+    // Crackle sparks — tiny bright pixels scattered around the ball, repositioned every frame
+    const sparkCount = 5 + Math.floor(late * 8)
+    for (let s = 0; s < sparkCount; s++) {
+      const sa = Math.random() * Math.PI * 2
+      const sd = ballR * (0.45 + Math.random() * 0.95)
+      const spx = sx + Math.cos(sa) * sd
+      const spy = sy + Math.sin(sa) * sd
+      const sr = 0.6 + Math.random() * 1.5
+      ctx.fillStyle = `rgba(${pal.bright}, ${0.55 + Math.random() * 0.35})`
+      ctx.beginPath()
+      ctx.arc(spx, spy, sr, 0, Math.PI * 2)
+      ctx.fill()
+    }
+
+    // Preview ring — faint dashed outline at the EXPLOSION radius (visR). On top so it
+    // remains readable as the gameplay tell even through all the crackle.
+    ctx.beginPath()
+    ctx.arc(sx, sy, visR, 0, Math.PI * 2)
+    ctx.strokeStyle = `rgba(${pal.accent}, ${0.22 + eased * 0.35 + late * 0.25})`
+    ctx.lineWidth = 1.5 + eased * 1.5 + late * 1.5
+    ctx.setLineDash([8, 6])
+    ctx.stroke()
+    ctx.setLineDash([])
+    }
+    ctx.globalAlpha = prevAlpha
+
+    // ── Moving Aftershock pie — Aftershock + Bolt composes by showing the orange/red ticking
+    // wedge ON the moving projectile for the first beat, then crossfades into the full bolt
+    // visual. The pie's wedge fills over BEAT_SEC seconds (one beat) — at t=BEAT_SEC the
+    // wedge completes and dissolves while the bolt blooms in. Centered on the bolt's current
+    // position (sx, sy), radius matches the final explosion (p.targetRadius).
+    if (p.aftershock && pieAlpha > 0.005) {
+      const prevAlphaPie = ctx.globalAlpha
+      ctx.globalAlpha = prevAlphaPie * pieAlpha
+      // Reset composite to source-over so the pie reads as a flat telegraph instead of getting
+      // washed out by the additive blending used for the bolt itself.
+      ctx.globalCompositeOperation = 'source-over'
+      const pieElapsed = Math.min(1, p.elapsed / BEAT_SEC)   // 0 → 1 over first beat
+      // Color shift: gold → orange → red as the wedge fills (mirrors the static aftershock pie).
+      const lateT = Math.max(0, (pieElapsed - 0.7) / 0.3)
+      const colR = 255
+      const colG = Math.floor(200 - pieElapsed * 90 - lateT * 50)
+      const colB = Math.floor(80 - pieElapsed * 50)
+      const pulsePeriod = 600 - pieElapsed * 420
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / pulsePeriod * Math.PI * 2)
+      // Pie radius — scaled down from the full explosion so it reads as a focal timing
+      // indicator on the moving projectile, not a huge area claim. (Final blast is still
+      // p.targetRadius; this is purely the pie's visual size.)
+      const pieR = p.targetRadius * 0.55
+      // Outer danger ring outline — dashed, pulsing
+      ctx.beginPath()
+      ctx.arc(sx, sy, pieR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(${colR}, ${colG}, ${colB}, ${0.35 + pulse * 0.35 + lateT * 0.2})`
+      ctx.lineWidth = 2.5 + pulse * 1.5 + lateT * 1.5
+      ctx.setLineDash([10, 7])
+      ctx.stroke()
+      ctx.setLineDash([])
+      // Ticking pie wedge — fills clockwise from 12 o'clock
+      const pieEnd = -Math.PI / 2 + pieElapsed * Math.PI * 2
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.arc(sx, sy, pieR, -Math.PI / 2, pieEnd)
+      ctx.closePath()
+      ctx.fillStyle = `rgba(${colR}, ${colG}, ${colB}, ${0.14 + lateT * 0.22})`
+      ctx.fill()
+      // Pie leading edge line — "hand of the clock"
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.lineTo(sx + Math.cos(pieEnd) * pieR, sy + Math.sin(pieEnd) * pieR)
+      ctx.strokeStyle = `rgba(255, ${Math.min(255, colG + 50)}, ${colB}, ${0.7 + lateT * 0.3})`
+      ctx.lineWidth = 2
+      ctx.stroke()
+      ctx.globalAlpha = prevAlphaPie
+      ctx.globalCompositeOperation = 'lighter'   // restore for the rest of the loop
+    }
+
+    ctx.globalCompositeOperation = prevComp
+  }
+}
+
 function updateAndDrawPendingDetonations(dt: number): void {
   if (pendingDetVizList.length === 0) return
   // Tick during any active-sim phase. 'playing' is normal gameplay; 'designer' is the test-play
@@ -1426,7 +2273,8 @@ function drawEchoStep(player: Player): void {
 // ice-shard burst that fires when the zone gets replaced. State pushed from GameManager via
 // the setChillZoneViz/clearChillZoneViz/spawnIceShardBurst helpers (decouples to avoid the
 // circular Renderer ↔ GameManager import, same pattern used for pending detonations).
-let chillZoneViz: { x: number; y: number; radius: number } | null = null
+let chillZoneViz: { x: number; y: number; radius: number; spawnTimer: number } | null = null
+const CHILL_ZONE_SPAWN_DURATION = 0.35   // seconds — ice "crystallizing outward" expand-in
 interface IceShard {
   ox: number; oy: number     // origin (center of burst)
   dx: number; dy: number     // direction vector (unit-ish)
@@ -1455,7 +2303,7 @@ interface MiniSnowflake {
 const miniSnowflakes: MiniSnowflake[] = []
 
 export function setChillZoneViz(x: number, y: number, radius: number): void {
-  chillZoneViz = { x, y, radius }
+  chillZoneViz = { x, y, radius, spawnTimer: CHILL_ZONE_SPAWN_DURATION }
 }
 export function clearChillZoneViz(): void {
   chillZoneViz = null
@@ -1479,37 +2327,44 @@ export function spawnIceShardBurst(x: number, y: number, radius: number): void {
       timer: 0, lifetime: 0.38 + Math.random() * 0.08,
     })
   }
-  // Spray of small fast particles for added texture
-  for (let i = 0; i < 30; i++) {
+  // Spray of small fast particles for added texture — bumped count + speed so the initial
+  // collapse moment hits harder
+  for (let i = 0; i < 50; i++) {
     const a = Math.random() * Math.PI * 2
-    const sp = 250 + Math.random() * 250
+    const sp = 320 + Math.random() * 320
     spawnParticle(x + Math.cos(a) * radius * 0.4, y + Math.sin(a) * radius * 0.4,
       Math.cos(a) * sp, Math.sin(a) * sp,
       200 + Math.floor(Math.random() * 55), 230 + Math.floor(Math.random() * 25), 255,
-      0.3 + Math.random() * 0.2, 3 + Math.random() * 2)
+      0.28 + Math.random() * 0.22, 3 + Math.random() * 2.5)
   }
   // Bright central flash + shock-ring (drawn each frame in updateAndDrawChillFX while alive)
   frostCracks.push({ x, y, radius, timer: 0, lifetime: 0.36 })
-  // Mini snowflake flurry — sprinkled across the collapse area, drifting outward+upward
-  // with slight gravity. Reads as "powder snow kicked up by the shatter." Scales with radius.
-  const flakeCount = Math.max(20, Math.floor(radius * 0.30))
+  // Mini snowflake EXPLOSION — was a slow drifting "kicked-up dust" trailing the shards. Now
+  // it's a dense, fast, bigger flurry that BURSTS at the same instant as the shards converge,
+  // so the snow is part of the dramatic moment instead of arriving late. Roughly 2× the count,
+  // 2× the initial speed, ~40% bigger flakes, slightly shorter lifetime so they don't linger
+  // weakly after the shards are gone.
+  const flakeCount = Math.max(40, Math.floor(radius * 0.55))
   for (let i = 0; i < flakeCount; i++) {
     const a = Math.random() * Math.PI * 2
-    const d = Math.sqrt(Math.random()) * radius * 0.88   // uniform distribution inside circle
+    const d = Math.sqrt(Math.random()) * radius * 0.9
     const spawnX = x + Math.cos(a) * d
     const spawnY = y + Math.sin(a) * d
-    // Velocity: gentle drift outward from center + jitter + slight upward bias for "kicked up dust"
+    // Strong outward burst (0.75 of speed along the outward direction) + jitter — feels like
+    // an explosion of powder snow, not a gentle puff. Initial speed bumped + lifetime shortened
+    // so flakes MOVE faster within the same final-distance envelope (drag eats more of the
+    // faster initial velocity before they stop).
     const outAng = Math.atan2(spawnY - y, spawnX - x)
-    const speed = 50 + Math.random() * 90
-    const vx = Math.cos(outAng) * speed * 0.45 + (Math.random() - 0.5) * 50
-    const vy = Math.sin(outAng) * speed * 0.45 + (Math.random() - 0.5) * 50 - 35
+    const speed = 170 + Math.random() * 280
+    const vx = Math.cos(outAng) * speed * 0.75 + (Math.random() - 0.5) * 90
+    const vy = Math.sin(outAng) * speed * 0.75 + (Math.random() - 0.5) * 90 - 22
     miniSnowflakes.push({
       x: spawnX, y: spawnY,
       vx, vy,
       rot: Math.random() * Math.PI * 2,
-      rotVel: (Math.random() - 0.5) * 7,
-      size: 4 + Math.random() * 3.5,
-      timer: 0, lifetime: 0.75 + Math.random() * 0.55,
+      rotVel: (Math.random() - 0.5) * 11,
+      size: 5.5 + Math.random() * 5,
+      timer: 0, lifetime: 0.4 + Math.random() * 0.4,
     })
   }
 }
@@ -1681,20 +2536,42 @@ function drawWalls(): void {
         w.springJustFired = false
       }
     }
+    // Fade — bake fadeSize into visScale so all stroke layers shrink with the wall. When
+    // fully hidden (fadeSize ≈ 0) the wall is skipped from the body draws below but the
+    // ghost outline pass (designer-only) shows a faint preview at the wall's rest size.
+    const fadeSize = w.fadeSize ?? 1
+    visScale *= fadeSize
     drawList.push({ w, ax, ay, bx, by, pillar, arc, visScale, springFireT })
   }
 
   function strokeWallLayer(d: WallDraw, padding: number, style: string, fixedWidth?: number): void {
+    // Death fade for retiring Trailblaze trails — alpha-only multiplier so the fade is quick
+    // and quiet (no thickness shrink). Applied to every pass via globalAlpha so halo, rim, and
+    // body all dim together. dyingUntil == null is the hot path, no overhead.
+    let deathFade = 1
+    if (d.w.dyingUntil != null) {
+      deathFade = Math.max(0, (d.w.dyingUntil - performance.now()) / WALL_DEATH_DURATION_MS)
+      if (deathFade <= 0) return
+    }
     const thick = d.w.radius * 2 * d.visScale
+    let prevAlpha = 1
+    if (deathFade < 1) {
+      prevAlpha = ctx.globalAlpha
+      ctx.globalAlpha = prevAlpha * deathFade
+    }
     if (d.pillar) {
       ctx.beginPath()
       ctx.arc(d.ax, d.ay, (d.w.radius + padding / 2) * d.visScale, 0, Math.PI * 2)
       ctx.fillStyle = style
       ctx.fill()
+      if (deathFade < 1) ctx.globalAlpha = prevAlpha
       return
     }
     const w = fixedWidth ?? (thick + padding)
-    if (w < 0.5) return   // guard tiny / negative widths
+    if (w < 0.5) {
+      if (deathFade < 1) ctx.globalAlpha = prevAlpha
+      return   // guard tiny / negative widths
+    }
     ctx.beginPath()
     if (d.arc) {
       ctx.arc(d.arc.cx, d.arc.cy, d.arc.r, d.arc.aA, d.arc.aB, !d.arc.antiClockwise)
@@ -1705,6 +2582,7 @@ function drawWalls(): void {
     ctx.strokeStyle = style
     ctx.lineWidth = w
     ctx.stroke()
+    if (deathFade < 1) ctx.globalAlpha = prevAlpha
   }
 
   // Helper — spring fire intensity 0..1 (peaks at 1 on fire frame, decays to 0 by end of pulse)
@@ -1830,12 +2708,22 @@ function drawWalls(): void {
     strokeWallLayer(d, 4, style)
   }
   // Pass 4 — bodies. Default = dark navy. Spring-firing walls lerp toward bright orange so
-  // the bounce is unmissable. Drawn LAST so they cover any rim crossover at shared endpoints.
+  // the bounce is unmissable. Player-owned walls (Trailblaze) get a bright cyan body with
+  // a shimmer so they read as "magical, drawn by you" vs the static designer walls. Drawn
+  // LAST so they cover any rim crossover at shared endpoints.
   for (const d of drawList) {
     const fire = springFireGlow(d)
-    const bodyStyle = fire > 0
-      ? `rgba(${Math.floor(35 + (255 - 35) * fire)}, ${Math.floor(50 + (175 - 50) * fire)}, ${Math.floor(70 - 70 * fire)}, 1)`
-      : 'rgba(35, 50, 70, 1)'
+    let bodyStyle: string
+    if (d.w.playerOwned) {
+      // Cyan shimmer — slowly cycling brightness so the wall looks alive
+      const shimmer = 0.5 + 0.5 * Math.sin(now / 220)
+      const r = 38, g = Math.floor(198 + shimmer * 40), b = Math.floor(218 + shimmer * 30)
+      bodyStyle = `rgba(${r}, ${g}, ${b}, 0.95)`
+    } else if (fire > 0) {
+      bodyStyle = `rgba(${Math.floor(35 + (255 - 35) * fire)}, ${Math.floor(50 + (175 - 50) * fire)}, ${Math.floor(70 - 70 * fire)}, 1)`
+    } else {
+      bodyStyle = 'rgba(35, 50, 70, 1)'
+    }
     strokeWallLayer(d, 0, bodyStyle)
   }
   // Pass 5 — inner shockwave on spring fire. Bright wave expands from the spine outward to
@@ -1854,18 +2742,9 @@ function drawWalls(): void {
     const progress = beatsSinceFire / shockDur   // 0 at fire → 1 at rim
     drawInnerShockwave(d, progress)
   }
-  // For rotating / pendulum walls, brighter outer rim flash + halo pulse so motion reads
-  // as "this thing is alive" even when momentarily near zero angular velocity (especially
-  // important for pendulums at the turnaround points where they pause). Checks groupMotion
-  // so every wall in a moving group flashes — not just the wall that owns the motion.
-  for (const d of drawList) {
-    const mt = d.w.groupMotion?.type
-    const hasMotion = mt === 'rotate' || mt === 'pendulum' || mt === 'tick'
-    const hasTranslation = !!d.w.groupTranslation
-    if (!hasMotion && !hasTranslation) continue
-    const motionPulse = 0.5 + 0.5 * Math.sin(now / 320)
-    strokeWallLayer(d, 6, `rgba(255, 215, 64, ${0.18 + motionPulse * 0.18})`)
-  }
+  // (Motion-flash gold rim pass removed — moving walls now read the same as static walls
+  // so the player isn't biased by color. Re-enable here later if motion telegraphing is
+  // wanted: stroke padding 6 with gold-tinted alpha keyed off groupMotion / groupTranslation.)
 
   ctx.lineCap = 'butt'
   drawWallsOverlay()
@@ -1877,6 +2756,36 @@ function drawWalls(): void {
 function drawWallsOverlay(): void {
   if (getPhase() !== 'designer') return
   const wallsRef = getWalls()
+
+  // Fade-hidden indicator — dashed cyan outline at the wall's REST size shown when the wall
+  // is in the "hidden" portion of its fade cycle. Designer-only preview so the designer can
+  // see where a faded wall will come back. The body itself is rendered tiny/invisible by the
+  // main draw pass; this just adds a ghost reference.
+  ctx.save()
+  ctx.setLineDash([4, 6])
+  ctx.lineCap = 'round'
+  ctx.strokeStyle = 'rgba(120, 220, 255, 0.45)'
+  ctx.lineWidth = 1.5
+  for (const w of wallsRef) {
+    if (!w.groupFade) continue
+    const fs = w.fadeSize ?? 1
+    if (fs >= 0.05) continue
+    const ax = w.ax - camX, ay = w.ay - camY
+    const bx = w.bx - camX, by = w.by - camY
+    const isPillar = (bx - ax) ** 2 + (by - ay) ** 2 < 0.5
+    if (isPillar) {
+      ctx.beginPath()
+      ctx.arc(ax, ay, w.radius, 0, Math.PI * 2)
+      ctx.stroke()
+    } else {
+      ctx.lineWidth = w.radius * 2
+      ctx.beginPath()
+      ctx.moveTo(ax, ay); ctx.lineTo(bx, by)
+      ctx.stroke()
+      ctx.lineWidth = 1.5
+    }
+  }
+  ctx.restore()
 
   // No-clip indicator — dashed red rim around any wall tagged noClip. Designer-only visual
   // cue that "this wall is isolated, won't auto-group with neighbors, isn't a snap target."
@@ -2238,21 +3147,27 @@ function drawChillZone(): void {
   const t = now / 1000
   const breathe = 0.5 + 0.5 * Math.sin(now / 700)
   const slowRot = now / 4500
+  // Spawn-in expand — ice crystallizes outward from center rather than popping at full size.
+  // Tick the timer using lastDt so it aligns with everything else animated in this pass.
+  if (cz.spawnTimer > 0) cz.spawnTimer -= lastDt
+  const spawnProg = cz.spawnTimer > 0
+    ? Math.max(0, 1 - cz.spawnTimer / CHILL_ZONE_SPAWN_DURATION)
+    : 1
+  const spawnEase = 1 - Math.pow(1 - spawnProg, 3)   // ease-out cubic
+  const effR = cz.radius * spawnEase
 
-  // (1) Base radial fill — soft cyan, breathing alpha
-  const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, cz.radius)
-  g.addColorStop(0, `rgba(128, 216, 255, ${0.20 + breathe * 0.06})`)
-  g.addColorStop(0.65, `rgba(100, 200, 245, ${0.13 + breathe * 0.05})`)
-  g.addColorStop(1, `rgba(80, 180, 235, 0)`)
+  // (1) Base flat fill — soft cyan at the center color all the way to the edge so the damage
+  // zone reads as a uniform circle (no edge fade). Breathing alpha kept for the alive feel.
+  // Dialed back slightly so the zone reads as clean ice rather than a heavy wash.
   ctx.beginPath()
-  ctx.arc(sx, sy, cz.radius, 0, Math.PI * 2)
-  ctx.fillStyle = g
+  ctx.arc(sx, sy, effR, 0, Math.PI * 2)
+  ctx.fillStyle = `rgba(128, 216, 255, ${0.14 + breathe * 0.05})`
   ctx.fill()
 
   // Clip everything below to the zone circle so layers don't leak past the edge.
   ctx.save()
   ctx.beginPath()
-  ctx.arc(sx, sy, cz.radius, 0, Math.PI * 2)
+  ctx.arc(sx, sy, effR, 0, Math.PI * 2)
   ctx.clip()
 
   // (A) Hex tile floor pattern — faint flat-top hex grid pulsing with the breathe envelope.
@@ -2266,10 +3181,10 @@ function drawChillZone(): void {
     const colStep = hexR * 1.5
     const rowStep = hexH
     // Bounding box of the zone in world space
-    const x0 = cz.x - cz.radius
-    const x1 = cz.x + cz.radius
-    const y0 = cz.y - cz.radius
-    const y1 = cz.y + cz.radius
+    const x0 = cz.x - effR
+    const x1 = cz.x + effR
+    const y0 = cz.y - effR
+    const y1 = cz.y + effR
     // Snap iteration grid to multiples of stride so the pattern is stable as zone moves
     const startCol = Math.floor(x0 / colStep)
     const endCol = Math.ceil(x1 / colStep)
@@ -2287,7 +3202,7 @@ function drawChillZone(): void {
         // Skip hexes whose center is well outside the zone (still inside clip path though)
         const dx = cxw - cz.x
         const dy = cyw - cz.y
-        if (dx * dx + dy * dy > (cz.radius + hexR) * (cz.radius + hexR)) continue
+        if (dx * dx + dy * dy > (effR + hexR) * (effR + hexR)) continue
         ctx.beginPath()
         for (let v = 0; v < 6; v++) {
           const va = (v / 6) * Math.PI * 2
@@ -2311,10 +3226,10 @@ function drawChillZone(): void {
     const mistCount = 4
     for (let i = 0; i < mistCount; i++) {
       const orbitAngle = (t * 0.18) + (i / mistCount) * Math.PI * 2 + Math.sin(t * 0.5 + i * 1.3) * 0.4
-      const orbitR = cz.radius * (0.25 + 0.30 * (0.5 + 0.5 * Math.sin(t * 0.4 + i * 2.1)))
+      const orbitR = effR * (0.25 + 0.30 * (0.5 + 0.5 * Math.sin(t * 0.4 + i * 2.1)))
       const mx = sx + Math.cos(orbitAngle) * orbitR
       const my = sy + Math.sin(orbitAngle) * orbitR
-      const blobR = cz.radius * 0.32 + Math.sin(t * 0.6 + i * 2.7) * cz.radius * 0.08
+      const blobR = effR * 0.32 + Math.sin(t * 0.6 + i * 2.7) * effR * 0.08
       const mg = ctx.createRadialGradient(mx, my, 0, mx, my, blobR)
       mg.addColorStop(0, `rgba(210, 240, 255, 0.13)`)
       mg.addColorStop(0.5, `rgba(190, 230, 255, 0.06)`)
@@ -2326,28 +3241,6 @@ function drawChillZone(): void {
     }
   }
 
-  // (B) Beat-synced cold pulse — expanding white-cyan ring on every beat. Phase derived from
-  // PatternClock.getLoopPosition() so it stays locked to the game's rhythm. The ring expands
-  // from center to slightly past the zone edge over one beat, fading as it grows. Clipped to
-  // the zone so the "cold containing itself" feel is preserved.
-  {
-    const beatPhase = getLoopPosition() % 1
-    const pulseR = beatPhase * cz.radius * 1.08
-    const pulseAlpha = (1 - beatPhase) * 0.45
-    if (pulseR > 6 && pulseAlpha > 0.02) {
-      ctx.beginPath()
-      ctx.arc(sx, sy, pulseR, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(225, 245, 255, ${pulseAlpha})`
-      ctx.lineWidth = 2 + (1 - beatPhase) * 3.5
-      ctx.stroke()
-      // Inner core line for double-stroke clarity
-      ctx.beginPath()
-      ctx.arc(sx, sy, pulseR, 0, Math.PI * 2)
-      ctx.strokeStyle = `rgba(255, 255, 255, ${pulseAlpha * 0.6})`
-      ctx.lineWidth = 1.2
-      ctx.stroke()
-    }
-  }
 
   // Snowflake clusters scattered inside — 6-pointed asterisks, slow counter-rotation (kept
   // from before; they're the "ice crystals on the ground" layer between the hex grid and
@@ -2358,7 +3251,7 @@ function drawChillZone(): void {
   const flakes = 5
   for (let i = 0; i < flakes; i++) {
     const a = (i / flakes) * Math.PI * 2
-    const dist = cz.radius * (0.4 + (i % 2) * 0.25)
+    const dist = effR * (0.4 + (i % 2) * 0.25)
     const fx = Math.cos(a) * dist
     const fy = Math.sin(a) * dist
     const fr = 9 + (i % 2) * 3
@@ -2386,7 +3279,7 @@ function drawChillZone(): void {
     const cycleDur = 2.0  // seconds per full grow→hold→fade cycle
     // Faint solid outline so the perimeter is always slightly readable
     ctx.beginPath()
-    ctx.arc(sx, sy, cz.radius - 1, 0, Math.PI * 2)
+    ctx.arc(sx, sy, effR - 1, 0, Math.PI * 2)
     ctx.strokeStyle = `rgba(160, 220, 250, ${0.16 + breathe * 0.08})`
     ctx.lineWidth = 1.5
     ctx.stroke()
@@ -2400,8 +3293,8 @@ function drawChillZone(): void {
       else if (ph < 0.78) vis = 1                 // hold
       else vis = 1 - (ph - 0.78) / 0.22           // fade
       if (vis < 0.04) continue
-      const cxw = sx + Math.cos(baseAngle) * cz.radius
-      const cyw = sy + Math.sin(baseAngle) * cz.radius
+      const cxw = sx + Math.cos(baseAngle) * effR
+      const cyw = sy + Math.sin(baseAngle) * effR
       // Each shard spins at its own speed and direction
       const spinDir = (i & 1) ? 1 : -1
       const spinRate = 1.4 + (i % 5) * 0.35
@@ -2452,7 +3345,7 @@ function drawChillZone(): void {
   // self-fade and don't need extra state. Sparse enough not to spam.
   if (Math.random() < 0.55) {
     const sa = Math.random() * Math.PI * 2
-    const sd = cz.radius * Math.sqrt(Math.random()) * 0.92
+    const sd = effR * Math.sqrt(Math.random()) * 0.92
     spawnParticle(cz.x + Math.cos(sa) * sd, cz.y + Math.sin(sa) * sd,
       0, 0,
       255, 255, 255, 0.18 + Math.random() * 0.12, 1.2 + Math.random() * 1.0)
@@ -2461,7 +3354,7 @@ function drawChillZone(): void {
   // Drift particles (existing) — small ice crystals floating up from random spots
   if (Math.random() < 0.45) {
     const a = Math.random() * Math.PI * 2
-    const d = cz.radius * Math.sqrt(Math.random()) * 0.92
+    const d = effR * Math.sqrt(Math.random()) * 0.92
     const px = cz.x + Math.cos(a) * d
     const py = cz.y + Math.sin(a) * d
     spawnParticle(px, py, (Math.random() - 0.5) * 18, -30 - Math.random() * 25,
@@ -2957,16 +3850,16 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   // it just covers a larger world area when zoom < 1 (because the canvas is then scaled up
   // by ctx.scale below — the world-to-screen calc is `(worldX - camX) * zoom`).
   const isZoomedDesigner = designerZoomedOut && getPhase() === 'designer'
-  const renderZoom = isZoomedDesigner ? DESIGNER_ZOOM : 1
+  const renderZoom = isZoomedDesigner ? DESIGNER_ZOOM : cameraZoom
   if (isZoomedDesigner) {
     camX = ARENA_CX - width / (2 * renderZoom)
     camY = ARENA_CY - height / (2 * renderZoom)
   } else if (cam) {
-    camX = cam.x - width / 2
-    camY = cam.y - height / 2
+    camX = cam.x - width / (2 * renderZoom)
+    camY = cam.y - height / (2 * renderZoom)
   } else {
-    camX = player.x - width / 2
-    camY = player.y - height / 2
+    camX = player.x - width / (2 * renderZoom)
+    camY = player.y - height / (2 * renderZoom)
   }
 
   updateParticles(dt)
@@ -3325,10 +4218,10 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       ctx.fill()
       ctx.globalCompositeOperation = prevComp
     }
-    // Red danger fill
+    // Red danger fill — slightly stronger so the damage zone reads as DANGER clearly
     ctx.beginPath()
     ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(255, 40, 40, ${t * t * 0.42})`
+    ctx.fillStyle = `rgba(255, 45, 45, ${t * t * 0.56})`
     ctx.fill()
     // Gold shockwave expanding to fill attack range
     const shockExpand = Math.min((1 - t) * 3, 1)
@@ -3342,11 +4235,11 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       ctx.lineWidth = 5 * t
       ctx.stroke()
     }
-    // Red danger edge
+    // Red danger edge — thicker outline so the boundary of the AOE is unmistakable
     ctx.beginPath()
     ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
-    ctx.strokeStyle = `rgba(255, 60, 60, ${t * 0.78})`
-    ctx.lineWidth = 3 * t + 1.5
+    ctx.strokeStyle = `rgba(255, 60, 60, ${t * 0.88})`
+    ctx.lineWidth = 5 * t + 3
     ctx.stroke()
     // Cyan border
     ctx.beginPath()
@@ -3385,9 +4278,68 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     }
   }
 
+  // Reverb shock-push — a dense cascade of expanding wave rings, each staggered slightly so
+  // they ripple outward like a fast sonar burst. Ease-out expansion for an impact feel. The
+  // OUTERMOST ring reaches exactly shockPushRadius (= the max push range), so what you see is
+  // what gets pushed. Drawn AFTER the gold damage flash so the cyan reads clearly on top.
+  if (shockPushFlash > 0) {
+    shockPushFlash -= lastDt
+    const pt = Math.max(0, shockPushFlash / SHOCK_PUSH_DURATION)   // 1 → 0
+    const prog = 1 - pt                                            // 0 → 1
+    const psx = shockPushX - camX
+    const psy = shockPushY - camY
+    const prevComp = ctx.globalCompositeOperation
+    ctx.globalCompositeOperation = 'lighter'
+
+    const RING_COUNT = 7
+    const RING_STAGGER = 0.05    // start-time offset per ring
+    const RING_TRAVEL = 0.5      // fraction of the animation a ring takes to go center → edge
+    for (let ring = 0; ring < RING_COUNT; ring++) {
+      const stagger = ring * RING_STAGGER
+      // Each ring expands over a FIXED travel fraction so at any moment the rings are spread
+      // across the whole radius — a flowing ripple, not a single front.
+      const ringProg = Math.min(1, Math.max(0, (prog - stagger) / RING_TRAVEL))
+      if (ringProg <= 0) continue
+      const rEased = 1 - Math.pow(1 - ringProg, 2.4)     // ease-out burst (a touch sharper)
+      const ringR = shockPushRadius * rEased
+      if (ringR < 2) continue
+      // sin() envelope — each ring fades in at birth, peaks mid-flight, dissolves at the edge.
+      // No clamp-and-stack at the rim. Smooth at both ends.
+      const env = Math.sin(ringProg * Math.PI)
+      // Smooth the overall fade tail: ^0.7 keeps brightness up longer then eases to zero,
+      // rather than a hard linear cutoff. Both alpha AND lineWidth use this curve so the rings
+      // dissolve together instead of leaving a thin hard line behind.
+      const ptSmooth = Math.pow(pt, 0.7)
+      const rAlpha = ptSmooth * env
+      if (rAlpha <= 0.005) continue
+      // Two-layer ring for a cooler glow: a WIDE soft cyan halo + a thin brighter near-white
+      // core riding on top. Both line widths now multiply by ptSmooth so they taper fully.
+      ctx.beginPath()
+      ctx.arc(psx, psy, ringR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(70, 195, 255, ${rAlpha * 0.5})`
+      ctx.lineWidth = (14 * env + 2) * ptSmooth
+      ctx.stroke()
+      ctx.beginPath()
+      ctx.arc(psx, psy, ringR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(190, 240, 255, ${rAlpha * 0.85})`
+      ctx.lineWidth = (3 * env + 1) * ptSmooth
+      ctx.stroke()
+    }
+    ctx.globalCompositeOperation = prevComp
+  }
+
   perfStart('player')
   drawPlayer(player)
   perfEnd('player')
+
+  // Bolt (Dash-shot) projectiles — ball lightning + lance + muzzle. Drawn AFTER the player so
+  // the discharge orb and connecting arc visually stack ON TOP of the player at spawn moment,
+  // making the "I fired the bolt" beat punch readable instead of getting buried under the body.
+  updateAndDrawDashShots(lastDt)
+
+  // Blue lightning burst — fired by Reverb at the explosion point. Same arc vocabulary as
+  // the Bolt's crackle so the visual language stays consistent.
+  updateAndDrawLightningBursts(lastDt)
 
   // Enemy rings + revenge rings — drawn on top of player so attacks overlay
   perfStart('e_rings_overlay')
@@ -3436,6 +4388,11 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     ctx.restore()
   }
 
+  // On-beat dash screen confirmation — vignette pulse + corner brackets. Drawn in screen space
+  // (no camera offset) AFTER the world transform is restored so it overlays everything, but
+  // BEFORE the HUD so HUD text + dash pies stay readable on top.
+  updateAndDrawBeatDashConfirm(lastDt)
+
   drawHUD(player, enemies, fps)
   perfEnd('R_TOTAL')
   perfFlush()
@@ -3462,24 +4419,40 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
 
 function drawGrid(player: Player): void {
   const cellSize = GRID_CELL_PX
+  // drawGrid runs INSIDE the ctx.scale(renderZoom) transform, so the screen coords we draw
+  // at get multiplied by zoom. To cover the FULL visible area at any zoom, our "screen
+  // extent" in pre-transform units is (width/zoom, height/zoom). Without this, vignette
+  // and fine grid only cover the top-left zoom*zoom rect, leaving the right/bottom bare
+  // (visible as a different shade because the bg fill underneath shows through unblended).
+  const zoomNow = (designerZoomedOut && getPhase() === 'designer') ? DESIGNER_ZOOM : cameraZoom
+  const effW = width / zoomNow
+  const effH = height / zoomNow
 
-  // Subtle fine grid texture
+  // Fine grid texture — pulses with the global beat. globalBeatPulse caps at 0.5, so we use
+  // larger multipliers to actually move the needle. Baseline near-invisible, peak clearly
+  // visible especially around the player where the dark vignette doesn't suppress it.
+  // Color shifts toward warm lavender-cyan at peak so it reads as the grid being LIT, not
+  // just brighter. Line width also bumps slightly for an extra "energized" feel.
   {
     const gridSize = 8
     const startX = Math.floor(camX / gridSize) * gridSize
     const startY = Math.floor(camY / gridSize) * gridSize
-    ctx.strokeStyle = 'rgba(100, 130, 200, 0.05)'
-    ctx.lineWidth = 0.5
+    const gridAlpha = 0.05 + globalBeatPulse * 0.40   // ~0.05 → ~0.25 at peak (0.5)
+    const gR = Math.floor(100 + globalBeatPulse * 150)
+    const gG = Math.floor(130 + globalBeatPulse * 110)
+    const gB = Math.floor(200 + globalBeatPulse * 60)
+    ctx.strokeStyle = `rgba(${gR}, ${gG}, ${gB}, ${gridAlpha})`
+    ctx.lineWidth = 0.5 + globalBeatPulse * 0.5
     ctx.beginPath()
-    for (let gx = startX; gx < camX + width + gridSize; gx += gridSize) {
+    for (let gx = startX; gx < camX + effW + gridSize; gx += gridSize) {
       const sx = gx - camX
       ctx.moveTo(sx, 0)
-      ctx.lineTo(sx, height)
+      ctx.lineTo(sx, effH)
     }
-    for (let gy = startY; gy < camY + height + gridSize; gy += gridSize) {
+    for (let gy = startY; gy < camY + effH + gridSize; gy += gridSize) {
       const sy = gy - camY
       ctx.moveTo(0, sy)
-      ctx.lineTo(width, sy)
+      ctx.lineTo(effW, sy)
     }
     ctx.stroke()
   }
@@ -3502,11 +4475,52 @@ function drawGrid(player: Player): void {
   vignetteGrad.addColorStop(0.6, `rgba(0, 0, 0, ${0.45 - vPulse})`)
   vignetteGrad.addColorStop(1, `rgba(0, 0, 0, ${0.9 - vPulse})`)
   ctx.fillStyle = vignetteGrad
-  ctx.fillRect(0, 0, width, height)
+  ctx.fillRect(0, 0, effW, effH)
 
+  // Background ripple — beat-blast wave passing through the floor. Drawn AFTER the dark
+  // vignette so the vignette doesn't dim it as it travels toward the screen edges. Constant
+  // alpha through the full lifetime (no fade) so the wave keeps the same visible brightness
+  // until it simply disappears past the edge. Wide soft band + gradient on both sides =
+  // no defined edge → reads as the floor briefly washed by a wave, not as a ring attack.
+  if (bgRipple) {
+    bgRipple.time += lastDt
+    if (bgRipple.time >= bgRipple.lifetime) {
+      bgRipple = null
+    } else {
+      const t = bgRipple.time / bgRipple.lifetime
+      const eased = 1 - Math.pow(1 - t, 2)
+      const radius = BG_RIPPLE_MAX_RADIUS * eased
+      const bandWidth = 130
+      const sx = bgRipple.x - camX
+      const sy = bgRipple.y - camY
+      // Constant alpha (small fade-in only over first 6% so it doesn't pop in jarringly)
+      const fadeIn = Math.min(1, t / 0.06)
+      const alphaEnv = fadeIn * 0.057
+      if (alphaEnv > 0.005 && radius > 1) {
+        const innerR = Math.max(0, radius - bandWidth)
+        const outerR = radius + bandWidth
+        const grad = ctx.createRadialGradient(sx, sy, innerR, sx, sy, outerR)
+        grad.addColorStop(0, 'rgba(160, 195, 250, 0)')
+        grad.addColorStop(0.5, `rgba(190, 215, 255, ${alphaEnv})`)
+        grad.addColorStop(1, 'rgba(160, 195, 250, 0)')
+        const prevComp = ctx.globalCompositeOperation
+        ctx.globalCompositeOperation = 'lighter'
+        ctx.fillStyle = grad
+        ctx.fillRect(0, 0, effW, effH)
+        ctx.globalCompositeOperation = prevComp
+      }
+    }
+  }
 }
 
 function drawArenaBorder(player: Player): void {
+  // drawArenaBorder runs INSIDE the ctx.scale(renderZoom) transform like drawGrid does.
+  // Use effective screen size so the clipped/filled rects cover the FULL visible area at
+  // any zoom — otherwise the outer-pulse glow + buffer fade only paint the top-left
+  // (width*zoom × height*zoom) rect and the rest goes unblended.
+  const zoomNow = (designerZoomedOut && getPhase() === 'designer') ? DESIGNER_ZOOM : cameraZoom
+  const effW = width / zoomNow
+  const effH = height / zoomNow
   const x = -camX
   const y = -camY
   const w = ARENA_W
@@ -3526,9 +4540,24 @@ function drawArenaBorder(player: Player): void {
     const target = ramp * ramp  // ease-in curve
     if (target > borderWaveIntensity) borderWaveIntensity = target
   } else {
-    borderWaveIntensity *= 0.92
+    // Decay rate modulated by beat-dash boost — when bdb is active, the wave intensity decays
+    // notably slower so the exaggerated swell lingers and the wave shrinks gradually instead
+    // of snapping back. bdb is read BEFORE it decays below; once it tapers to 0, decay returns
+    // to baseline so the regular beat wave timing is preserved.
+    // dtRef = lastDt * 30 normalizes per-frame rates to a 30fps reference so the lifetime feels
+    // the same at any framerate (looked great at 30fps, was way too snappy at 60fps).
+    const dtRef = lastDt * 30
+    // Baseline 0.89 — normal beat wiggle settles a touch earlier than 0.92. The +bdb factor
+    // still slows decay during the boost so the special wave can linger.
+    borderWaveIntensity *= Math.pow(0.89 + beatDashBorderBoost * 0.065, dtRef)
     if (borderWaveIntensity < 0.005) borderWaveIntensity = 0
   }
+  // On-beat-dash boost decay (dt-corrected, 30fps reference) — tuned so the special wave is
+  // mostly out of the way by the time the next normal beat fires (~1s later), to avoid the
+  // pink color tint + amplitude multiplier interfering with the next beat's clean cyan wave.
+  // After 1s, bdb ≈ 0.116 (small pink hint), wave amp negligible.
+  beatDashBorderBoost *= Math.pow(0.93, lastDt * 30)
+  if (beatDashBorderBoost < 0.005) beatDashBorderBoost = 0
 
   const arenaShape = getArenaShape()
   const isRound = arenaShape !== 'rect'
@@ -3547,7 +4576,10 @@ function drawArenaBorder(player: Player): void {
     bufGrad.addColorStop(1, 'rgba(0, 0, 0, 0.85)')
     ctx.save()
     ctx.beginPath()
-    ctx.rect(0, 0, width, height)
+    // Outer clip rect must use the effective viewport, not raw width/height, otherwise the
+    // clip region itself is confined to the old (zoom=1) viewport and the buffer fade only
+    // paints inside it — leaving the L-band past the old viewport bare on right/bottom.
+    ctx.rect(0, 0, effW, effH)
     if (arenaShape === 'cross') {
       crossPath(acx, acy, true)
     } else if (arenaShape === 'pill') {
@@ -3565,7 +4597,7 @@ function drawArenaBorder(player: Player): void {
     }
     ctx.clip('evenodd')
     ctx.fillStyle = bufGrad
-    ctx.fillRect(0, 0, width, height)
+    ctx.fillRect(0, 0, effW, effH)
     ctx.restore()
   } else {
     // Top
@@ -3602,9 +4634,19 @@ function drawArenaBorder(player: Player): void {
 
   perfEnd('buf_zone')
   perfStart('glow')
+  // Border color — normally arena cyan (79, 195, 247). Lerps toward hot pink (255, 115, 200)
+  // during the beat-dash boost so the whole arena edge reads as ONE cohesive system with the
+  // pink waveform riding on it (instead of pink wave on cyan border — visual clash). Subtler
+  // blend than the wave (max ~45% pink) so the border still identifies as the arena rim, not
+  // a pink stripe. Tapers back to cyan as bdb fades.
+  const bdb = beatDashBorderBoost
+  const borderPinkBlend = Math.min(bdb * 0.55, 0.45)
+  const brdR = Math.floor(79  + (255 - 79)  * borderPinkBlend)
+  const brdG = Math.floor(195 + (115 - 195) * borderPinkBlend)
+  const brdB = Math.floor(247 + (200 - 247) * borderPinkBlend)
   // Arena border — layered glow with beat pulse
   const drawBorder = (alpha: number, lw: number, offset = 0) => {
-    ctx.strokeStyle = `rgba(79, 195, 247, ${alpha})`
+    ctx.strokeStyle = `rgba(${brdR}, ${brdG}, ${brdB}, ${alpha})`
     ctx.lineWidth = lw
     if (arenaShape === 'cross') {
       crossPathScreen(acx, acy, offset)
@@ -3624,25 +4666,46 @@ function drawArenaBorder(player: Player): void {
       ctx.strokeRect(x - offset, y - offset, w + offset * 2, h + offset * 2)
     }
   }
-  drawBorder(0.03 + beatPulse * 0.04, 30, 10)
-  drawBorder(0.06 + beatPulse * 0.06, 18, 4)
-  drawBorder(0.12 + beatPulse * 0.1, 8, 0)
-  drawBorder(0.4 + beatPulse * 0.25, 2, 0)
+  // Border alphas — additive beat-dash boost layered on top of the normal beat pulse so the
+  // border punches THROUGH the warm-gold flash from the on-beat-dash confirmation. Each layer
+  // gets progressively more boost (inner layers brighter than outer halo) so the ARENA edge
+  // remains visually dominant during the flash, not buried under the gold rim.
+  drawBorder(0.03 + beatPulse * 0.04 + bdb * 0.08, 30 + bdb * 8, 10)
+  drawBorder(0.06 + beatPulse * 0.06 + bdb * 0.14, 18 + bdb * 6, 4)
+  drawBorder(0.12 + beatPulse * 0.10 + bdb * 0.25, 8 + bdb * 4, 0)
+  drawBorder(0.40 + beatPulse * 0.25 + bdb * 0.55, 2 + bdb * 2, 0)
 
   perfEnd('glow')
   perfStart('waveform')
-  // Waveform line — spikes on beat, flattens out smoothly
+  // Waveform line — spikes on beat, flattens out smoothly. On-beat-dash boost adds an
+  // explicit amplitude multiplier on top so the wave really swings out through the gold flash.
   if (borderWaveIntensity > 0.005) {
-    const baseAmp = borderWaveIntensity * 11
-    const freq = 0.25
+    const baseAmp = borderWaveIntensity * 11 * (1 + bdb * 1.1)
+    // Lower frequency during beat-dash boost — wider, slower-undulating waves that read as
+    // heavier / more dramatic than the normal tight ripple. Returns to 0.25 as bdb tapers.
+    const freq = 0.25 * (1 - bdb * 0.55)
+    // Time-phase scaling to keep crest travel speed constant despite the lower freq. Without
+    // this, lowering freq makes the crests shift across the arena faster (phase velocity =
+    // 1/freq), reading as a "moving so fast" wave. Scaling t by (freq/0.25) cancels it out.
+    const tScale = freq / 0.25
     const alpha = Math.min(borderWaveIntensity * 1.5, 0.85)
     const step = 5
     const t = performance.now() * 0.005
 
     const whiteBlend = Math.min(borderWaveIntensity * 0.6, 0.4)
-    const cr = Math.floor(79 + (255 - 79) * whiteBlend)
-    const cg = Math.floor(195 + (255 - 195) * whiteBlend)
-    const cb = Math.floor(247 + (255 - 247) * whiteBlend)
+    // Beat-dash boost shifts the wave color from arena cyan (79,195,247) toward deep saturated
+    // hot pink (255,40,165). The whiteBlend (which lifts color toward white at high intensity)
+    // is dampened during the boost so the pink stays vivid instead of washing to a pale
+    // lavender. Matches the bracket accent + ember palette. Tapers with bdb so the wave
+    // returns to its normal arena cyan + white-blend behavior as the boost fades.
+    const pinkBlend = Math.min(bdb * 1.3, 0.97)
+    const baseR = 79  + (255 - 79)  * pinkBlend
+    const baseG = 195 + (115 - 195) * pinkBlend
+    const baseB = 247 + (200 - 247) * pinkBlend
+    const effectiveWhite = whiteBlend * (1 - bdb * 0.35)
+    const cr = Math.floor(baseR + (255 - baseR) * effectiveWhite)
+    const cg = Math.floor(baseG + (255 - baseG) * effectiveWhite)
+    const cb = Math.floor(baseB + (255 - baseB) * effectiveWhite)
 
     const coreWidth = 1 + borderWaveIntensity * 2
     const midWidth = 3 + borderWaveIntensity * 3
@@ -3651,8 +4714,13 @@ function drawArenaBorder(player: Player): void {
     const px = player.x
     const py = player.y
 
+    // Vary frequency scales with the same (1 - bdb * 0.55) factor as the main wave so the
+    // per-position amplitude modulation stays in proportion. Without this, slowing only the
+    // main wave leaves the vary at its tight 0.73 rate — reads as two conflicting waves
+    // (slow swell + fast wiggle on top).
+    const varyFreqMul = 1 - bdb * 0.55
     const vary = (i: number, seed: number) => {
-      const h = Math.sin(i * 0.73 + seed * 3.17) * 0.5 + 0.5
+      const h = Math.sin(i * 0.73 * varyFreqMul + seed * 3.17) * 0.5 + 0.5
       return 0.3 + h * 0.7
     }
 
@@ -3661,7 +4729,7 @@ function drawArenaBorder(player: Player): void {
     let totalLen = 0
     const waveStep = arenaShape === 'cross' ? 12 : step
     const addWavePt = (wx: number, wy: number, nx: number, ny: number, prox: number, seed: number) => {
-      const wave = Math.sin(totalLen * freq + t) * baseAmp * prox * vary(Math.floor(totalLen), seed)
+      const wave = Math.sin(totalLen * freq + t * tScale) * baseAmp * prox * vary(Math.floor(totalLen), seed)
       wavePts.push(wx + nx * wave, wy + ny * wave)
       totalLen += waveStep
     }
@@ -3801,9 +4869,11 @@ function drawArenaBorder(player: Player): void {
     const outerR = Math.max(width, height)
 
     ctx.save()
-    // Clip to outside arena only
+    // Clip to outside arena only. Outer rect must use the EFFECTIVE viewport (width/zoom)
+    // not raw width/height, otherwise the outer pulse glow only paints in the old viewport
+    // rect and the L-band past the original viewport gets no glow.
     ctx.beginPath()
-    ctx.rect(0, 0, width, height)
+    ctx.rect(0, 0, effW, effH)
     if (arenaShape === 'cross') {
       crossPath(acx, acy, true)
     } else if (arenaShape === 'pill') {
@@ -3828,7 +4898,7 @@ function drawArenaBorder(player: Player): void {
     grad.addColorStop(0.4, `rgba(79, 195, 247, ${pulseAlpha * 0.4})`)
     grad.addColorStop(1, 'rgba(79, 195, 247, 0)')
     ctx.fillStyle = grad
-    ctx.fillRect(0, 0, width, height)
+    ctx.fillRect(0, 0, effW, effH)
     ctx.restore()
   }
   perfEnd('outer_pulse')
@@ -4236,6 +5306,67 @@ function drawPlayer(player: Player): void {
     sy += (Math.random() - 0.5) * 2 * jitter
   }
 
+  // Quiet Storm charge ring — loading wheel at 2× the beat-dash AOE radius. Telegraphs
+  // both progress (arc fills clockwise as charge builds) AND the area the powered dash
+  // will hit (radius = 2× beat-dash shockRadius = ring.radius * 1.4 * beatBlastMult).
+  // When ready: full ring pulses gold. While filling: thinner cyan arc.
+  if (player.chargeTimer > 0 || player.chargeReady) {
+    const beatDashAOE = player.ring.radius * 0.7 * player.modifiers.beatBlastMult
+    const chargeR = beatDashAOE * 2
+    const fillFrac = player.chargeReady ? 1 : Math.min(1, player.chargeTimer / 3)
+    const arcEnd = -Math.PI / 2 + fillFrac * Math.PI * 2   // start at top, fill clockwise
+
+    if (player.chargeReady) {
+      // Pulsing gold ring when fully charged — beat-synced pulse for "primed" feel
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() / 120)
+      // Outer halo
+      ctx.beginPath()
+      ctx.arc(sx, sy, chargeR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 215, 64, ${0.30 + pulse * 0.30})`
+      ctx.lineWidth = 8 + pulse * 4
+      ctx.stroke()
+      // Bright core ring
+      ctx.beginPath()
+      ctx.arc(sx, sy, chargeR, 0, Math.PI * 2)
+      ctx.strokeStyle = `rgba(255, 240, 180, ${0.85 + pulse * 0.15})`
+      ctx.lineWidth = 2.5
+      ctx.stroke()
+      // Subtle inward energy lines — 8 spokes converging toward center
+      const spokeAlpha = 0.25 + pulse * 0.25
+      ctx.strokeStyle = `rgba(255, 220, 100, ${spokeAlpha})`
+      ctx.lineWidth = 1.5
+      for (let i = 0; i < 8; i++) {
+        const ang = i * Math.PI / 4 + performance.now() / 800
+        const innerR = chargeR * 0.55
+        ctx.beginPath()
+        ctx.moveTo(sx + Math.cos(ang) * chargeR, sy + Math.sin(ang) * chargeR)
+        ctx.lineTo(sx + Math.cos(ang) * innerR, sy + Math.sin(ang) * innerR)
+        ctx.stroke()
+      }
+    } else {
+      // Filling arc — cyan, sweeps clockwise from top. Dashed faint full-circle behind to
+      // show the destination radius even while empty.
+      ctx.beginPath()
+      ctx.setLineDash([4, 6])
+      ctx.arc(sx, sy, chargeR, 0, Math.PI * 2)
+      ctx.strokeStyle = 'rgba(120, 220, 255, 0.18)'
+      ctx.lineWidth = 1.5
+      ctx.stroke()
+      ctx.setLineDash([])
+      // Filled arc
+      ctx.beginPath()
+      ctx.arc(sx, sy, chargeR, -Math.PI / 2, arcEnd)
+      ctx.strokeStyle = 'rgba(120, 240, 255, 0.85)'
+      ctx.lineWidth = 4
+      ctx.stroke()
+      // Bright leading edge dot
+      ctx.beginPath()
+      ctx.arc(sx + Math.cos(arcEnd) * chargeR, sy + Math.sin(arcEnd) * chargeR, 4, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(220, 250, 255, 0.95)'
+      ctx.fill()
+    }
+  }
+
   // Glow aura — soft radial gradient behind player, pulses on beat.
   // On hit, swap to red glow with more brightness held in the "past the body" band so
   // the halo reads reliably outside the player (inner stops sit closer to body edge,
@@ -4351,9 +5482,19 @@ function drawPlayer(player: Player): void {
   // perpendicular to motion direction. Tapers to zero at both endpoints so the wave reads as
   // "ripples in the wake" rather than starting/ending abruptly. Only drawn on chained dashes
   // (dashChainBoost > 1), which is how Slipstream announces itself visually.
-  if (player.dashTimer >= 0 && player.dashChainBoost > 1 && player.dashPath.length >= 2) {
+  // Slipstream braid — visible during the dash AND for SLIPSTREAM_LINGER seconds after, so
+  // the braid fades to zero smoothly instead of cutting off when dashTimer crosses below 0.
+  // Hold-then-fade alpha: bright for the bulk of the visible window, smoothly tapers to 0
+  // in the final 40% of the window.
+  const SLIPSTREAM_LINGER = 0.15
+  if (player.dashTimer + SLIPSTREAM_LINGER >= 0 && player.dashChainBoost > 1 && player.dashPath.length >= 2) {
     const path = player.dashPath
-    const fade = player.dashTimer / player.dashDuration
+    // visibleFrac: 1 at dash start, smoothly decreases to 0 at end of linger.
+    const totalVisible = player.dashDuration + SLIPSTREAM_LINGER
+    const visibleFrac = Math.max(0, Math.min(1, (player.dashTimer + SLIPSTREAM_LINGER) / totalVisible))
+    // Hold full alpha while visibleFrac > 0.4 (dash + early linger), then linear fade to 0
+    // over the final 40% of the visible window. Smooth single-curve, no discontinuities.
+    const fade = visibleFrac >= 0.4 ? 1 : visibleFrac / 0.4
     const time = performance.now() / 1000
     // Precompute arclength + tangent perpendicular per point — both loops below reuse them.
     const perpX: number[] = new Array(path.length)
@@ -6399,12 +7540,33 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   const zoneTint = enemy.zoneSlowFrac > 0 ? 0.7 : 0
   const isImmobile = enemy.immobileTimer > 0
   const chillIntensity = Math.max(stackIntensity, zoneTint, isImmobile ? 1 : 0)
+  // Snow flake drizzle on chilled enemies — emit the existing 6-armed MiniSnowflake (same kind
+  // used by the Chill Zone shatter burst, just at a sparse drizzle rate). Drift slightly
+  // outward + downward with the existing snowflake physics (gravity + drag). Rendered on top
+  // of the enemy because updateAndDrawChillFX runs AFTER drawEnemy + drawPlayer in the pipeline.
+  if (chillIntensity > 0.2 && Math.random() < chillIntensity * 0.15) {
+    const sa = Math.random() * Math.PI * 2
+    const sd = Math.random() * enemy.radius * 0.7
+    const spawnX = enemy.x + Math.cos(sa) * sd
+    const spawnY = enemy.y + Math.sin(sa) * sd
+    const outAng = Math.atan2(spawnY - enemy.y, spawnX - enemy.x)
+    const speed = 18 + Math.random() * 22
+    miniSnowflakes.push({
+      x: spawnX, y: spawnY,
+      vx: Math.cos(outAng) * speed * 0.5 + (Math.random() - 0.5) * 14,
+      vy: Math.sin(outAng) * speed * 0.5 + 8 + Math.random() * 14,
+      rot: Math.random() * Math.PI * 2,
+      rotVel: (Math.random() - 0.5) * 4,
+      size: 3.5 + Math.random() * 2.5,
+      timer: 0, lifetime: 0.65 + Math.random() * 0.4,
+    })
+  }
   if (chillIntensity > 0) {
-    // Heavier saturated tint — was 0.06 + 0.18 (cap 0.24); now 0.14 + 0.42 (cap 0.56).
-    // Plus a brighter overlay layer for the strong frozen state so it really pops.
+    // Saturated tint, dialed back from 0.14+0.42 (cap 0.56) so chilled enemies don't get
+    // washed out behind a wall of blue. 0.10+0.28 = cap 0.38 — clearly readable, less heavy.
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(80, 200, 255, ${0.14 + chillIntensity * 0.42})`
+    ctx.fillStyle = `rgba(80, 200, 255, ${0.10 + chillIntensity * 0.28})`
     ctx.fill()
     if (chillIntensity >= 0.6) {
       // Inner deeper-blue glow at high chill so the body reads as "frozen through"
@@ -11154,6 +12316,10 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
     const pauseVolRect = drawVolumeSlider(pcx - pauseVolW / 2, fsBtnY + btnH + 24, pauseVolW)
     volumeSliderRect = pauseVolRect
 
+    // Zoom slider — placed below volume in the pause menu
+    const pauseZoomRect = drawZoomSlider(pcx - pauseVolW / 2, pauseVolRect.y + pauseVolRect.h + 40, pauseVolW)
+    zoomSliderRect = pauseZoomRect
+
     ctx.textAlign = 'left'
     ctx.restore()  // undo scale transform
   } else {
@@ -11446,6 +12612,66 @@ export function updateVolumeDrag(mx: number): number | null {
   return vol
 }
 export function stopVolumeDrag(): void { volumeDragging = false }
+
+// Camera zoom slider — mirrors the volume slider pattern. Maps the slider position 0..1
+// onto the cameraZoom range [CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX]. Labelled "ZOOM" and tinted
+// gold to visually distinguish from the cyan volume slider.
+export function drawZoomSlider(x: number, y: number, sliderW = 200): { x: number; y: number; w: number; h: number } {
+  const range = getCameraZoomRange()
+  const norm = (cameraZoom - range.min) / (range.max - range.min)
+  const trackH = 6
+  const thumbR = 10
+  const trackY = y + thumbR
+
+  ctx.font = 'bold 16px monospace'
+  ctx.textAlign = 'center'
+  ctx.fillStyle = 'rgba(255, 215, 64, 0.7)'
+  ctx.fillText('Z O O M', x + sliderW / 2, y - 6)
+
+  ctx.beginPath()
+  ctx.roundRect(x, trackY - trackH / 2, sliderW, trackH, 3)
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.1)'
+  ctx.fill()
+
+  const fillW = sliderW * norm
+  if (fillW > 0) {
+    ctx.beginPath()
+    ctx.roundRect(x, trackY - trackH / 2, fillW, trackH, 3)
+    ctx.fillStyle = 'rgba(255, 215, 64, 0.3)'
+    ctx.fill()
+  }
+
+  const thumbX = x + fillW
+  ctx.beginPath()
+  ctx.arc(thumbX, trackY, thumbR, 0, Math.PI * 2)
+  ctx.fillStyle = 'rgba(255, 215, 64, 0.85)'
+  ctx.fill()
+
+  return { x, y: trackY - thumbR, w: sliderW, h: thumbR * 2 }
+}
+
+let zoomSliderRect: { x: number; y: number; w: number; h: number } | null = null
+let zoomDragging = false
+export function getZoomSliderRect(): typeof zoomSliderRect { return zoomSliderRect }
+export function setZoomSliderRect(r: typeof zoomSliderRect): void { zoomSliderRect = r }
+export function isZoomDragging(): boolean { return zoomDragging }
+export function startZoomDrag(mx: number, my: number): boolean {
+  if (!zoomSliderRect) return false
+  const r = zoomSliderRect
+  if (mx >= r.x - 5 && mx <= r.x + r.w + 5 && my >= r.y - 5 && my <= r.y + r.h + 5) {
+    zoomDragging = true
+    return true
+  }
+  return false
+}
+export function updateZoomDrag(mx: number): number | null {
+  if (!zoomDragging || !zoomSliderRect) return null
+  const r = zoomSliderRect
+  const norm = Math.max(0, Math.min(1, (mx - r.x) / r.w))
+  const range = getCameraZoomRange()
+  return range.min + norm * (range.max - range.min)
+}
+export function stopZoomDrag(): void { zoomDragging = false }
 
 export function getScreenWidth(): number { return width }
 export function getScreenHeight(): number { return height }

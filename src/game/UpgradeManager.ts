@@ -31,6 +31,11 @@ export interface UpgradeBonus {
   chainDash?: boolean          // dashing while still mid-dash gives the new dash +100% distance
   anchorRecall?: boolean       // Echo Step — beat dash leapfrogs to previous anchor + drops a new one
   chillZone?: boolean          // Chill Zone — beat dash places a 2× radius 50% slow field; next beat-dash freezes-in-place anyone still in the old zone
+  quietStorm?: boolean         // Quiet Storm — stand still 3s → next beat dash gets 2× distance + 2× AOE
+  drawWall?: boolean           // Trailblaze — chain dash (dash while already dashing) draws a thin wall along the previous dash path; replaces the prior one
+  shockPush?: boolean          // Reverb — beat-dash also pushes enemies/orbs outward (push radius 1.4× damage radius)
+  dashShot?: boolean           // Dash-shot — beat-dash REPLACES the AOE with a projectile that flies in dash direction and explodes 1 beat later (2 with Aftershock); passes through walls; same blast math
+  pivot?: boolean              // Pivot — dash gains aggressive mid-flight steering (~3.5× normal), letting you carve curves instead of straight lunges
 }
 
 export interface ActiveUpgrade {

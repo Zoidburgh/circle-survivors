@@ -16,7 +16,7 @@ export function tickLeaveToastCD(dt: number): void {
 export function resetLeaveToastCD(): void { leaveToastGlobalCD = 0; revengeToastGlobalCD = 0 }
 import { clampToArena, resolveWallCollision, getArenaShape, ARENA_CX, ARENA_CY } from '../game/Arena.ts'
 import { emit } from '../core/EventBus.ts'
-import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC, SHIELD_BREAK_FLASH } from '../utils/constants.ts'
+import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC, SHIELD_BREAK_FLASH, HEAVY_YIELD } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import type { Player } from './Player.ts'
 import type { EnemyType, MovePattern, SummonPhase, ShrinePhase } from './EnemyTypes.ts'
@@ -449,6 +449,26 @@ function updateDodge(enemy: Enemy, player: Player, dt: number, grid: SpatialGrid
   playEnemyDodge()
 }
 
+// When a launched enemy (Reverb push, wall spring, pusher) is shoved back out of a wall/arena
+// edge, don't just let the clamp eat the whole launch — strip only the INTO-wall component and
+// keep the tangential part, so the enemy rides along the edge with whatever momentum its
+// approach angle preserves (glancing hit = keeps most, head-on = keeps none). Mirrors how the
+// player dash slides. (pushX, pushY) is the position correction the wall applied = outward
+// normal, so it works for curved (circle) and straight/angled edges alike.
+function slideLaunchAlongWall(enemy: Enemy, pushX: number, pushY: number): void {
+  if (enemy.launchTimer <= 0) return
+  const len2 = pushX * pushX + pushY * pushY
+  if (len2 < 0.0001) return
+  const inv = 1 / Math.sqrt(len2)
+  const nx = pushX * inv
+  const ny = pushY * inv
+  const into = enemy.launchVx * nx + enemy.launchVy * ny   // <0 = launch driving into the wall
+  if (into < 0) {
+    enemy.launchVx -= into * nx
+    enemy.launchVy -= into * ny
+  }
+}
+
 export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: SpatialGrid): void {
   if (!enemy.alive || enemy.dying) return
   // (leaveToast uses global cooldown now)
@@ -529,10 +549,15 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     // Phase transition in progress
     if (enemy.blinkPreview > 0) {
       enemy.blinkPreview -= dt
-      // Teleport at half-beat
+      // Teleport at half-beat. Resolve walls AT TELEPORT TIME — walls may have moved since
+      // the dest was computed at blink-start, and even if they hadn't, dest is only arena-
+      // clamped (not wall-clamped). Without this, a moving wall over the dest swallows the
+      // teleport: enemy lands inside the wall, wall collision pushes it out near its
+      // original position, looking like the blink never happened.
       if (enemy.blinkPreview <= BEAT_SEC * 0.5 && enemy.blinkGhostX !== enemy.x) {
-        enemy.x = enemy.blinkGhostX
-        enemy.y = enemy.blinkGhostY
+        const wr = resolveWallCollision(enemy.blinkGhostX, enemy.blinkGhostY, enemy.radius)
+        enemy.x = wr.x
+        enemy.y = wr.y
       }
     }
     // Count beats — only when no ring is firing and not phasing
@@ -582,9 +607,11 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   // the heavy (or the player gets crushed against an unmovable obstacle). Walls override
   // the immovable trait specifically for kinematic push-out.
   if (enemy.immovable) {
+    const wpx = enemy.x, wpy = enemy.y
     const ewr = resolveWallCollision(enemy.x, enemy.y, enemy.radius)
     enemy.x = ewr.x
     enemy.y = ewr.y
+    slideLaunchAlongWall(enemy, enemy.x - wpx, enemy.y - wpy)   // launched heavy rides the edge instead of stalling on it
     // Still update rings
     if (enemy.spawnTimer >= 1) {
       for (let i = 0; i < enemy.rings.length; i++) {
@@ -777,19 +804,51 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
       //   - neither launched → half (current default)
       const launchedSelf = enemy.launchTimer > 0
       const launchedOther = otherEnemy.launchTimer > 0
-      let pushFrac: number
-      if (otherEnemy.immovable) pushFrac = 1.0
-      else if (launchedSelf && !launchedOther) pushFrac = 0
-      else if (!launchedSelf && launchedOther) pushFrac = 1.0
-      else pushFrac = 0.5
-      enemy.x += nx * overlap * pushFrac
-      enemy.y += ny * overlap * pushFrac
+      if (otherEnemy.immovable) {
+        // Heavy yields HEAVY_YIELD so a normal trapped against / between heavies can carve its
+        // own space. Without this, the normal's full self-push from each side oscillates
+        // forever. Self takes the rest of the overlap.
+        enemy.x += nx * overlap * (1 - HEAVY_YIELD)
+        enemy.y += ny * overlap * (1 - HEAVY_YIELD)
+        otherEnemy.x -= nx * overlap * HEAVY_YIELD
+        otherEnemy.y -= ny * overlap * HEAVY_YIELD
+      } else {
+        let pushFrac: number
+        if (launchedSelf && !launchedOther) pushFrac = 0
+        else if (!launchedSelf && launchedOther) pushFrac = 1.0
+        else if (launchedSelf && launchedOther) pushFrac = 0   // both flying (e.g. a Reverb-launched
+          // ring) — phase through each other. Half-separating here makes the simultaneously-launched
+          // ring shove inward on itself and cancel its own outward launch (worst for big enemies that
+          // overlap many neighbors). They re-separate normally once both launches expire.
+        else pushFrac = 0.5
+        enemy.x += nx * overlap * pushFrac
+        enemy.y += ny * overlap * pushFrac
+      }
       if (isBounce) {
-        // Reflect velocity off the collision normal
-        const dot = enemy.bounceVx * nx + enemy.bounceVy * ny
-        if (dot < 0) {
-          enemy.bounceVx -= 2 * dot * nx
-          enemy.bounceVy -= 2 * dot * ny
+        const otherBounces = otherEnemy.movePattern === 'bounce'
+        if (otherBounces) {
+          // Bouncer-vs-bouncer: real elastic collision (equal mass). Exchange the normal-
+          // component of velocity between the two. Tangential components stay unchanged.
+          // The check `relVel < 0` (approaching along normal) means we only fire when they
+          // are actually closing distance — fixes the old bug where same-direction overtakes
+          // triggered weird reflections. Idempotent: after exchange they're moving apart so
+          // B's own pass next iteration sees relVel >= 0 and skips.
+          const dvx = enemy.bounceVx - otherEnemy.bounceVx
+          const dvy = enemy.bounceVy - otherEnemy.bounceVy
+          const relVel = dvx * nx + dvy * ny
+          if (relVel < 0) {
+            enemy.bounceVx -= relVel * nx
+            enemy.bounceVy -= relVel * ny
+            otherEnemy.bounceVx += relVel * nx
+            otherEnemy.bounceVy += relVel * ny
+          }
+        } else {
+          // Bouncer vs non-bouncer: treat other as a wall (current per-self reflection).
+          const dot = enemy.bounceVx * nx + enemy.bounceVy * ny
+          if (dot < 0) {
+            enemy.bounceVx -= 2 * dot * nx
+            enemy.bounceVy -= 2 * dot * ny
+          }
         }
       }
     }
@@ -811,24 +870,39 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     enemy.x += pnx * pOverlap
     enemy.y += pny * pOverlap
     if (isBounce) {
-      const dot = enemy.bounceVx * pnx + enemy.bounceVy * pny
-      if (dot < 0) {
-        enemy.bounceVx -= 2 * dot * pnx
-        enemy.bounceVy -= 2 * dot * pny
+      // Asymmetric elastic collision — player is treated as infinite mass (their velocity
+      // is preserved, the bouncer takes all the momentum exchange). Uses this-frame's
+      // player motion (player.x - player.prevX) / dt as the player velocity, so all motion
+      // sources count (WASD input, dash, launch impulses, recall). When player charges INTO
+      // the bouncer the bouncer gets punted away harder; when player moves AWAY or parallel
+      // it barely affects the bouncer (just normal wall-bounce off a stationary surface).
+      const playerVx = dt > 0 ? (player.x - player.prevX) / dt : 0
+      const playerVy = dt > 0 ? (player.y - player.prevY) / dt : 0
+      const relVel = (enemy.bounceVx - playerVx) * pnx + (enemy.bounceVy - playerVy) * pny
+      if (relVel < 0) {
+        enemy.bounceVx -= 2 * relVel * pnx
+        enemy.bounceVy -= 2 * relVel * pny
       }
     }
   }
   } // end shrine/dasher player-push skip
 
-  // Preserve bounce speed — reflections can degrade magnitude over time
+  // Preserve bounce speed — reflections / elastic exchanges can drop the magnitude. Rescale
+  // back to moveSpeed each frame. If the bouncer stopped dead (e.g. an unlucky perfect-
+  // collinear head-on momentum exchange), kick it with a small random nudge so it doesn't
+  // freeze permanently (the normalization-skip below 0.1 used to leave it stranded).
   if (isBounce) {
-    const bSpeed = Math.sqrt(enemy.bounceVx * enemy.bounceVx + enemy.bounceVy * enemy.bounceVy)
-    if (bSpeed > 0.1) {
-      const targetSpeed = enemy.moveSpeed
-      const scale = targetSpeed / bSpeed
-      enemy.bounceVx *= scale
-      enemy.bounceVy *= scale
+    let bSpeed = Math.sqrt(enemy.bounceVx * enemy.bounceVx + enemy.bounceVy * enemy.bounceVy)
+    if (bSpeed < 0.1) {
+      const a = Math.random() * Math.PI * 2
+      enemy.bounceVx = Math.cos(a)
+      enemy.bounceVy = Math.sin(a)
+      bSpeed = 1
     }
+    const targetSpeed = enemy.moveSpeed
+    const scale = targetSpeed / bSpeed
+    enemy.bounceVx *= scale
+    enemy.bounceVy *= scale
   }
 
   // Apply chill slow + integrate position. Skip when mid-dodge — applyDashMotion already moved us.
@@ -851,6 +925,9 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   const clamped = clampToArena(enemy.x, enemy.y, enemy.radius)
   enemy.x = clamped.x
   enemy.y = clamped.y
+  if (clamped.x !== prevX || clamped.y !== prevY) {
+    slideLaunchAlongWall(enemy, clamped.x - prevX, clamped.y - prevY)   // ride the arena edge instead of stalling on it
+  }
   if (isBounce && (clamped.x !== prevX || clamped.y !== prevY)) {
     const shape = getArenaShape()
     if (shape === 'circle') {
@@ -902,6 +979,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   const ewr = resolveWallCollision(enemy.x, enemy.y, enemy.radius)
   enemy.x = ewr.x
   enemy.y = ewr.y
+  slideLaunchAlongWall(enemy, enemy.x - wallPreX, enemy.y - wallPreY)   // ride internal walls instead of stalling on them
   if (isBounce) {
     const pushX = enemy.x - wallPreX
     const pushY = enemy.y - wallPreY

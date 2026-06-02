@@ -192,7 +192,8 @@ export function updateCamera(
   moveY: number,
   screenW: number,
   screenH: number,
-  dt: number
+  dt: number,
+  zoom: number = 1
 ): void {
   // Lead ahead — smooth ramp toward movement direction
   const targetLeadX = moveX * CAMERA_LEAD_AMOUNT
@@ -212,9 +213,11 @@ export function updateCamera(
   cam.x += dx * step
   cam.y += dy * step
 
-  // Clamp camera
-  const halfW = screenW / 2
-  const halfH = screenH / 2
+  // Clamp camera. Effective viewport in WORLD units = screen / zoom. With zoom < 1 the
+  // viewport is wider in world units, so the camera can shift further from arena edges
+  // without revealing void beyond the clamp range.
+  const halfW = screenW / (2 * zoom)
+  const halfH = screenH / (2 * zoom)
 
   if (arenaShape === 'cross') {
     cam.x = Math.max(ARENA_CX - CROSS_HE + halfW - ARENA_BUFFER, Math.min(ARENA_CX + CROSS_HE - halfW + ARENA_BUFFER, cam.x))
@@ -319,6 +322,7 @@ export interface Wall {
   bend?: number     // signed perpendicular bulge from chord midpoint; 0/undefined = straight
   motion?: WallMotion   // optional dynamic behavior; undefined = static wall
   translation?: WallTranslation   // optional path translation; stacks on top of motion rotation
+  fade?: WallFade       // optional shrink/grow cycle; scales geometry per frame
   spring?: WallSpring   // optional rhythm spring; undefined = no launch impulse
   // Runtime fields — populated by setWalls on load, mutated by updateWalls each frame.
   // Persistence: when reading from JSON, only the authored fields above are present; the
@@ -333,11 +337,30 @@ export interface Wall {
   // Group translation — same propagation pattern as groupMotion. Lets a single translation
   // config move the whole connected shape along a path together.
   groupTranslation?: WallTranslation
+  // Group fade — same propagation. Whole group shrinks/grows together.
+  groupFade?: WallFade
+  // Live fade scale 0..1 — computed each frame in updateWalls so the renderer + collision
+  // helpers can multiply the wall's effective radius / endpoints without recomputing the
+  // beat math. 1.0 if no fade config; 0 means wall is hidden.
+  fadeSize?: number
+  // Live fade phase — which segment of the fade cycle we're in this frame. Drives
+  // collision-on/off: visible + grow → solid, shrink + hidden → intangible (so player can
+  // walk through a vanishing wall at full speed, and gets pushed by a growing one).
+  fadePhase?: 'visible' | 'shrink' | 'hidden' | 'grow'
   // Opt-out tag — when true, this wall is never grouped with neighbors (treated as a
   // singleton group regardless of proximity). Snap points are also suppressed so the
   // designer never snaps anything to/from this wall. Wall still functions normally as a
   // solid collider and runs its own motion / spring config.
   noClip?: boolean
+  // Player-owned (Trailblaze) — wall drawn by the player at runtime. Once `playerGraceUntil`
+  // passes, the wall is fully solid against the player (blocks like any other wall). Until
+  // then, the player phases through it (prevents the wall from shoving the player forward
+  // mid-dash since segments appear directly behind the player as they move).
+  // Enemies and orbs always collide with it normally (grace doesn't apply to them).
+  // Cleared on run restart. Replaced by next chain-dash's trail.
+  playerOwned?: boolean
+  playerGraceUntil?: number    // performance.now() timestamp; player phases through while < this
+  dyingUntil?: number          // performance.now() timestamp; wall fades out + becomes permeable, then is culled (Trailblaze old-trail death)
   springLastFireBeat?: number          // absolute beat of most recent spring fire
   springJustFired?: boolean            // transient — set on fire frame, consumed by renderer for particle burst
   springScheduledAudioBeat?: number    // most recent beat we pre-scheduled audio for (avoid re-scheduling)
@@ -378,6 +401,26 @@ export interface WallTranslation {
   // "stop 3 ticks before reversing" = tickCount 6). Circle/square: total stops around the loop.
   // Defaults: linear 2 (snap end-to-end), circle 4 (cardinal), square 4 (corners).
   tickCount?: number
+}
+
+/** Fade — wall periodically shrinks to nothing and grows back. Four independent timings
+ * give full control over the rhythm. Cycle = visible + shrink + hidden + grow beats. While
+ * shrinking/growing the wall's collision shape scales with the visual, so growing pushes
+ * entities out of the expanding footprint via existing wall collision (no special logic). */
+export interface WallFade {
+  visibleBeats?: number    // time at full size (default 4)
+  shrinkBeats?: number     // time spent shrinking from full to minSize (default 0.5)
+  hiddenBeats?: number     // time at minSize (default 2) — name kept for save-compat; means "min-size dwell"
+  growBeats?: number       // time spent growing from minSize back to full (default 0.5)
+  phase?: number           // start offset in beats — lets multiple walls/groups desync
+  // Minimum size the wall shrinks TO. 0 (default) = fully disappears. 0.3 = shrinks to 30%
+  // of full size and stays there during the "hidden" phase, then grows back to 1.0.
+  minSize?: number
+  // Which dimensions of a capsule shrink. Pillars ignore (only the radius matters for them).
+  //   'both' (default): endpoints collapse to midpoint AND radius shrinks — full disappear
+  //   'width': only the radius shrinks; the spine stays full length (wall thins to a line)
+  //   'length': only the endpoints collapse; the radius stays full (wall retracts to a pillar at midpoint)
+  shrinkMode?: 'both' | 'width' | 'length'
 }
 
 /** Spring add-on — the wall fires a perpendicular launch impulse on a rhythm, shoving
@@ -454,16 +497,64 @@ function angleOnArc(arc: WallArc, angle: number): boolean {
 // Designer authoring + per-challenge persistence is in ChallengeBuilder.
 const walls: Wall[] = []
 
+/** Player-drawn wall segments (Trailblaze upgrade). A chain-dash draws a sequence of thin
+ * segments along the dash path (one per ~20px of motion) so the trail follows the actual
+ * curve. The whole chain is cleared atomically when a new chain-dash starts. */
+const playerWalls: Wall[] = []
+
+/** Append a single thin wall segment for the active draw. Skip degenerate (too-short)
+ * segments. Tagged playerOwned + noClip so the segment doesn't auto-group with neighbors
+ * and doesn't expose snap points to the designer. */
+export const TRAILBLAZE_PLAYER_GRACE_MS = 500
+// Quick, quiet death animation for the OLD Trailblaze trail when a new chain-dash starts.
+// Walls stop colliding immediately, fade alpha to 0 over this window, then get culled.
+export const WALL_DEATH_DURATION_MS = 220
+export function appendPlayerWall(ax: number, ay: number, bx: number, by: number, radius = 12): Wall | null {
+  const dx = bx - ax, dy = by - ay
+  if (dx * dx + dy * dy < 25) return null   // < 5px segment — not worth a wall
+  const w: Wall = {
+    ax, ay, bx, by, radius,
+    restAx: ax, restAy: ay, restBx: bx, restBy: by,
+    playerOwned: true,
+    playerGraceUntil: performance.now() + TRAILBLAZE_PLAYER_GRACE_MS,
+    noClip: true,
+    fadeSize: 1,
+  }
+  walls.push(w)
+  playerWalls.push(w)
+  recomputeWallGroupCenters()
+  return w
+}
+
+/** Clear ALL player-drawn wall segments. Called at the start of each new chain-dash and
+ * on run restart / challenge load. Marks each wall as "dying" so it fades out gracefully
+ * instead of popping — collision is disabled instantly, alpha fades over WALL_DEATH_DURATION_MS,
+ * then updateWalls culls them. Stale references in playerWalls are dropped (the next chain-dash
+ * starts a fresh trail). */
+export function clearPlayerWalls(): void {
+  if (playerWalls.length === 0) return
+  const deathAt = performance.now() + WALL_DEATH_DURATION_MS
+  for (const pw of playerWalls) {
+    pw.dyingUntil = deathAt
+  }
+  playerWalls.length = 0
+  recomputeWallGroupCenters()
+}
+
 export function getWalls(): readonly Wall[] { return walls }
 export function setWalls(w: readonly Wall[]): void {
   // Deep copy so runtime motion updates don't pollute the designer's source data.
   walls.length = 0
+  // setWalls replaces the entire walls array — any player-drawn segments are wiped along
+  // with it. Clear the tracking array so future appendPlayerWall calls start fresh.
+  playerWalls.length = 0
   for (const x of w) {
     const copy: Wall = {
       ax: x.ax, ay: x.ay, bx: x.bx, by: x.by, radius: x.radius,
       ...(x.bend != null ? { bend: x.bend } : {}),
       ...(x.motion ? { motion: { ...x.motion } } : {}),
       ...(x.translation ? { translation: { ...x.translation } } : {}),
+      ...(x.fade ? { fade: { ...x.fade } } : {}),
       ...(x.spring ? { spring: { ...x.spring } } : {}),
       ...(x.noClip ? { noClip: true } : {}),
     }
@@ -593,6 +684,18 @@ function recomputeWallGroupCenters(): void {
     if (gt) walls[i]!.groupTranslation = gt
     else delete walls[i]!.groupTranslation
   }
+  // Same for fade — whole group shrinks/grows in sync.
+  const groupFadeByG: Array<WallFade | undefined> = new Array(nextGroup).fill(undefined)
+  for (let i = 0; i < n; i++) {
+    const g = groupOf[i]!
+    if (groupFadeByG[g]) continue
+    if (walls[i]!.fade) groupFadeByG[g] = walls[i]!.fade
+  }
+  for (let i = 0; i < n; i++) {
+    const gf = groupFadeByG[groupOf[i]!]
+    if (gf) walls[i]!.groupFade = gf
+    else delete walls[i]!.groupFade
+  }
 }
 
 /** Snap every wall's live ax/ay/bx/by back to its authored rest position. Used by the
@@ -626,6 +729,15 @@ export function consumeSpringFires(): SpringFire[] {
  * Also detects spring fires and queues them for GameManager to apply.
  * beatPos is a monotonic absolute beat counter (not modulo loop). */
 export function updateWalls(beatPos: number): void {
+  // Cull walls whose death animation completed (Trailblaze old-trail teardown). Walks
+  // backward so splice doesn't shift unread indices.
+  const nowMs = performance.now()
+  for (let i = walls.length - 1; i >= 0; i--) {
+    const w = walls[i]!
+    if (w.dyingUntil != null && nowMs >= w.dyingUntil) {
+      walls.splice(i, 1)
+    }
+  }
   for (const w of walls) {
     // Motion — recompute live position from rest + angle. Uses groupMotion (propagated
     // from any wall in the connected group with `motion` set) so every wall in the group
@@ -696,10 +808,10 @@ export function updateWalls(beatPos: number): void {
       w.bx = cx + bx0 * cos - by0 * sin
       w.by = cy + bx0 * sin + by0 * cos
       w.bend = w.restBend
-    } else if (w.groupTranslation) {
-      // No rotation but HAS translation — start from rest so translation offset is applied
-      // to a known baseline. If neither motion nor translation, leave live pos alone (already
-      // synced to rest via setWalls).
+    } else if (w.groupTranslation || w.groupFade) {
+      // No rotation but HAS translation or fade — start from rest so the position-mutating
+      // passes below operate on a known baseline. Otherwise we'd accumulate the previous
+      // frame's translation/fade offsets and the wall would drift / shrink permanently.
       w.ax = w.restAx!; w.ay = w.restAy!
       w.bx = w.restBx!; w.by = w.restBy!
     }
@@ -812,6 +924,49 @@ export function updateWalls(beatPos: number): void {
         w.bx += tx; w.by += ty
       }
     }
+    // Fade — compute 0..1 base size from beat phase, then derive widthFade and lengthFade
+    // based on shrinkMode. widthFade scales the radius (collision + rendering width).
+    // lengthFade scales the endpoints toward midpoint (capsule length collapse). Splitting
+    // them lets the user pick: shrink both dims, just width (becomes a hairline), or just
+    // length (collapses to a midpoint pillar). Pillars only care about widthFade.
+    const fade = w.groupFade
+    let baseSize = 1
+    let fadePhase: 'visible' | 'shrink' | 'hidden' | 'grow' = 'visible'
+    if (fade) {
+      const vis = Math.max(0, fade.visibleBeats ?? 4)
+      const shr = Math.max(0.001, fade.shrinkBeats ?? 0.5)
+      const hid = Math.max(0, fade.hiddenBeats ?? 2)
+      const grw = Math.max(0.001, fade.growBeats ?? 0.5)
+      const phs = fade.phase ?? 0
+      const minSize = Math.max(0, Math.min(1, fade.minSize ?? 0))   // shrink target (0 = full disappear)
+      const cycle = vis + shr + hid + grw
+      if (cycle > 0) {
+        let p = ((beatPos + phs) % cycle + cycle) % cycle
+        let size: number
+        // Lerp range: full size (1) ↔ minSize. Shrink goes 1 → minSize, grow goes minSize → 1.
+        if (p < vis) { size = 1; fadePhase = 'visible' }
+        else if (p < vis + shr) { size = 1 - (p - vis) / shr * (1 - minSize); fadePhase = 'shrink' }
+        else if (p < vis + shr + hid) { size = minSize; fadePhase = 'hidden' }
+        else { size = minSize + (p - vis - shr - hid) / grw * (1 - minSize); fadePhase = 'grow' }
+        baseSize = Math.max(0, Math.min(1, size))
+      }
+    }
+    w.fadePhase = fadePhase
+    const mode = fade?.shrinkMode ?? 'both'
+    const widthFade = mode === 'length' ? 1 : baseSize
+    const lengthFade = mode === 'width' ? 1 : baseSize
+    w.fadeSize = widthFade
+    // Apply length fade — scale endpoints toward the wall's midpoint. At lengthFade=1, no
+    // change. At lengthFade=0, both endpoints collapse to the midpoint. For pillars the
+    // midpoint IS the endpoint, so this is automatically a no-op there.
+    if (lengthFade < 1) {
+      const mx = (w.ax + w.bx) / 2
+      const my = (w.ay + w.by) / 2
+      w.ax = mx + (w.ax - mx) * lengthFade
+      w.ay = my + (w.ay - my) * lengthFade
+      w.bx = mx + (w.bx - mx) * lengthFade
+      w.by = my + (w.by - my) * lengthFade
+    }
     // Spring — detect beat crossings and queue a fire.
     // CRITICAL: align fires to the same audio offset every other rhythm-locked sound uses.
     // The music scheduler (BeatLoop) schedules kick/snare/etc at `nextBeatTime + 0.37s`,
@@ -850,9 +1005,31 @@ export function updateWalls(beatPos: number): void {
  * computed and the entity is pushed away from the arc curve. Degenerate cases handled:
  * zero-length segment = pillar; entity center exactly on the curve = push perpendicular.
  */
-export function resolveWallCollision(x: number, y: number, radius: number): { x: number; y: number } {
+export function resolveWallCollision(x: number, y: number, radius: number, isPlayer: boolean = false): { x: number; y: number } {
   let rx = x, ry = y
   for (const w of walls) {
+    // Trailblaze — player phases through their own walls ONLY during the grace window
+    // right after each segment is laid down. Without grace the wall would shove the player
+    // forward as it materializes behind them (rocketing the dash absurdly far). After
+    // grace expires, the wall becomes fully solid against the player too.
+    // Enemies and orbs always collide (grace doesn't apply to them).
+    if (isPlayer && w.playerOwned && w.playerGraceUntil != null && performance.now() < w.playerGraceUntil) continue
+    // Dying walls (old Trailblaze trail mid fade-out) are immediately permeable to everything.
+    if (w.dyingUntil != null) continue
+    // Fade — collision is always ON, but BOTH the detection radius AND the push strength
+    // scale with fadeSize. Detection: effRadius = w.radius * fadeSize (matches visual).
+    // Push: applied push = full_push * fadeSize (weakens during shrink/grow).
+    //   visible (fadeSize=1): full push — wall acts as solid obstacle
+    //   shrink (fadeSize → 0): push weakens — player can push through with growing ease,
+    //     speed transitions from wall-shrink-rate (blocked) to full player speed (free)
+    //   hidden (fadeSize=0):   collision skipped — wall isn't there
+    //   grow (fadeSize 0 → 1): push strengthens — wall progressively pushes player out
+    // The result is "physical fade" — wall solidity tracks its visual size smoothly without
+    // either capping player motion at the slow shrink rate OR letting them blast through.
+    const fadeSize = w.fadeSize ?? 1
+    if (fadeSize < 0.05) continue
+    const effRadius = w.radius * fadeSize
+    const pushFactor = fadeSize
     const arc = computeWallArc(w)
     if (arc) {
       // Closest point on the arc to (rx, ry). If the entity's angle from the arc center is
@@ -880,11 +1057,11 @@ export function resolveWallCollision(x: number, y: number, radius: number): { x:
       const dx = rx - cx
       const dy = ry - cy
       const dist2 = dx * dx + dy * dy
-      const minDist = w.radius + radius
+      const minDist = effRadius + radius
       if (dist2 < minDist * minDist) {
         const dist = Math.sqrt(dist2)
         if (dist > 0.01) {
-          const push = minDist - dist
+          const push = (minDist - dist) * pushFactor
           rx += (dx / dist) * push
           ry += (dy / dist) * push
         } else {
@@ -892,8 +1069,8 @@ export function resolveWallCollision(x: number, y: number, radius: number): { x:
           const outDX = cx - arc.cx
           const outDY = cy - arc.cy
           const outLen = Math.sqrt(outDX * outDX + outDY * outDY) || 1
-          rx += (outDX / outLen) * minDist
-          ry += (outDY / outLen) * minDist
+          rx += (outDX / outLen) * minDist * pushFactor
+          ry += (outDY / outLen) * minDist * pushFactor
         }
       }
       continue
@@ -915,21 +1092,21 @@ export function resolveWallCollision(x: number, y: number, radius: number): { x:
     const dx = rx - cx
     const dy = ry - cy
     const dist2 = dx * dx + dy * dy
-    const minDist = w.radius + radius
+    const minDist = effRadius + radius
     if (dist2 < minDist * minDist) {
       const dist = Math.sqrt(dist2)
       if (dist > 0.01) {
-        const push = minDist - dist
+        const push = (minDist - dist) * pushFactor
         rx += (dx / dist) * push
         ry += (dy / dist) * push
       } else {
         // Center exactly on the segment — push perpendicular to AB (or up for a pillar).
         const segLen = Math.sqrt(ab2)
         if (segLen > 0.01) {
-          rx += (-aby / segLen) * minDist
-          ry += (abx / segLen) * minDist
+          rx += (-aby / segLen) * minDist * pushFactor
+          ry += (abx / segLen) * minDist * pushFactor
         } else {
-          ry -= minDist
+          ry -= minDist * pushFactor
         }
       }
     }

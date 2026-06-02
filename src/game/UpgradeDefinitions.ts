@@ -32,6 +32,11 @@ export const UPGRADE_POOL: UpgradeDef[] = [
   { id: 'slipstream', name: 'Slipstream', description: 'Dashing while still mid-dash gives +100% distance on that dash', bonus: { chainDash: true }, color: '#26C6DA', tier: 'game', maxStacks: 1 },
   { id: 'echo_step', name: 'Echo Step', description: 'Beat dash drops an anchor; next beat dash recalls you to it (invulnerable warp)', bonus: { anchorRecall: true }, color: '#7C4DFF', tier: 'game', maxStacks: 1 },
   { id: 'chill_zone', name: 'Chill Zone', description: 'Beat dash leaves a 2× radius slow field; next beat dash freezes anyone still inside the old field for a beat', bonus: { chillZone: true }, color: '#80D8FF', tier: 'game', maxStacks: 1 },
+  { id: 'quiet_storm', name: 'Quiet Storm', description: 'Stand still 3s → charge up. Next BEAT DASH gets +100% distance and +100% AOE radius', bonus: { quietStorm: true }, color: '#FFD740', tier: 'game', maxStacks: 1 },
+  { id: 'trailblaze', name: 'Trailblaze', description: 'Chain-dash (dash while already dashing) draws a thin wall along your previous dash path. Stays until your next chain-dash.', bonus: { drawWall: true }, color: '#26C6DA', tier: 'game', maxStacks: 1 },
+  { id: 'reverb', name: 'Reverb', description: 'Beat-dash no longer deals damage — instead it emits a big push wave that throws enemies outward. Stronger the closer they are. Scales with beat-dash radius.', bonus: { shockPush: true }, color: '#4FC3F7', tier: 'game', maxStacks: 1 },
+  { id: 'dash_shot', name: 'Bolt', description: 'Beat-dash no longer detonates at your position — instead it fires a glowing projectile in your dash direction that explodes 1 beat later (passes through walls). Aftershock adds another beat (2× travel distance). Same blast math.', bonus: { dashShot: true }, color: '#FFD740', tier: 'game', maxStacks: 1 },
+  { id: 'pivot', name: 'Pivot', description: 'Your dash is no longer a committed straight lunge — hold movement input to carve aggressive curves mid-dash. Steering is ~3.5× more responsive than the default.', bonus: { pivot: true }, color: '#26C6DA', tier: 'game', maxStacks: 1 },
 ]
 
 /** Pick N random upgrades from the pool, excluding already-maxed */

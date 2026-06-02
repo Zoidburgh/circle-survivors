@@ -38,6 +38,21 @@ export const CAMERA_LEAD_AMOUNT = 80
 export const ARENA_BUFFER = 80
 export const HIT_GRACE = 2  // extra pixels on enemy/orb hitbox for easier hits (visual unchanged)
 export const AUDIO_THROTTLE_INTERVAL = 0.04
+// Heavies absorb a small fraction of positional separation overlap so anything wedged against
+// them (orb between two heavies, normal enemy between heavy + wall, etc.) can carve its own
+// space instead of oscillating forever. Heavies still read as "immovable" gameplay-wise —
+// drift is bounded by the current overlap so it self-limits as the gap opens.
+export const HEAVY_YIELD = 0.05
+
+// Dash-shot projectile speed (Bolt upgrade). Normal Bolt flies 1 beat, so ~700px reach.
+// Aftershock extends flight to 2 beats but slows speed to half (~350 px/s) so total distance
+// stays the same — same destination, just lands a beat later. Quiet Storm doesn't change
+// speed (only radius scales).
+export const DASH_SHOT_SPEED = 700
+// Bolt's explosion radius is bigger than a normal beat-dash blast — the projectile sells a
+// chunkier boom at its destination than the in-place beat-dash. All other beat-dash scalings
+// (beatBlastMult, Quiet Storm) still stack on top of this multiplier.
+export const DASH_SHOT_RADIUS_MULT = 1.5
 
 // ── Magnet ──
 export const MAGNET_RANGE = 200      // pull radius in px

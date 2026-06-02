@@ -565,6 +565,34 @@ export function initDesigner(): void {
         </div>
         <div id="ed-wall-trans-help" style="color:#666;font:9px monospace;"></div>
         <div style="display:flex;gap:6px;align-items:center;margin-top:6px;padding-top:6px;border-top:1px dashed rgba(255,215,64,0.15);flex-wrap:wrap;">
+          <span style="color:#aaa;font:10px monospace;">Fade</span>
+          <select id="ed-wall-fade-type" style="padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <option value="none">None</option>
+            <option value="on">On</option>
+          </select>
+          <div id="ed-wall-fade-params" style="display:none;gap:6px;align-items:center;flex-wrap:wrap;">
+            <span style="color:#aaa;font:10px monospace;">Visible</span>
+            <input id="ed-wall-fade-vis" type="number" min="0" max="32" step="0.25" value="4" style="width:50px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span style="color:#aaa;font:10px monospace;">Shrink</span>
+            <input id="ed-wall-fade-shr" type="number" min="0.05" max="16" step="0.05" value="0.5" style="width:55px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span style="color:#aaa;font:10px monospace;">Hidden</span>
+            <input id="ed-wall-fade-hid" type="number" min="0" max="32" step="0.25" value="2" style="width:50px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span style="color:#aaa;font:10px monospace;">Grow</span>
+            <input id="ed-wall-fade-grw" type="number" min="0.05" max="16" step="0.05" value="0.5" style="width:55px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span style="color:#aaa;font:10px monospace;">Phase</span>
+            <input id="ed-wall-fade-phase" type="number" min="0" max="32" step="0.25" value="0" style="width:50px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span style="color:#aaa;font:10px monospace;">Min %</span>
+            <input id="ed-wall-fade-min" type="number" min="0" max="100" step="5" value="0" style="width:55px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span style="color:#aaa;font:10px monospace;">Shrink</span>
+            <select id="ed-wall-fade-mode" style="padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+              <option value="both">Both (full)</option>
+              <option value="width">Width only</option>
+              <option value="length">Length only</option>
+            </select>
+          </div>
+        </div>
+        <div id="ed-wall-fade-help" style="color:#666;font:9px monospace;"></div>
+        <div style="display:flex;gap:6px;align-items:center;margin-top:6px;padding-top:6px;border-top:1px dashed rgba(255,215,64,0.15);flex-wrap:wrap;">
           <span style="color:#aaa;font:10px monospace;">Spring</span>
           <select id="ed-wall-spring-type" style="padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
             <option value="none">None</option>
@@ -982,6 +1010,90 @@ export function initDesigner(): void {
   transTickedInput.addEventListener('change', () => { updateTransPauseVisibility(); pushTransChange() })
   transPauseInput.addEventListener('input', pushTransChange)
   transCountInput.addEventListener('input', pushTransChange)
+  // ── Fade panel wiring ──
+  const fadeTypeSel = panel.querySelector('#ed-wall-fade-type') as HTMLSelectElement
+  const fadeParams = panel.querySelector('#ed-wall-fade-params') as HTMLDivElement
+  const fadeVisInput = panel.querySelector('#ed-wall-fade-vis') as HTMLInputElement
+  const fadeShrInput = panel.querySelector('#ed-wall-fade-shr') as HTMLInputElement
+  const fadeHidInput = panel.querySelector('#ed-wall-fade-hid') as HTMLInputElement
+  const fadeGrwInput = panel.querySelector('#ed-wall-fade-grw') as HTMLInputElement
+  const fadePhaseInput = panel.querySelector('#ed-wall-fade-phase') as HTMLInputElement
+  const fadeMinInput = panel.querySelector('#ed-wall-fade-min') as HTMLInputElement
+  const fadeModeSel = panel.querySelector('#ed-wall-fade-mode') as HTMLSelectElement
+  const fadeHelpDiv = panel.querySelector('#ed-wall-fade-help') as HTMLDivElement
+  function updateFadeHelp(): void {
+    if (fadeTypeSel.value === 'none') { fadeHelpDiv.textContent = ''; return }
+    const v = parseFloat(fadeVisInput.value) || 0
+    const s = parseFloat(fadeShrInput.value) || 0
+    const h = parseFloat(fadeHidInput.value) || 0
+    const g = parseFloat(fadeGrwInput.value) || 0
+    const minPct = parseFloat(fadeMinInput.value) || 0
+    const total = v + s + h + g
+    const m = fadeModeSel.value
+    const modeStr = m === 'width' ? ' (width only — wall thins)' : m === 'length' ? ' (length only — wall retracts)' : ''
+    const minStr = minPct > 0 ? ` Shrinks to ${minPct}% (stays partial).` : ' Fully disappears.'
+    fadeHelpDiv.textContent = `Cycle: ${total.toFixed(2)} beats. Visible ${v}, shrink ${s}, min-dwell ${h}, grow ${g}.${modeStr}${minStr}`
+  }
+  function pushFadeChange(): void {
+    if (fadeTypeSel.value === 'none') { ChallengeBuilder.setSelectedWallFade(undefined); return }
+    const v = parseFloat(fadeVisInput.value)
+    const s = parseFloat(fadeShrInput.value)
+    const h = parseFloat(fadeHidInput.value)
+    const g = parseFloat(fadeGrwInput.value)
+    const p = parseFloat(fadePhaseInput.value)
+    if (![v, s, h, g, p].every(x => Number.isFinite(x))) return
+    if (s <= 0 || g <= 0) return
+    const mode = fadeModeSel.value === 'width' || fadeModeSel.value === 'length' ? fadeModeSel.value : 'both'
+    const minPct = parseFloat(fadeMinInput.value)
+    const minSize = Number.isFinite(minPct) ? Math.max(0, Math.min(1, minPct / 100)) : 0
+    ChallengeBuilder.setSelectedWallFade({
+      visibleBeats: Math.max(0, v),
+      shrinkBeats: s,
+      hiddenBeats: Math.max(0, h),
+      growBeats: g,
+      phase: p,
+      minSize,
+      shrinkMode: mode as 'both' | 'width' | 'length',
+    })
+    updateFadeHelp()
+  }
+  fadeTypeSel.addEventListener('change', () => {
+    if (fadeTypeSel.value === 'none') {
+      fadeParams.style.display = 'none'
+      ChallengeBuilder.setSelectedWallFade(undefined)
+    } else {
+      fadeParams.style.display = 'flex'
+      pushFadeChange()
+    }
+    updateFadeHelp()
+  })
+  fadeVisInput.addEventListener('input', pushFadeChange)
+  fadeShrInput.addEventListener('input', pushFadeChange)
+  fadeHidInput.addEventListener('input', pushFadeChange)
+  fadeGrwInput.addEventListener('input', pushFadeChange)
+  fadePhaseInput.addEventListener('input', pushFadeChange)
+  fadeMinInput.addEventListener('input', pushFadeChange)
+  fadeModeSel.addEventListener('change', pushFadeChange)
+  function refreshFadeRow(): void {
+    const f = ChallengeBuilder.getSelectedWallFade()
+    if (!f) {
+      fadeTypeSel.value = 'none'
+      fadeParams.style.display = 'none'
+      updateFadeHelp()
+      return
+    }
+    fadeTypeSel.value = 'on'
+    fadeParams.style.display = 'flex'
+    fadeVisInput.value = String(f.visibleBeats ?? 4)
+    fadeShrInput.value = String(f.shrinkBeats ?? 0.5)
+    fadeHidInput.value = String(f.hiddenBeats ?? 2)
+    fadeGrwInput.value = String(f.growBeats ?? 0.5)
+    fadePhaseInput.value = String(f.phase ?? 0)
+    fadeMinInput.value = String(Math.round((f.minSize ?? 0) * 100))
+    fadeModeSel.value = f.shrinkMode ?? 'both'
+    updateFadeHelp()
+  }
+
   function refreshTransRow(): void {
     const tr = ChallengeBuilder.getSelectedWallTranslation()
     if (!tr) {
@@ -1113,6 +1225,7 @@ export function initDesigner(): void {
     updateMotionHelp()
     updatePivotRow()
     refreshTransRow()
+    refreshFadeRow()
     const spring = ChallengeBuilder.getSelectedWallSpring()
     if (!spring) {
       springTypeSel.value = 'none'

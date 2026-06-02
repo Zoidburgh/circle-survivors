@@ -1118,6 +1118,225 @@ export function playDashReady(): void {
 // Enemy dodge — short whoosh: filtered noise sweeping down. Distinct from player's dash
 // (which is breathy sine). Throttled so swarms of dodgers don't blow out audio.
 let lastEnemyDodgeTime = 0
+// "Quiet Storm" charge-ready chime — plays once when the player's stand-still charge
+// completes. Bright, brief, and unmistakable so the player knows their next dash is loaded.
+export function playChargeReady(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  // Two-tone arpeggio (perfect fifth) with bell-like envelope
+  const f1 = rPitch(880)
+  const f2 = rPitch(1320)
+  for (const [freq, delay] of [[f1, 0], [f2, 0.05]] as const) {
+    const osc = c.createOscillator()
+    osc.type = 'sine'
+    osc.frequency.setValueAtTime(freq, t + delay)
+    const gain = c.createGain()
+    gain.gain.setValueAtTime(0.001, t + delay)
+    gain.gain.linearRampToValueAtTime(rVol(0.5), t + delay + 0.005)
+    gain.gain.exponentialRampToValueAtTime(0.001, t + delay + 0.40)
+    osc.connect(gain)
+    gain.connect(master)
+    osc.start(t + delay)
+    osc.stop(t + delay + 0.45)
+  }
+}
+
+// Reverb shock push — deep bass thump + brief noise burst for the player's beat-dash push
+// wave. Heavier than the boing (this is the player DEALING the push, not receiving it).
+let lastShockPushTime = 0
+export function playShockPush(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  if (t - lastShockPushTime < 0.05) return
+  lastShockPushTime = t
+  // Sub-bass drop
+  const osc = c.createOscillator()
+  osc.type = 'sine'
+  osc.frequency.setValueAtTime(rPitch(160), t)
+  osc.frequency.exponentialRampToValueAtTime(rPitch(45), t + 0.22)
+  const oGain = c.createGain()
+  oGain.gain.setValueAtTime(rVol(0.9), t)
+  oGain.gain.exponentialRampToValueAtTime(0.001, t + 0.28)
+  osc.connect(oGain)
+  oGain.connect(master)
+  osc.start(t)
+  osc.stop(t + 0.3)
+  // Noise burst for the "whoomph" air-displacement texture
+  const dur = 0.18
+  const buf = c.createBuffer(1, Math.floor(c.sampleRate * dur), c.sampleRate)
+  const data = buf.getChannelData(0)
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1
+  const noise = c.createBufferSource()
+  noise.buffer = buf
+  const filter = c.createBiquadFilter()
+  filter.type = 'lowpass'
+  filter.frequency.setValueAtTime(1200, t)
+  filter.frequency.exponentialRampToValueAtTime(200, t + dur)
+  const nGain = c.createGain()
+  nGain.gain.setValueAtTime(0.001, t)
+  nGain.gain.linearRampToValueAtTime(rVol(0.5), t + 0.01)
+  nGain.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  noise.connect(filter)
+  filter.connect(nGain)
+  nGain.connect(master)
+  noise.start(t)
+  noise.stop(t + dur)
+}
+
+// Sustained lightning crackle for a Bolt projectile in flight. Multiple bolts can fly
+// concurrently (Triple Dash + Bolt etc.), so instances are tracked in a Map keyed by id.
+// startDashShotCrackle returns the id; stopDashShotCrackle(id) fades and disposes the nodes.
+// Designed quiet — ambient flight texture under the main mix, not foreground.
+interface DashShotCrackleNodes {
+  gain: GainNode
+  source: AudioBufferSourceNode
+}
+const dashShotCrackleInstances = new Map<number, DashShotCrackleNodes>()
+let dashShotCrackleNextId = 1
+export function startDashShotCrackle(duration: number): number {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  // Looped bandpassed noise — random pops give the snap-crackle electric texture
+  const bufLen = 2
+  const buf = c.createBuffer(1, Math.floor(c.sampleRate * bufLen), c.sampleRate)
+  const data = buf.getChannelData(0)
+  for (let i = 0; i < data.length; i++) {
+    data[i] = (Math.random() * 2 - 1) * (Math.random() < 0.04 ? 0.7 : 0.18)
+  }
+  const noise = c.createBufferSource()
+  noise.buffer = buf
+  noise.loop = true
+  const filter = c.createBiquadFilter()
+  filter.type = 'bandpass'
+  filter.Q.value = 3.5
+  filter.frequency.value = 1600
+  const gain = c.createGain()
+  gain.gain.setValueAtTime(0.001, t)
+  gain.gain.linearRampToValueAtTime(rVol(0.10), t + 0.06)
+  noise.connect(filter)
+  filter.connect(gain)
+  gain.connect(master)
+  noise.start(t)
+  noise.stop(t + duration + 0.5)   // safety stop in case caller doesn't
+  const id = dashShotCrackleNextId++
+  dashShotCrackleInstances.set(id, { gain, source: noise })
+  return id
+}
+export function stopDashShotCrackle(id: number): void {
+  if (!ctx) return
+  const inst = dashShotCrackleInstances.get(id)
+  if (!inst) return
+  const t = ctx.currentTime
+  inst.gain.gain.cancelScheduledValues(t)
+  inst.gain.gain.setValueAtTime(inst.gain.gain.value, t)
+  inst.gain.gain.linearRampToValueAtTime(0.001, t + 0.06)
+  try { inst.source.stop(t + 0.08) } catch { /* may already be stopped */ }
+  dashShotCrackleInstances.delete(id)
+}
+
+// Warm electric "fwoom" for Bolt (Dash-shot) spawn — discharge thump. Sine + triangle in the
+// low-mid range so it reads as energetic without the squeaky high-square harshness, layered
+// with a lowpassed noise crackle for the electric texture.
+let lastDashShotFireTime = 0
+export function playDashShotFire(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  if (t - lastDashShotFireTime < 0.05) return
+  lastDashShotFireTime = t
+  // Sub-bass body — the "fwoom" thump
+  const sub = c.createOscillator()
+  sub.type = 'sine'
+  sub.frequency.setValueAtTime(rPitch(220), t)
+  sub.frequency.exponentialRampToValueAtTime(rPitch(60), t + 0.10)
+  const subGain = c.createGain()
+  subGain.gain.setValueAtTime(rVol(0.7), t)
+  subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.16)
+  sub.connect(subGain)
+  subGain.connect(master)
+  sub.start(t)
+  sub.stop(t + 0.18)
+  // Mid triangle — adds electric character without piercing highs
+  const mid = c.createOscillator()
+  mid.type = 'triangle'
+  mid.frequency.setValueAtTime(rPitch(420), t)
+  mid.frequency.exponentialRampToValueAtTime(rPitch(110), t + 0.09)
+  const midGain = c.createGain()
+  midGain.gain.setValueAtTime(rVol(0.32), t)
+  midGain.gain.exponentialRampToValueAtTime(0.001, t + 0.12)
+  mid.connect(midGain)
+  midGain.connect(master)
+  mid.start(t)
+  mid.stop(t + 0.14)
+  // Warm noise crackle — lowpassed so it's a "vrooom" texture, not a hissy zap
+  const dur = 0.13
+  const buf = c.createBuffer(1, Math.floor(c.sampleRate * dur), c.sampleRate)
+  const data = buf.getChannelData(0)
+  for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1
+  const noise = c.createBufferSource()
+  noise.buffer = buf
+  const filter = c.createBiquadFilter()
+  filter.type = 'lowpass'
+  filter.frequency.setValueAtTime(1500, t)
+  filter.frequency.exponentialRampToValueAtTime(500, t + dur)
+  const nGain = c.createGain()
+  nGain.gain.setValueAtTime(0.001, t)
+  nGain.gain.linearRampToValueAtTime(rVol(0.35), t + 0.008)
+  nGain.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  noise.connect(filter)
+  filter.connect(nGain)
+  nGain.connect(master)
+  noise.start(t)
+  noise.stop(t + dur)
+}
+
+// Quick "boingngng" — cartoony spring sound for when an entity gets launched by a wall
+// spring or pusher enemy. `loud` (true for player pushes) raises gain ~3× so the player's
+// own bounce reads above the chorus when multiple things get pushed at once.
+let lastBoingTime = 0
+export function playBoing(loud = false): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  // Throttle so a crowd of enemies pushed simultaneously doesn't stack into noise. Player
+  // pushes bypass the throttle so the player's own boing is never dropped.
+  if (!loud && t - lastBoingTime < 0.05) return
+  lastBoingTime = t
+  const dur = 0.18
+  const osc = c.createOscillator()
+  osc.type = 'triangle'
+  // Pitch sweep — quick up-and-down warble that gives the classic "boing" feel.
+  osc.frequency.setValueAtTime(rPitch(180), t)
+  osc.frequency.exponentialRampToValueAtTime(rPitch(720), t + 0.04)
+  osc.frequency.exponentialRampToValueAtTime(rPitch(290), t + 0.10)
+  osc.frequency.exponentialRampToValueAtTime(rPitch(420), t + 0.18)
+  // Small detuned oscillator for body
+  const osc2 = c.createOscillator()
+  osc2.type = 'sine'
+  osc2.frequency.setValueAtTime(rPitch(90), t)
+  osc2.frequency.exponentialRampToValueAtTime(rPitch(160), t + 0.06)
+  osc2.frequency.exponentialRampToValueAtTime(rPitch(70), t + dur)
+  const gain = c.createGain()
+  const peak = loud ? 0.85 : 0.32
+  gain.gain.setValueAtTime(0.001, t)
+  gain.gain.linearRampToValueAtTime(rVol(peak), t + 0.015)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  const sub = c.createGain()
+  sub.gain.setValueAtTime(rVol(peak * 0.4), t)
+  sub.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  osc.connect(gain)
+  osc2.connect(sub)
+  gain.connect(master)
+  sub.connect(master)
+  osc.start(t)
+  osc.stop(t + dur)
+  osc2.start(t)
+  osc2.stop(t + dur)
+}
+
 export function playEnemyDodge(): void {
   ensureContext()
   const c = ctx!
