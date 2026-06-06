@@ -258,7 +258,7 @@ export function initHitDetection(): void {
     }
     playEnemyBeatTick(rs.patternName, rs.sound, sameTypeCount)
 
-    const ringRadius = rs.ring.radius * getRingExpansion(rs.attackTimer)
+    const ringRadius = rs.ring.radius * getRingExpansion(rs.attackTimer, rs.expandTime)
     const origins = getRingOrigins(enemy, rs)
     let playerHit = false
     for (const origin of origins) {

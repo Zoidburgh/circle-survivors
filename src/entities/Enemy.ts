@@ -1,6 +1,6 @@
 import type { Ring } from './Ring.ts'
 import { createRing } from './Ring.ts'
-import { ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
+import { ATTACK_EXPAND_TIME, RING_FIRE_LEAD_SEC } from '../core/PhaseSystem.ts'
 import { shouldFire, getBeatInterval, getLoopPosition } from '../audio/PatternClock.ts'
 import { playWindup, playEnemyDodge, playEnemyShieldBreak, playEnemyShieldRestore, startEnemyShieldFuseBurn, stopEnemyShieldFuseBurn } from '../audio/AudioEngine.ts'
 import { isRunTimerActive, isRunComplete, startRunTimer, getPhase } from '../core/GameState.ts'
@@ -616,9 +616,14 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     if (enemy.spawnTimer >= 1) {
       for (let i = 0; i < enemy.rings.length; i++) {
         const rs = enemy.rings[i]!
-        if (shouldFire(rs.patternName)) {
+        // Per-ring lead: big rings (radius >= 200) fire EARLIER (lead 0.35) and expand for
+        // longer (0.80), so peak still lands on the beat ((beat - 0.35) + 0.80 = beat + 0.45).
+        const isBig = rs.ring.radius >= 200
+        const ringLead = isBig ? 0.30 : RING_FIRE_LEAD_SEC
+        if (shouldFire(rs.patternName, ringLead)) {
           const interval = getBeatInterval(rs.patternName)
-          rs.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * 0.8)
+          const baseExpand = isBig ? 0.75 : ATTACK_EXPAND_TIME
+          rs.expandTime = Math.min(baseExpand, interval * 0.8)
           rs.attackTimer = 0
           playWindup(rs.expandTime, false)
           if (rs.edgeMode) {
@@ -1016,9 +1021,12 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
         while (diff < -Math.PI) diff += Math.PI * 2
         rs.edgeAngle += diff * 8 * dt  // smooth lerp
       }
-      if (shouldFire(rs.patternName)) {
+      const isBig2 = rs.ring.radius >= 200
+      const ringLead2 = isBig2 ? 0.30 : RING_FIRE_LEAD_SEC
+      if (shouldFire(rs.patternName, ringLead2)) {
         const interval = getBeatInterval(rs.patternName)
-        rs.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * 0.8)
+        const baseExpand = isBig2 ? 0.75 : ATTACK_EXPAND_TIME
+        rs.expandTime = Math.min(baseExpand, interval * 0.8)
         rs.attackTimer = 0
         rs.peakCaptured = false
         playWindup(rs.expandTime, false)

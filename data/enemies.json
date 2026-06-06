@@ -1684,6 +1684,87 @@
           "xpOrbs": 3
         }
       ]
+    },
+    {
+      "name": "Enemy30",
+      "color": "#4fc3f7",
+      "hp": 2,
+      "moveSpeed": 50,
+      "radius": 40,
+      "ringRadius": 500,
+      "key": "30",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0.5,
+        1.5,
+        2.5,
+        3.5,
+        4.5,
+        5.5,
+        6.5,
+        7.5
+      ],
+      "rings": [
+        {
+          "ringRadius": 500,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ],
+          "edgeMode": false,
+          "edgePoints": 3,
+          "edgeActive": 1,
+          "edgeSwitchBeats": 1
+        }
+      ],
+      "blocksRings": false,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "pusher": false,
+      "pusherBeats": 2,
+      "pusherPhase": 0,
+      "pusherStrength": 600,
+      "dodge": false,
+      "dodgeCharges": 2,
+      "dodgeChargeTime": 1.5,
+      "dodgeDistance": 100,
+      "dodgeSpeed": 1,
+      "shield": false,
+      "shieldRechargeTime": 4,
+      "movePattern": "pursue",
+      "totemSpawn": "",
+      "dropType": "xp",
+      "dropXp": 100,
+      "dropHp": 0,
+      "dropCount": 1,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": [],
+      "isShrine": false,
+      "shrineSpawnEnemy": "",
+      "shrineXpCount": 0,
+      "shrineHpCount": 0,
+      "shrinePhases": [
+        {
+          "xpOrbs": 3
+        }
+      ]
     }
   ],
   "challenges": [
@@ -1812,6 +1893,154 @@
           "spring": {
             "beatsPerCycle": 1,
             "phase": 0.5,
+            "strength": 1500
+          }
+        }
+      ]
+    },
+    {
+      "name": "sweepers",
+      "arenaShape": "circle",
+      "enemies": [],
+      "walls": [
+        {
+          "ax": 636.324159410567,
+          "ay": -265.5508405894331,
+          "bx": 1348.675840589433,
+          "by": 588.0508405894332,
+          "radius": 42,
+          "motion": {
+            "type": "tick",
+            "beatsPerTick": 2,
+            "direction": 1,
+            "phaseBeats": 0,
+            "degreesPerTick": 90,
+            "pauseFraction": 0.2,
+            "ticksBeforeReverse": 0
+          },
+          "translation": {
+            "type": "horizontal",
+            "beatsPerCycle": 4,
+            "amplitude": 300,
+            "direction": 1,
+            "phaseBeats": 0,
+            "ticked": true,
+            "pauseFraction": 0.2
+          }
+        },
+        {
+          "ax": 1111.800840589433,
+          "ay": 137.57415941056666,
+          "bx": 258.1991594105671,
+          "by": 849.9258405894334,
+          "radius": 42,
+          "motion": {
+            "type": "tick",
+            "beatsPerTick": 2,
+            "direction": 1,
+            "phaseBeats": 0,
+            "degreesPerTick": 90,
+            "pauseFraction": 0.2,
+            "ticksBeforeReverse": 0
+          },
+          "translation": {
+            "type": "vertical",
+            "beatsPerCycle": 4,
+            "amplitude": 300,
+            "direction": 1,
+            "phaseBeats": 0,
+            "ticked": true,
+            "pauseFraction": 0.2
+          }
+        }
+      ]
+    },
+    {
+      "name": "pinball",
+      "arenaShape": "circle",
+      "enemies": [],
+      "walls": [
+        {
+          "ax": 857.5,
+          "ay": 507.4999999999999,
+          "bx": 857.5,
+          "by": 507.4999999999999,
+          "radius": 158,
+          "spring": {
+            "beatsPerCycle": 1,
+            "phase": 0,
+            "strength": 1500
+          }
+        },
+        {
+          "ax": 607.5,
+          "ay": -55,
+          "bx": 607.5,
+          "by": -55,
+          "radius": 168,
+          "spring": {
+            "beatsPerCycle": 1,
+            "phase": 0,
+            "strength": 1500
+          }
+        },
+        {
+          "ax": 1125.0000000000005,
+          "ay": 1087.5,
+          "bx": 1125.0000000000005,
+          "by": 1087.5,
+          "radius": 150,
+          "spring": {
+            "beatsPerCycle": 1,
+            "phase": 0,
+            "strength": 1500
+          }
+        },
+        {
+          "ax": 1505,
+          "ay": 536.2499999999999,
+          "bx": 1505,
+          "by": 536.2499999999999,
+          "radius": 148,
+          "spring": {
+            "beatsPerCycle": 1,
+            "phase": 0,
+            "strength": 1500
+          }
+        },
+        {
+          "ax": 1210,
+          "ay": -41.25,
+          "bx": 1210,
+          "by": -41.25,
+          "radius": 166,
+          "spring": {
+            "beatsPerCycle": 1,
+            "phase": 0,
+            "strength": 1500
+          }
+        },
+        {
+          "ax": 217.5,
+          "ay": 403.75,
+          "bx": 217.5,
+          "by": 403.75,
+          "radius": 158,
+          "spring": {
+            "beatsPerCycle": 1,
+            "phase": 0,
+            "strength": 1500
+          }
+        },
+        {
+          "ax": 410,
+          "ay": 987.5,
+          "bx": 410,
+          "by": 987.5,
+          "radius": 150,
+          "spring": {
+            "beatsPerCycle": 1,
+            "phase": 0,
             "strength": 1500
           }
         }

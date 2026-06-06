@@ -1,6 +1,6 @@
 import type { Ring } from './Ring.ts'
 import { createRing } from './Ring.ts'
-import { ATTACK_TOTAL_TIME, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
+import { ATTACK_TOTAL_TIME, ATTACK_EXPAND_TIME, RING_FIRE_LEAD_SEC } from '../core/PhaseSystem.ts'
 import { shouldFire } from '../audio/PatternClock.ts'
 import * as Input from '../game/InputManager.ts'
 import { emit } from '../core/EventBus.ts'
@@ -323,9 +323,11 @@ export function updatePlayer(player: Player, dt: number): void {
     }
   }
 
-  // Smooth HP display — drain slow (so the red wedge is readable as damage feedback), fill smooth
+  // Smooth HP display — drain slowed further (0.65 → 0.4) so the red drain wedge stays
+  // visible for a beat or two before settling. Still fast — half-life ~0.22s — just no
+  // longer near-instant.
   if (player.displayHp > player.hp) {
-    player.displayHp -= (player.displayHp - player.hp) * (HP_DRAIN_SPEED * 0.65) * dt
+    player.displayHp -= (player.displayHp - player.hp) * (HP_DRAIN_SPEED * 0.4) * dt
     if (player.displayHp - player.hp < 0.01) player.displayHp = player.hp
   } else if (player.displayHp < player.hp) {
     player.displayHp += (player.hp - player.displayHp) * 6 * dt
@@ -602,8 +604,10 @@ export function updatePlayer(player: Player, dt: number): void {
     }
   }
 
-  // Beat detection — pattern driven
-  if (player.attackTimer < 0 && shouldFire('Player')) {
+  // Beat detection — pattern driven. Uses RING_FIRE_LEAD_SEC so the ring starts its visible
+  // expansion ahead of the actual beat — hit still lands on-beat because ATTACK_EXPAND_TIME
+  // was bumped by the same delta.
+  if (player.attackTimer < 0 && shouldFire('Player', RING_FIRE_LEAD_SEC)) {
     player.attackTimer = 0
   }
 
@@ -624,7 +628,7 @@ export function updatePlayer(player: Player, dt: number): void {
   // Extra ring attacks — separate from base, added by upgrades
   for (let i = 0; i < player.extraRingCount; i++) {
     const patternName = `PlayerExtra${i}`
-    if (player.extraRingTimers[i]! < 0 && shouldFire(patternName)) {
+    if (player.extraRingTimers[i]! < 0 && shouldFire(patternName, RING_FIRE_LEAD_SEC)) {
       player.extraRingTimers[i] = 0
     }
     if (player.extraRingTimers[i]! >= 0) {

@@ -9,15 +9,19 @@ import { getBeatZeroTime } from './BeatLoop.ts'
 let currentPattern: SongPattern | null = null
 let startTime = 0 // AudioContext time when pattern started
 
+// firedBeats key = `${typeName}:${leadSec}` so the SAME pattern can be checked with multiple
+// lead times independently (e.g. ring fire wants lead=0.30, walls/zigs want lead=0).
 const firedBeats = new Map<string, Set<number>>()
-const firingThisTick = new Set<string>()
+// Per-tick cache so multiple shouldFire(type, lead) callers in the same tick get the same
+// answer (boolean — both true AND false get cached). Cleared each advancePatternClock.
+const firedThisTick = new Map<string, boolean>()
 let lastLoopBeat = -1
 
 export function setPattern(pattern: SongPattern): void {
   currentPattern = pattern
   startTime = getAudioTime()
   firedBeats.clear()
-  firingThisTick.clear()
+  firedThisTick.clear()
   lastLoopBeat = -1
 }
 
@@ -53,7 +57,7 @@ export function advancePatternClock(_dt: number): void {
 
   const beatTime = getLoopPosition()
 
-  // Detect loop wrap — clear fired beats
+  // Detect loop wrap — clear all fired beats (across all leadSec variants).
   if (beatTime < lastLoopBeat - 1) {
     firedBeats.clear()
   }
@@ -62,31 +66,46 @@ export function advancePatternClock(_dt: number): void {
   // Danger melody — synced to beat
   tickDangerBeat(beatTime)
 
-  // Compute which types fire this tick
-  firingThisTick.clear()
-  const window = 0.08
-
-  for (const [typeName, beats] of Object.entries(currentPattern.patterns)) {
-    let firedSet = firedBeats.get(typeName)
-    if (!firedSet) {
-      firedSet = new Set()
-      firedBeats.set(typeName, firedSet)
-    }
-
-    for (const beat of beats) {
-      if (firedSet.has(beat)) continue
-      const dist = loopDist(beatTime, beat, currentPattern.loopBeats)
-      if (dist < window) {
-        firedSet.add(beat)
-        firingThisTick.add(typeName)
-        break
-      }
-    }
-  }
+  // Clear per-tick cache so the next batch of shouldFire calls re-evaluates the live
+  // beatTime. Live evaluation in shouldFire (rather than precomputing firingThisTick here)
+  // lets us support per-call leadSec without enumerating all possible (type, lead) combos.
+  firedThisTick.clear()
 }
 
-export function shouldFire(typeName: string): boolean {
-  return firingThisTick.has(typeName)
+export function shouldFire(typeName: string, leadSec = 0): boolean {
+  if (!currentPattern) return false
+  const beats = currentPattern.patterns[typeName]
+  if (!beats) return false
+
+  const cacheKey = `${typeName}:${leadSec}`
+  const cached = firedThisTick.get(cacheKey)
+  if (cached !== undefined) return cached
+
+  let firedSet = firedBeats.get(cacheKey)
+  if (!firedSet) {
+    firedSet = new Set()
+    firedBeats.set(cacheKey, firedSet)
+  }
+
+  const beatTime = getLoopPosition()
+  const window = 0.08
+  const loopLen = currentPattern.loopBeats
+  const leadBeats = leadSec / BEAT_SEC
+
+  for (const beat of beats) {
+    if (firedSet.has(beat)) continue
+    // Shift target by -leadBeats so the fire moment is leadSec BEFORE the nominal beat
+    const targetBeat = ((beat - leadBeats) % loopLen + loopLen) % loopLen
+    const dist = loopDist(beatTime, targetBeat, loopLen)
+    if (dist < window) {
+      firedSet.add(beat)
+      firedThisTick.set(cacheKey, true)
+      return true
+    }
+  }
+
+  firedThisTick.set(cacheKey, false)
+  return false
 }
 
 function loopDist(a: number, b: number, len: number): number {

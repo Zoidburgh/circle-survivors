@@ -86,6 +86,7 @@ export function toggleDesignerZoomOut(): void {
 }
 
 // ── Particle system ──
+interface ParticleParent { x: number; y: number }
 interface Particle {
   x: number; y: number
   vx: number; vy: number
@@ -97,6 +98,24 @@ interface Particle {
   tintR: number     // -1 = no tint; otherwise blend target after 0.04s delay
   tintG: number
   tintB: number
+  // Orbit-on-ring mode — used by the ring's at-peak "cutting" streak particles to follow the
+  // ring's curve instead of departing on a straight tangent. orbitR < 0 disables (default).
+  // When > 0, updateParticles projects (x,y) back onto the circle and reorients velocity to
+  // the tangent at the new position, preserving speed and direction.
+  orbitCx: number
+  orbitCy: number
+  orbitR: number
+  // Parent attachment — particle's position is shifted each frame by (parent.x - lastParentX)
+  // so the burst stays visually glued to the moving entity (player/enemy hit particles).
+  // Null disables (default). lastParentX/Y track the last seen parent position per-particle so
+  // the delta works correctly regardless of update order or stale parent references.
+  parent: ParticleParent | null
+  lastParentX: number
+  lastParentY: number
+  // tintLate — when true, the tint color shift happens in the LAST ~30% of life instead of
+  // mid-life. Used for blood drops so they keep their hot starting color most of their flight
+  // and only cool down right before dissolving.
+  tintLate: boolean
 }
 
 const particles: Particle[] = []
@@ -711,19 +730,19 @@ function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
       const orbY = sy1 + ddy * orbEase + wny * wave
       const orbSize = (23 - c * 2.3) * Math.max(orbLife, 0.15)
 
-      // Glow
+      // Glow — bumped from 0.14 → 0.28 so the collection chain pops more clearly
       ctx.beginPath()
       ctx.arc(orbX, orbY, orbSize + 19, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.14})`
+      ctx.fillStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.28})`
       ctx.fill()
 
-      // Core
+      // Core — bumped from 0.6 → 0.85
       ctx.beginPath()
       ctx.arc(orbX, orbY, Math.max(1, orbSize), 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${Math.min(255, fx.r + 80)}, ${Math.min(255, fx.g + 60)}, ${Math.min(255, fx.b + 60)}, ${orbLife * 0.6})`
+      ctx.fillStyle = `rgba(${Math.min(255, fx.r + 80)}, ${Math.min(255, fx.g + 60)}, ${Math.min(255, fx.b + 60)}, ${orbLife * 0.85})`
       ctx.fill()
 
-      // Beam to next
+      // Beam to next — bumped from 0.36 → 0.55
       if (c < chainCount - 1) {
         const nextT = t - (c + 1) * spacing
         if (nextT >= 0) {
@@ -735,7 +754,7 @@ function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
           ctx.beginPath()
           ctx.moveTo(orbX, orbY)
           ctx.lineTo(nextX, nextY)
-          ctx.strokeStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.36})`
+          ctx.strokeStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.55})`
           ctx.lineWidth = 5 * orbLife
           ctx.stroke()
         }
@@ -1182,11 +1201,34 @@ function spawnParticle(
   r: number, g: number, b: number,
   lifetime: number, size: number,
   spinRate = 0,
-  tintR = -1, tintG = 0, tintB = 0
+  tintR = -1, tintG = 0, tintB = 0,
+  orbitCx = 0, orbitCy = 0, orbitR = -1
 ): void {
   if (particles.length >= MAX_PARTICLES) return
   if (getPhase() === 'entering_name') return  // block game particles on name entry screen
-  particles.push({ x, y, vx, vy, r, g, b, life: 0, lifetime, size, spinRate, tintR, tintG, tintB })
+  particles.push({ x, y, vx, vy, r, g, b, life: 0, lifetime, size, spinRate, tintR, tintG, tintB, orbitCx, orbitCy, orbitR, parent: null, lastParentX: 0, lastParentY: 0, tintLate: false })
+}
+
+// Spawn a parent-attached particle. Each frame the particle's position is shifted by the
+// parent's per-frame delta — the burst stays glued to a moving entity instead of being
+// stranded in world space. Used for player/enemy blood so the spray translates with the body.
+// `delaySec` defers the particle's appearance — it sits dormant (invisible, no motion) until
+// the delay elapses, then begins its normal lifetime. Used to stagger when blood drops appear
+// within a single burst.
+function spawnParticleAttached(
+  x: number, y: number,
+  vx: number, vy: number,
+  r: number, g: number, b: number,
+  lifetime: number, size: number,
+  tintR: number, tintG: number, tintB: number,
+  parent: ParticleParent,
+  delaySec: number = 0,
+  tintLate: boolean = false,
+): void {
+  if (particles.length >= MAX_PARTICLES) return
+  if (getPhase() === 'entering_name') return
+  const initialLife = delaySec > 0 ? -delaySec / lifetime : 0
+  particles.push({ x, y, vx, vy, r, g, b, life: initialLife, lifetime, size, spinRate: 0, tintR, tintG, tintB, orbitCx: 0, orbitCy: 0, orbitR: -1, parent, lastParentX: parent.x, lastParentY: parent.y, tintLate })
 }
 
 // Aftershock telegraph — ticking pie + danger-zone ring drawn at the dash origin while a
@@ -1226,9 +1268,22 @@ interface DashShotViz {
                                     // bolt visuals dim during pie phase and crossfade in around t = 1.0s. Lifetime = 2 beats.
 }
 const dashShotVizList: DashShotViz[] = []
+// Reusable scratch buffer for drawWalls — grown lazily, length reset to 0 each frame.
+// Avoids per-frame Array allocation when many walls are on screen.
+const WALL_DRAW_LIST: unknown[] = []
 const DASH_SHOT_MIN_VIS_R = 20
 const LANCE_DURATION = 0.16   // discharge arc duration (~10 frames at 60fps)
 const MUZZLE_DURATION = 0.10  // muzzle disc duration
+// Module-level palette constants for dash-shot — hoisted out of the per-frame loop so we
+// don't allocate fresh object literals every frame for the lifetime of every projectile.
+const DASH_SHOT_PAL_GOLD = {
+  bright: '255, 240, 180', mid: '255, 220, 130', deep: '255, 180, 60',
+  accent: '255, 215, 64', core: '255, 255, 245', trail: '255, 240, 180', trailFade: '255, 220, 120',
+} as const
+const DASH_SHOT_PAL_REVERB = {
+  bright: '215, 245, 255', mid: '130, 220, 255', deep: '60, 180, 255',
+  accent: '64, 200, 255', core: '245, 255, 255', trail: '180, 240, 255', trailFade: '120, 215, 255',
+} as const
 
 export function addDashShotViz(x: number, y: number, vx: number, vy: number, targetRadius: number, lifetime: number, reverbMode: boolean, aftershock: boolean = false): void {
   dashShotVizList.push({
@@ -1260,6 +1315,26 @@ export function triggerBlueLightning(x: number, y: number, radius: number): void
 // Both share one timer + one trigger so the effects stay synced and cheap.
 const BEAT_DASH_CONFIRM_DURATION = 0.60
 let beatDashConfirmTimer = 0
+// Pre-allocated buffers for the confirm brackets — avoids per-frame Array/Object allocations
+// inside updateAndDrawBeatDashConfirm during the 0.6s flash on every on-beat dash.
+// `dx/dy/phase` are static per-corner; `x/y` are recomputed each frame from current screen size.
+const BRACKET_CORNERS_BUF: { x: number; y: number; dx: number; dy: number; phase: number }[] = [
+  { x: 0, y: 0, dx:  1, dy:  1, phase: 0.0 },
+  { x: 0, y: 0, dx: -1, dy:  1, phase: 1.3 },
+  { x: 0, y: 0, dx:  1, dy: -1, phase: 2.7 },
+  { x: 0, y: 0, dx: -1, dy: -1, phase: 4.1 },
+]
+const BRACKET_OFFS_BUF: { sx: number; sy: number }[] = [
+  { sx: 0, sy: 0 }, { sx: 0, sy: 0 }, { sx: 0, sy: 0 }, { sx: 0, sy: 0 },
+]
+// Heal pulse — set whenever the player's HP increases, decays over HEAL_PULSE_DURATION so the
+// gold heal halo stays visible long after the displayHp catch-up finishes. healPulseAmount
+// tracks the SIZE of the heal so the halo intensity scales — a 1 HP heal is subtle, a 5 HP
+// heal is the full bloom.
+let lastSeenPlayerHp = -1
+let healPulseRemain = 0
+let healPulseAmount = 0
+const HEAL_PULSE_DURATION = 0.55
 
 // Ice embers — cool-color sparks that burst outward from the board rim when an on-beat dash
 // registers. Contrasts the warm gold vignette (temperature split) and decelerates as it flies
@@ -1396,15 +1471,18 @@ function tickAndDrawEmbers(dt: number): void {
       coreR = 255; coreG = 150; coreB = 210
       glowR = 230; glowG = 50;  glowB = 170
     }
+    // Cached glow sprite for the halo — was allocating a fresh CanvasGradient per ember per
+    // frame (up to 140 allocations/frame at peak). Now just `drawImage` of a pre-rendered
+    // sprite keyed by tier color. globalAlpha controls per-ember intensity. Visual matches
+    // the old gradient closely; only 3 distinct sprites get cached (one per tier).
     const haloR = r * 4.5
-    const gGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, haloR)
-    gGrad.addColorStop(0, `rgba(${glowR}, ${glowG}, ${glowB}, ${0.45 * alpha})`)
-    gGrad.addColorStop(0.4, `rgba(${glowR}, ${glowG}, ${glowB}, ${0.18 * alpha})`)
-    gGrad.addColorStop(1, `rgba(${glowR}, ${glowG}, ${glowB}, 0)`)
-    ctx.fillStyle = gGrad
-    ctx.beginPath()
-    ctx.arc(sx, sy, haloR, 0, Math.PI * 2)
-    ctx.fill()
+    const sprite = getGlowSprite(glowR, glowG, glowB)
+    const dim = haloR * 2
+    const prevAlpha = ctx.globalAlpha
+    ctx.globalAlpha = prevAlpha * Math.min(1, alpha * 1.4)
+    ctx.drawImage(sprite, sx - dim / 2, sy - dim / 2, dim, dim)
+    ctx.globalAlpha = prevAlpha
+    // Bright core dot — kept as a solid fill (no gradient, cheap)
     ctx.fillStyle = `rgba(${coreR}, ${coreG}, ${coreB}, ${0.95 * alpha})`
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
@@ -1463,25 +1541,29 @@ function updateAndDrawBeatDashConfirm(dt: number): void {
     const isZoomedDesigner = designerZoomedOut && getPhase() === 'designer'
     const z = isZoomedDesigner ? DESIGNER_ZOOM : cameraZoom
     ctx.save()
+    // Cache vertex arrays for shapes that need them, so the rim-stroke pass below can reuse
+    // them instead of calling getHexVertices/getCrossVertices a second time.
+    const shape = getArenaShape()
+    let cachedHexVerts: { x: number; y: number }[] | null = null
+    let cachedCrossVerts: { x: number; y: number }[] | null = null
     // Build the clip path: outer rect (full screen) + inner shape (arena). With evenodd fill
     // rule on the clip, the area INSIDE the arena is excluded — only the outside gets painted.
     ctx.beginPath()
     ctx.rect(0, 0, width, height)
-    const shape = getArenaShape()
     if (shape === 'circle') {
       ctx.arc((ARENA_CX - camX) * z, (ARENA_CY - camY) * z, ARENA_RADIUS * z, 0, Math.PI * 2)
     } else if (shape === 'hex') {
-      const verts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
-      ctx.moveTo((verts[0]!.x - camX) * z, (verts[0]!.y - camY) * z)
-      for (let i = 1; i < verts.length; i++) {
-        ctx.lineTo((verts[i]!.x - camX) * z, (verts[i]!.y - camY) * z)
+      cachedHexVerts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
+      ctx.moveTo((cachedHexVerts[0]!.x - camX) * z, (cachedHexVerts[0]!.y - camY) * z)
+      for (let i = 1; i < cachedHexVerts.length; i++) {
+        ctx.lineTo((cachedHexVerts[i]!.x - camX) * z, (cachedHexVerts[i]!.y - camY) * z)
       }
       ctx.closePath()
     } else if (shape === 'cross') {
-      const verts = getCrossVertices(ARENA_CX, ARENA_CY)
-      ctx.moveTo((verts[0]!.x - camX) * z, (verts[0]!.y - camY) * z)
-      for (let i = 1; i < verts.length; i++) {
-        ctx.lineTo((verts[i]!.x - camX) * z, (verts[i]!.y - camY) * z)
+      cachedCrossVerts = getCrossVertices(ARENA_CX, ARENA_CY)
+      ctx.moveTo((cachedCrossVerts[0]!.x - camX) * z, (cachedCrossVerts[0]!.y - camY) * z)
+      for (let i = 1; i < cachedCrossVerts.length; i++) {
+        ctx.lineTo((cachedCrossVerts[i]!.x - camX) * z, (cachedCrossVerts[i]!.y - camY) * z)
       }
       ctx.closePath()
     } else if (shape === 'pill') {
@@ -1523,14 +1605,14 @@ function updateAndDrawBeatDashConfirm(dt: number): void {
     if (shape === 'circle') {
       ctx.arc((ARENA_CX - camX) * z, (ARENA_CY - camY) * z, ARENA_RADIUS * z, 0, Math.PI * 2)
     } else if (shape === 'hex') {
-      const verts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
+      const verts = cachedHexVerts ?? getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
       ctx.moveTo((verts[0]!.x - camX) * z, (verts[0]!.y - camY) * z)
       for (let i = 1; i < verts.length; i++) {
         ctx.lineTo((verts[i]!.x - camX) * z, (verts[i]!.y - camY) * z)
       }
       ctx.closePath()
     } else if (shape === 'cross') {
-      const verts = getCrossVertices(ARENA_CX, ARENA_CY)
+      const verts = cachedCrossVerts ?? getCrossVertices(ARENA_CX, ARENA_CY)
       ctx.moveTo((verts[0]!.x - camX) * z, (verts[0]!.y - camY) * z)
       for (let i = 1; i < verts.length; i++) {
         ctx.lineTo((verts[i]!.x - camX) * z, (verts[i]!.y - camY) * z)
@@ -1572,12 +1654,13 @@ function updateAndDrawBeatDashConfirm(dt: number): void {
     const armLen = 72 + (1 - env) * 16                                 // 2× bigger — arms reach further into the screen
     const baseW = 12 + env * 5                                         // 2× thicker base
     ctx.lineCap = 'round'
-    const corners = [
-      { x: margin,         y: margin,         dx:  1, dy:  1, phase: 0.0 },   // top-left
-      { x: width - margin, y: margin,         dx: -1, dy:  1, phase: 1.3 },   // top-right
-      { x: margin,         y: height - margin, dx:  1, dy: -1, phase: 2.7 },   // bottom-left
-      { x: width - margin, y: height - margin, dx: -1, dy: -1, phase: 4.1 },   // bottom-right
-    ]
+    // Per-frame static corner data — reuses BRACKET_CORNERS_BUF (module-level) so we don't
+    // allocate 4 fresh object literals every frame for the lifetime of every confirm flash.
+    BRACKET_CORNERS_BUF[0]!.x = margin;         BRACKET_CORNERS_BUF[0]!.y = margin
+    BRACKET_CORNERS_BUF[1]!.x = width - margin; BRACKET_CORNERS_BUF[1]!.y = margin
+    BRACKET_CORNERS_BUF[2]!.x = margin;         BRACKET_CORNERS_BUF[2]!.y = height - margin
+    BRACKET_CORNERS_BUF[3]!.x = width - margin; BRACKET_CORNERS_BUF[3]!.y = height - margin
+    const corners = BRACKET_CORNERS_BUF
     // ── Shake math ──
     // shakePhase: ~12Hz oscillation driver. Calmer than before so the rumble reads as polish,
     // not chaos. progress×30 over 0.6s gives ~4.8 full cycles.
@@ -1589,81 +1672,56 @@ function updateAndDrawBeatDashConfirm(dt: number): void {
     // 9px kick (down from 14px) — still feels like a hit without being a jolt.
     const punchT = Math.max(0, 1 - progress / 0.10)
     const punchOut = Math.pow(punchT, 1.8) * 9
-    // Per-corner computed shake offsets (sin rumble + tiny random spice + outward punch)
-    const offs = corners.map((c) => {
-      const sx = Math.cos(shakePhase + c.phase) * shakeAmp
-              + Math.cos(shakePhase * 2.3 + c.phase * 1.7) * shakeAmp * 0.25
-              + (Math.random() - 0.5) * shakeAmp * 0.25
-              - c.dx * punchOut
-      const sy = Math.sin(shakePhase * 1.3 + c.phase * 1.4) * shakeAmp
-              + Math.sin(shakePhase * 2.1 + c.phase) * shakeAmp * 0.25
-              + (Math.random() - 0.5) * shakeAmp * 0.25
-              - c.dy * punchOut
-      return { sx, sy }
-    })
+    // Per-corner computed shake offsets — writes into BRACKET_OFFS_BUF (module-level) instead
+    // of allocating a fresh array via .map() each frame.
+    for (let i = 0; i < corners.length; i++) {
+      const c = corners[i]!
+      const off = BRACKET_OFFS_BUF[i]!
+      off.sx = Math.cos(shakePhase + c.phase) * shakeAmp
+             + Math.cos(shakePhase * 2.3 + c.phase * 1.7) * shakeAmp * 0.25
+             + (Math.random() - 0.5) * shakeAmp * 0.25
+             - c.dx * punchOut
+      off.sy = Math.sin(shakePhase * 1.3 + c.phase * 1.4) * shakeAmp
+             + Math.sin(shakePhase * 2.1 + c.phase) * shakeAmp * 0.25
+             + (Math.random() - 0.5) * shakeAmp * 0.25
+             - c.dy * punchOut
+    }
+    const offs = BRACKET_OFFS_BUF
+
+    // Build the bracket geometry ONCE (4 corners × 2 arms = 8 line subpaths), then stroke 5
+    // times with different styles. Canvas2D persists the current path between draw calls,
+    // saving 4× per-pass overhead (4 beginPath/moveTo/lineTo iterations per pass × 5 passes
+    // collapses to 1 path setup + 5 strokes).
+    ctx.beginPath()
+    for (let i = 0; i < corners.length; i++) {
+      const c = corners[i]!, o = offs[i]!
+      const cx = c.x + o.sx, cy = c.y + o.sy
+      ctx.moveTo(cx, cy); ctx.lineTo(cx + c.dx * armLen, cy)
+      ctx.moveTo(cx, cy); ctx.lineTo(cx, cy + c.dy * armLen)
+    }
 
     // Pass 1a — ice-blue outermost glow (wide, soft). Cold cyan halo contrasts the warm gold
     // vignette behind it — temperature split reads as "the world chilled around the impact."
     ctx.strokeStyle = `rgba(120, 200, 255, ${env * 0.18})`
     ctx.lineWidth = baseW * 3.6
-    for (let i = 0; i < corners.length; i++) {
-      const c = corners[i]!, o = offs[i]!
-      const cx = c.x + o.sx, cy = c.y + o.sy
-      ctx.beginPath()
-      ctx.moveTo(cx, cy); ctx.lineTo(cx + c.dx * armLen, cy)
-      ctx.moveTo(cx, cy); ctx.lineTo(cx, cy + c.dy * armLen)
-      ctx.stroke()
-    }
+    ctx.stroke()
     // Pass 1b — ice mid halo (slightly more saturated cyan)
     ctx.strokeStyle = `rgba(90, 180, 245, ${env * 0.45})`
     ctx.lineWidth = baseW * 2.2
-    for (let i = 0; i < corners.length; i++) {
-      const c = corners[i]!, o = offs[i]!
-      const cx = c.x + o.sx, cy = c.y + o.sy
-      ctx.beginPath()
-      ctx.moveTo(cx, cy); ctx.lineTo(cx + c.dx * armLen, cy)
-      ctx.moveTo(cx, cy); ctx.lineTo(cx, cy + c.dy * armLen)
-      ctx.stroke()
-    }
-
-    // Pass 1c — pink accent stripe between the cyan halo and the white core. Thin enough to
-    // ride visibly on top of the cyan without dominating; with additive 'lighter' the overlap
-    // with cyan blends toward a soft lavender-cool-pink, giving the bracket a richer
-    // temperature gradient. Saturated hot pink keeps the warm note pulling.
+    ctx.stroke()
+    // Pass 1c — pink accent stripe between the cyan halo and the white core. With additive
+    // 'lighter' the overlap with cyan blends toward a soft lavender-cool-pink.
     ctx.strokeStyle = `rgba(255, 90, 200, ${env * 0.72})`
     ctx.lineWidth = baseW * 1.65
-    for (let i = 0; i < corners.length; i++) {
-      const c = corners[i]!, o = offs[i]!
-      const cx = c.x + o.sx, cy = c.y + o.sy
-      ctx.beginPath()
-      ctx.moveTo(cx, cy); ctx.lineTo(cx + c.dx * armLen, cy)
-      ctx.moveTo(cx, cy); ctx.lineTo(cx, cy + c.dy * armLen)
-      ctx.stroke()
-    }
-
+    ctx.stroke()
     // Pass 2 — cool-white core stroke (near-white with a faint blue tint)
     ctx.strokeStyle = `rgba(220, 240, 255, ${env * 0.95})`
     ctx.lineWidth = baseW
-    for (let i = 0; i < corners.length; i++) {
-      const c = corners[i]!, o = offs[i]!
-      const cx = c.x + o.sx, cy = c.y + o.sy
-      ctx.beginPath()
-      ctx.moveTo(cx, cy); ctx.lineTo(cx + c.dx * armLen, cy)
-      ctx.moveTo(cx, cy); ctx.lineTo(cx, cy + c.dy * armLen)
-      ctx.stroke()
-    }
-
+    ctx.stroke()
     // Pass 3 — pure white inner streak
     ctx.strokeStyle = `rgba(255, 255, 255, ${env * 0.9})`
     ctx.lineWidth = Math.max(1.5, baseW * 0.45)
-    for (let i = 0; i < corners.length; i++) {
-      const c = corners[i]!, o = offs[i]!
-      const cx = c.x + o.sx, cy = c.y + o.sy
-      ctx.beginPath()
-      ctx.moveTo(cx, cy); ctx.lineTo(cx + c.dx * armLen, cy)
-      ctx.moveTo(cx, cy); ctx.lineTo(cx, cy + c.dy * armLen)
-      ctx.stroke()
-    }
+    ctx.stroke()
     ctx.lineCap = 'butt'
   }
 
@@ -1738,6 +1796,11 @@ function updateAndDrawLightningBursts(dt: number): void {
 function updateAndDrawDashShots(dt: number): void {
   if (dashShotVizList.length === 0) return
   const simActive = getPhase() === 'playing' || getPhase() === 'designer'
+  // Time-based pulses hoisted OUT of the per-particle loop — they're identical for all
+  // particles in a single frame, so we save N×2 performance.now() + Math.sin calls per frame.
+  const _frameNow = performance.now()
+  const _dashShotSlowPulse = 0.85 + 0.15 * Math.sin(_frameNow / 110)
+  const _dashShotFastPulse = 0.85 + 0.15 * Math.sin(_frameNow / 55)
   for (let i = dashShotVizList.length - 1; i >= 0; i--) {
     const p = dashShotVizList[i]!
     if (simActive) {
@@ -1768,9 +1831,8 @@ function updateAndDrawDashShots(dt: number): void {
     // Palette — gold for the standalone Bolt, cyan when Reverb is also active so the projectile
     // reads as Reverb's same lightning vocabulary. Only the "warm" gold layers swap; the
     // electric blue-white arcs and the lance were already on the cool side and stay as-is.
-    const pal = p.reverbMode
-      ? { bright: '215, 245, 255', mid: '130, 220, 255', deep: '60, 180, 255', accent: '64, 200, 255', core: '245, 255, 255', trail: '180, 240, 255', trailFade: '120, 215, 255' }
-      : { bright: '255, 240, 180', mid: '255, 220, 130', deep: '255, 180, 60', accent: '255, 215, 64', core: '255, 255, 245', trail: '255, 240, 180', trailFade: '255, 220, 120' }
+    // (palettes are module-level constants — see DASH_SHOT_PAL_* below — so no per-frame alloc)
+    const pal = p.reverbMode ? DASH_SHOT_PAL_REVERB : DASH_SHOT_PAL_GOLD
 
     // Aftershock + Bolt — first beat the projectile is dressed as a moving aftershock pie
     // (orange/red ticking wedge), then crossfades into the full bolt visual around t = BEAT_SEC.
@@ -1856,9 +1918,8 @@ function updateAndDrawDashShots(dt: number): void {
     ctx.lineCap = 'butt'
 
     // Outer aura halo — soft radial glow, gently breathing. Palette-aware so Reverb mode shows
-    // a cool cyan glow instead of warm gold.
-    const slowPulse = 0.85 + 0.15 * Math.sin(performance.now() / 110)
-    const haloR = ballR * 2.8 * slowPulse
+    // a cool cyan glow instead of warm gold. (slowPulse hoisted to function top — same for all particles)
+    const haloR = ballR * 2.8 * _dashShotSlowPulse
     const haloGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, haloR)
     haloGrad.addColorStop(0, `rgba(${pal.mid}, ${0.28 + late * 0.18})`)
     haloGrad.addColorStop(0.55, `rgba(${pal.deep}, ${0.12 + late * 0.1})`)
@@ -1916,8 +1977,8 @@ function updateAndDrawDashShots(dt: number): void {
     ctx.fill()
 
     // White-hot core — small ultra-bright orb, fast pulse. (cool-white tint in Reverb mode)
-    const fastPulse = 0.85 + 0.15 * Math.sin(performance.now() / 55)
-    const coreR = (5 + late * 4) * fastPulse
+    // (fastPulse hoisted to function top — identical across all particles in a frame)
+    const coreR = (5 + late * 4) * _dashShotFastPulse
     ctx.fillStyle = `rgba(${pal.core}, 0.95)`
     ctx.beginPath()
     ctx.arc(sx, sy, coreR, 0, Math.PI * 2)
@@ -2488,9 +2549,12 @@ function drawWalls(): void {
     pillar: boolean
     arc: { cx: number; cy: number; r: number; aA: number; aB: number; antiClockwise: boolean } | null
     visScale: number
-    springFireT: number   // 0..1 — color-flash intensity, 1 on fire frame, decays across pulse
+    springFireT: number
   }
-  const drawList: WallDraw[] = []
+  // Reuse the module-level drawList buffer — grown lazily, never freed. Avoids allocating
+  // a fresh array + N entries every frame when many walls exist.
+  WALL_DRAW_LIST.length = 0
+  const drawList = WALL_DRAW_LIST as WallDraw[]
   const beatPosForSpring = getAbsoluteBeats()
   for (const w of walls) {
     const ax = w.ax - camX, ay = w.ay - camY
@@ -3544,10 +3608,78 @@ function updateParticles(dt: number): void {
   for (let i = particles.length - 1; i >= 0; i--) {
     const p = particles[i]!
     p.life += dt / p.lifetime
+    // Spawn delay — life starts negative for staggered particles. While life < 0 the particle
+    // sits dormant (no motion, not drawn). It also doesn't track its parent in this state so
+    // when it "wakes up" it appears at the parent's then-current position.
+    if (p.life < 0) {
+      if (p.parent) {
+        p.lastParentX = p.parent.x
+        p.lastParentY = p.parent.y
+        // Translate spawn position with parent so the dormant particle stays at its relative offset
+        // (using parent delta still — same as active particles — but skip everything else).
+        // Already at relative offset since we updated lastParentX/Y; recompute world pos:
+        // (deferred — when life crosses 0, x/y becomes parent.x + offset which we stored implicitly)
+      }
+      continue
+    }
+    // Parent attachment — shift position by parent's per-frame delta so the particle travels
+    // with the entity. Read the delta from lastParentX/Y (stored per-particle) so we get the
+    // true movement since the LAST particle update, independent of render/sim order.
+    if (p.parent) {
+      const dx = p.parent.x - p.lastParentX
+      const dy = p.parent.y - p.lastParentY
+      p.x += dx
+      p.y += dy
+      p.lastParentX = p.parent.x
+      p.lastParentY = p.parent.y
+    }
     p.x += p.vx * dt
     p.y += p.vy * dt
     p.vx *= 0.98
     p.vy *= 0.98
+    // Orbit-on-ring mode — keep particle on the ring's circumference. After velocity moves it
+    // off the circle, project (mostly) back onto the orbit radius and reorient velocity to
+    // tangent at the new position. blend < 1 leaves a TINY straight-tangent drift each frame
+    // — particles look like they're racing the ring with a hint of "off-course" threat,
+    // rather than locked perfectly to the curve.
+    if (p.orbitR > 0) {
+      const dx = p.x - p.orbitCx
+      const dy = p.y - p.orbitCy
+      const distSq = dx * dx + dy * dy
+      // Square-distance check avoids one Math.sqrt when far from origin and the particle is
+      // obviously off-orbit. Threshold 0.0001 = (0.01)².
+      if (distSq > 0.0001) {
+        const dist = Math.sqrt(distSq)
+        p.orbitR = Math.max(0, p.orbitR - 35 * dt)
+        const r = p.orbitR
+        const ux = dx / dist
+        const uy = dy / dist
+        // Partial pull-back — 85% of the per-frame tangent drift gets corrected, leaving
+        // 15% to accumulate as a slight outward straight-line departure (the "threat tail").
+        const blend = 0.83
+        const tgtX = p.orbitCx + ux * r
+        const tgtY = p.orbitCy + uy * r
+        p.x = p.x * (1 - blend) + tgtX * blend
+        p.y = p.y * (1 - blend) + tgtY * blend
+        // Reorient velocity tangent to the NEW position. Use squared-magnitude reciprocal-sqrt
+        // pattern to combine two Math.sqrt calls into one when both unit-radial and speed are
+        // needed.
+        const ndx = p.x - p.orbitCx
+        const ndy = p.y - p.orbitCy
+        const nDistSq = ndx * ndx + ndy * ndy
+        if (nDistSq > 0.0001) {
+          const nDist = Math.sqrt(nDistSq)
+          const speed = Math.sqrt(p.vx * p.vx + p.vy * p.vy)
+          const nux = ndx / nDist
+          const nuy = ndy / nDist
+          const tx = -nuy
+          const ty = nux
+          const sign = (p.vx * tx + p.vy * ty) >= 0 ? 1 : -1
+          p.vx = sign * tx * speed
+          p.vy = sign * ty * speed
+        }
+      }
+    }
     // Spinning particles spiral + rise like embers
     if (p.spinRate) {
       const fade = p.life  // 0→1 over lifetime
@@ -3604,8 +3736,15 @@ function getGlowSprite(r: number, g: number, b: number): HTMLCanvasElement {
   return s
 }
 
-function drawParticles(): void {
+function drawParticles(layer: 'below' | 'above' | 'all' = 'all'): void {
   for (const p of particles) {
+    // Dormant particles (life < 0 due to spawn delay) — skip until they "wake up"
+    if (p.life < 0) continue
+    if (layer !== 'all') {
+      const isOrbit = p.orbitR > 0
+      if (layer === 'above' && !isOrbit) continue
+      if (layer === 'below' && isOrbit) continue
+    }
     const t = 1 - p.life
     // bright early, sine ease-out tail (smoother than linear)
     const alpha = Math.sin(Math.min(1, t * 1.6) * Math.PI * 0.5)
@@ -3625,9 +3764,12 @@ function drawParticles(): void {
     }
     let tintBlend = 0
     if (p.tintR >= 0) {
-      // Color tint — 0.1s delay then fast blend toward target (red or gold for ring explosions)
-      const delay = 0.1 / p.lifetime
-      tintBlend = Math.min(1, Math.max(0, p.life - delay) * 3.3)
+      // Color tint — 0.1s delay then fast blend toward target (red or gold for ring explosions).
+      // tintLate option pushes the shift into the LAST ~30% of life so particles keep their hot
+      // starting color most of their flight and only cool right before dissolving.
+      const delay = p.tintLate ? 0.85 : 0.1 / p.lifetime
+      const ramp = p.tintLate ? 5.0 : 3.3
+      tintBlend = Math.min(1, Math.max(0, p.life - delay) * ramp)
       dr = Math.round(p.r + (p.tintR - p.r) * tintBlend)
       dg = Math.round(p.g + (p.tintG - p.g) * tintBlend)
       db = Math.round(p.b + (p.tintB - p.b) * tintBlend)
@@ -3653,7 +3795,9 @@ function drawParticles(): void {
     if (speed > 60) {
       const angle = Math.atan2(p.vy, p.vx)
       ctx.rotate(angle)
-      const stretch = Math.min(speed / 80, 3)
+      // Orbit shards get a higher stretch cap so they read as long cutting streaks at high speed
+      const stretchCap = p.orbitR > 0 ? 5 : 3
+      const stretch = Math.min(speed / 80, stretchCap)
       const hw = hs * stretch * 2.25
       const hh = hs * 1.05
       ctx.beginPath()
@@ -3951,7 +4095,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   for (const enemy of enemies) {
     if (!enemy.alive || enemy.dying) continue
     for (const rs of enemy.rings) {
-      const ringRadius = rs.ring.radius * getRingExpansion(rs.attackTimer)
+      const ringRadius = rs.ring.radius * getRingExpansion(rs.attackTimer, rs.expandTime)
       if (ringRadius > 1) {
         blockedArcsCache.set(enemy, getBlockedArcs(enemy.x, enemy.y, ringRadius, allEnemies, enemy))
         break  // only need arcs once per enemy, not per ring
@@ -4177,7 +4321,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfEnd('orbs')
 
   perfStart('particles')
-  drawParticles()
+  drawParticles('below')   // everything except orbit ring shards
   perfEnd('particles')
 
   ctx.restore()
@@ -4196,13 +4340,16 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     const t = beatDashFlash / 0.444  // 1→0
     const bsx = beatDashX - camX
     const bsy = beatDashY - camY
-    // White area flash — exact hitbox size, brighter initial
-    const whiteAlpha = t > 0.7 ? t * 0.3 : t * t * 0.15
+    // ── Hitbox-radius arc — built ONCE and reused for 4 fills/strokes (white flash, red fill,
+    // red danger edge, cyan border). Canvas2D persists the current path across draw calls,
+    // so we save 3 beginPath/arc tessellations per frame. Style is swapped between draws.
     ctx.beginPath()
     ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
+    // (1) White area flash
+    const whiteAlpha = t > 0.7 ? t * 0.3 : t * t * 0.15
     ctx.fillStyle = `rgba(255, 255, 255, ${whiteAlpha})`
     ctx.fill()
-    // Total-area gold glow flash — extends slightly past the hitbox edge
+    // Total-area gold glow flash — its OWN path (different radius=glowR), so it's separated
     {
       const glowR = beatDashRadius * 1.5
       const grad = ctx.createRadialGradient(bsx, bsy, 0, bsx, bsy, glowR)
@@ -4218,12 +4365,13 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       ctx.fill()
       ctx.globalCompositeOperation = prevComp
     }
-    // Red danger fill — slightly stronger so the damage zone reads as DANGER clearly
+    // (2) Red danger fill, (3) Red danger edge stroke, (4) Cyan border stroke — all share
+    // the SAME hitbox-radius arc. Rebuild the path once and chain styles.
     ctx.beginPath()
     ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
     ctx.fillStyle = `rgba(255, 45, 45, ${t * t * 0.56})`
     ctx.fill()
-    // Gold shockwave expanding to fill attack range
+    // Gold shockwave expanding to fill attack range — its own path (different radius=shockR)
     const shockExpand = Math.min((1 - t) * 3, 1)
     const shockR = beatDashRadius * shockExpand
     if (shockR > 2) {
@@ -4234,16 +4382,15 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       ctx.strokeStyle = `rgba(255, 200, 40, ${t * t * 0.6})`
       ctx.lineWidth = 5 * t
       ctx.stroke()
+      // Rebuild hitbox-radius path for the remaining red/cyan strokes (current path is now shockR)
+      ctx.beginPath()
+      ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
     }
     // Red danger edge — thicker outline so the boundary of the AOE is unmistakable
-    ctx.beginPath()
-    ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
     ctx.strokeStyle = `rgba(255, 60, 60, ${t * 0.88})`
     ctx.lineWidth = 5 * t + 3
     ctx.stroke()
-    // Cyan border
-    ctx.beginPath()
-    ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
+    // Cyan border — reuses same arc path
     ctx.strokeStyle = `rgba(0, 255, 255, ${t * 0.12})`
     ctx.lineWidth = 8 * t
     ctx.stroke()
@@ -4312,15 +4459,14 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       const ptSmooth = Math.pow(pt, 0.7)
       const rAlpha = ptSmooth * env
       if (rAlpha <= 0.005) continue
-      // Two-layer ring for a cooler glow: a WIDE soft cyan halo + a thin brighter near-white
-      // core riding on top. Both line widths now multiply by ptSmooth so they taper fully.
+      // Two-layer ring — wide soft cyan halo + thin brighter core. Same path reused (no extra
+      // beginPath/arc for the 2nd stroke — Canvas2D persists the path between draw calls,
+      // saving an arc tessellation per ring per frame).
       ctx.beginPath()
       ctx.arc(psx, psy, ringR, 0, Math.PI * 2)
       ctx.strokeStyle = `rgba(70, 195, 255, ${rAlpha * 0.5})`
       ctx.lineWidth = (14 * env + 2) * ptSmooth
       ctx.stroke()
-      ctx.beginPath()
-      ctx.arc(psx, psy, ringR, 0, Math.PI * 2)
       ctx.strokeStyle = `rgba(190, 240, 255, ${rAlpha * 0.85})`
       ctx.lineWidth = (3 * env + 1) * ptSmooth
       ctx.stroke()
@@ -4331,6 +4477,11 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfStart('player')
   drawPlayer(player)
   perfEnd('player')
+
+  // Above-player pass for orbit ring shards — when the player is standing at the ring center,
+  // these draw ON TOP of the player so the hit/cut clearly reads. Other particles already
+  // drew below the player above so the player stays visually layered above ambient effects.
+  drawParticles('above')
 
   // Bolt (Dash-shot) projectiles — ball lightning + lance + muzzle. Drawn AFTER the player so
   // the discharge orb and connecting arc visually stack ON TOP of the player at spawn moment,
@@ -4986,7 +5137,7 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   const baseAlpha = 0.12 + 0.68 * buildup * buildup
   const alpha = attackTimer <= expandTime ? baseAlpha
     : (attackTimer < expandTime + 0.05 ? baseAlpha * (1 - (attackTimer - expandTime) / 0.05) : 0)
-  const lineW = 1.5 + 2.5 * buildup
+  const lineW = 1.3 + 2.2 * buildup
   // Red ring visible from peak for a short fade-out
   const pastPeak = attackTimer - expandTime
   const showRedRing = pastPeak >= 0 && pastPeak < 0.2
@@ -5006,7 +5157,7 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   // Explosion at peak — white-hot sparks racing along the ring circumference
   if (!isFrozenDeath && showRedRing && pastPeak < lastDt * 2 && particles.length < MAX_PARTICLES - 20) {
     const ringScale = Math.max(1, currentRadius / 140)
-    const totalCount = Math.round(21 * ringScale)
+    const totalCount = Math.round(8 * ringScale)
     const angleOffset = Math.random() * Math.PI * 2
     for (let i = 0; i < totalCount; i++) {
       const angle = angleOffset + (i / totalCount) * Math.PI * 2 + (Math.random() - 0.5) * (Math.PI * 2 / totalCount) * 0.3
@@ -5022,31 +5173,37 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
       }
       const px = worldX + Math.cos(angle) * currentRadius
       const py = worldY + Math.sin(angle) * currentRadius
-      // Tangential velocity — races along the ring
+      // Tangential velocity — races along the ring. With orbit mode (set below) the velocity
+      // gets reoriented tangent at the new position each frame, so the particle FOLLOWS the
+      // ring's curve instead of departing on a straight tangent line.
       const dir = i % 2 === 0 ? 1 : -1  // alternating CW/CCW
       const tangentAngle = angle + (Math.PI / 2) * dir
-      const tangentSpeed = 240 + Math.random() * 360
-      // Slight inward pull
-      const inwardSpeed = -(40 + Math.random() * 40)
-      const vx = Math.cos(tangentAngle) * tangentSpeed + Math.cos(angle) * inwardSpeed
-      const vy = Math.sin(tangentAngle) * tangentSpeed + Math.sin(angle) * inwardSpeed
+      const tangentSpeed = 1130 + Math.random() * 380  // 30% faster — sparse, fast, dramatic
+      const vx = Math.cos(tangentAngle) * tangentSpeed
+      const vy = Math.sin(tangentAngle) * tangentSpeed
       const isRed = i % 10 === 0
       const isWhite = !isRed && i % 4 === 0
-      const lt = 0.16 + Math.random() * 0.12  // short life — punchy
-      const sz = (isWhite ? 7.7 : 6.5) * (0.9 + Math.random() * 0.3)
+      const lt = 0.22 + Math.random() * 0.10  // 0.22–0.32s — tightened so the earliest don't die too soon
+      // Size scales with ring size — anchored to the player ring (MAX_RING_RADIUS = 180).
+      // Smaller rings get smaller shards, bigger rings get bigger shards. Capped at R=250
+      // so anything larger doesn't keep scaling — shards plateau at ~sqrt(250/180)=1.18×.
+      const sizeScale = Math.sqrt(Math.min(currentRadius, 250) / 180)
+      const sz = (isWhite ? 15.25 : 12.87) * sizeScale * (0.9 + Math.random() * 0.3)
       const pr = isRed ? 255 : isWhite ? 255 : Math.min(255, ri + 100)
       const pg = isRed ? 60 + Math.floor(Math.random() * 40) : isWhite ? 255 : Math.min(255, gi + 60)
       const pb = isRed ? 50 + Math.floor(Math.random() * 30) : isWhite ? 255 : Math.min(255, bi + 60)
-      // Tint target drives BOTH the color blend AND the glow halo color.
-      // Player ring particles tint to red or gold (sweep-dash combo).
-      // Enemy ring particles tint to their own color (no visible shift, but glow still fires).
       const isPlayerRing = ring.owner === 'player'
       const tintGold = Math.random() < 0.5
       let tR: number, tG: number, tB: number
-      if (isRed) { tR = -1; tG = 0; tB = 0 }   // already pure red, skip
+      if (isRed) { tR = -1; tG = 0; tB = 0 }
       else if (isPlayerRing) { tR = 255; tG = tintGold ? 200 : 50; tB = tintGold ? 60 : 50 }
-      else { tR = pr; tG = pg; tB = pb }   // enemy: glow only, no color shift
-      spawnParticle(px, py, vx, vy, pr, pg, pb, lt, sz, 0, tR, tG, tB)
+      else { tR = pr; tG = pg; tB = pb }
+      // Minor random radius offset — ±2% normally, but capped at ±4px absolute (the spread
+      // at R=200) so bigger rings don't get a thick fuzzy hitbox edge. Same proportional
+      // shimmer below R=200, tightens automatically as rings grow past that.
+      const absVariance = Math.min(currentRadius * 0.02, 4)
+      const orbitStartR = currentRadius - absVariance + Math.random() * 2 * absVariance
+      spawnParticle(px, py, vx, vy, pr, pg, pb, lt, sz, 0, tR, tG, tB, worldX, worldY, orbitStartR)
     }
   }
 
@@ -5298,6 +5455,22 @@ function drawPlayer(player: Player): void {
   const baseRadius = getBodyRadius(player)
   let sx = player.x - camX
   let sy = player.y - camY
+
+  // Heal-pulse tracking — detect HP increase from last frame, trigger the gold halo timer,
+  // and capture the heal amount so intensity scales with how much was healed.
+  if (lastSeenPlayerHp >= 0 && player.hp > lastSeenPlayerHp) {
+    const gained = player.hp - lastSeenPlayerHp
+    healPulseAmount = Math.max(healPulseAmount, gained)   // stack: keep biggest if multiple in one tick
+    healPulseRemain = HEAL_PULSE_DURATION
+  }
+  lastSeenPlayerHp = player.hp
+  if (healPulseRemain > 0) {
+    healPulseRemain -= lastDt
+    if (healPulseRemain < 0) {
+      healPulseRemain = 0
+      healPulseAmount = 0
+    }
+  }
 
   // Hit jitter
   if (player.hitFlash > 0) {
@@ -5608,41 +5781,56 @@ function drawPlayer(player: Player): void {
   const hpStart = -Math.PI / 2
   const hpEnd = hpStart + hpFraction * Math.PI * 2
 
-  // Hit particles — burst from inside the damage wedge
+  // Hit particles — burst from inside the damage wedge.
+  // Cone is always RADIAL OUTWARD FROM ENTITY CENTER through the damage wedge. No velocity
+  // offset on spawn position (which would skew the apparent origin when the player is moving
+  // or just bounced). Instead, particles are PARENTED to the player so they translate WITH
+  // the player during their lifetime — the entire burst follows the entity instead of being
+  // stranded in world space.
   if (player.hitFlash > HIT_FLASH_DURATION - 0.02 && player.shieldBreakFlash <= 0) {
-    // Player velocity estimate for blood momentum
-    const pvx = (player.x - player.prevX) / Math.max(frameDt, 0.001)
-    const pvy = (player.y - player.prevY) / Math.max(frameDt, 0.001)
-    const bloodOffPX = pvx * 0.08
-    const bloodOffPY = pvy * 0.08
     const dmgFraction = 1 / player.maxHp
     const intensity = Math.min(Math.max(dmgFraction / 0.05, 1), 3)
-    const count = Math.floor(16 * intensity)
+    const count = Math.floor(3 * intensity)
     const dmgArcStart = hpStart + actualPlayerHp * Math.PI * 2
     const dmgArcEnd = dmgArcStart + dmgFraction * Math.PI * 2
     const arcSpan = dmgArcEnd - dmgArcStart
     for (let i = 0; i < count; i++) {
       const angle = dmgArcStart + Math.random() * arcSpan
       const dist = Math.random() * drawRadius
-      const px = player.x + bloodOffPX + Math.cos(angle) * dist
-      const py = player.y + bloodOffPY + Math.sin(angle) * dist
-      const speed = (274 + Math.random() * 430) * (0.8 + intensity * 0.2)
-      const outAngle = Math.atan2(py - player.y, px - player.x)
+      const px = player.x + Math.cos(angle) * dist
+      const py = player.y + Math.sin(angle) * dist
+      const speed = (425 + Math.random() * 667) * (0.8 + intensity * 0.2)
       const spread = (Math.random() - 0.5) * speed * 0.2
-      const size = (2.4 + Math.random() * 2.4) * (0.8 + intensity * 0.2)
+      const size = (10.0 + Math.random() * 8.0) * (0.8 + intensity * 0.2)
       const isBlue = Math.random() < 0.2
-      spawnParticle(px, py,
-        Math.cos(outAngle) * speed + spread + pvx, Math.sin(outAngle) * speed + spread + pvy,
+      // Tint TARGETS = where the particle color shifts to as it ages. Cooler targets so red
+      // blood drops fade toward a dark cool blue/purple over their lifetime (like blood
+      // oxidizing/drying); blue drops fade to a deeper cooler blue. Glow halo also tints to
+      // these colors so the dying particles sit in a cool palette.
+      const tR = isBlue ? 60 : 100
+      const tG = isBlue ? 130 : 70
+      const tB = isBlue ? 210 : 175
+      // Random spawn delay (0–60ms) staggers when each drop appears so the burst rolls out
+      // over a brief window instead of all firing on a single frame.
+      const delay = Math.random() * 0.06
+      spawnParticleAttached(px, py,
+        Math.cos(angle) * speed + spread, Math.sin(angle) * speed + spread,
         isBlue ? 79 : 255, isBlue ? 195 : 60 + Math.floor(Math.random() * 45), isBlue ? 247 : 55,
-        0.31 + Math.random() * 0.22, size)
+        0.31 + Math.random() * 0.22, size,
+        tR, tG, tB,
+        player, delay, true)
     }
-    // Extra center spray — white-hot core burst
-    for (let i = 0; i < 6; i++) {
+    // Extra center spray — white-hot core burst, just one chunky drop. Tinted hot orange/peach
+    // so its glow halo reads as a bright impact flash distinct from the red/blue debris.
+    {
       const angle = dmgArcStart + Math.random() * arcSpan
-      const speed = 147 + Math.random() * 317
-      spawnParticle(player.x + bloodOffPX, player.y + bloodOffPY,
-        Math.cos(angle) * speed + pvx, Math.sin(angle) * speed + pvy,
-        255, 200 + Math.floor(Math.random() * 55), 180, 0.31 + Math.random() * 0.22, 3 + Math.random() * 2)
+      const speed = 230 + Math.random() * 495
+      spawnParticleAttached(player.x, player.y,
+        Math.cos(angle) * speed, Math.sin(angle) * speed,
+        255, 200 + Math.floor(Math.random() * 55), 180,
+        0.31 + Math.random() * 0.22, 11.0 + Math.random() * 6.0,
+        130, 100, 160,
+        player, Math.random() * 0.04, true)
     }
   }
 
@@ -5695,18 +5883,85 @@ function drawPlayer(player: Player): void {
       const bp = globalBeatPulse * 0.4
       const shielded = player.shieldCharges > 0
       const bodyGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, drawRadius)
+      // Base fill — softer middle ground between the original bright white-cyan and the over-
+      // saturated medium-blue. Bright enough to feel like glowing health, dim enough that the
+      // additive blue pulse glow can still visibly add brightness on top.
       if (shielded) {
-        bodyGrad.addColorStop(0, `rgba(255, 220, 255, ${0.6 + bp})`)
-        bodyGrad.addColorStop(0.35, `rgba(230, 170, 255, ${0.48 + bp * 0.5})`)
-        bodyGrad.addColorStop(1, `rgba(190, 120, 245, ${0.32 + bp * 0.3})`)
+        // Subtle violet tint — closer to the normal blue, just enough R to read as "shielded"
+        // without being a drastic color shift.
+        bodyGrad.addColorStop(0, `rgba(170, 200, 250, ${0.62 + bp})`)
+        bodyGrad.addColorStop(0.35, `rgba(135, 175, 240, ${0.5 + bp * 0.5})`)
+        bodyGrad.addColorStop(1, `rgba(95, 145, 220, ${0.34 + bp * 0.3})`)
       } else {
-        bodyGrad.addColorStop(0, `rgba(210, 255, 255, ${0.58 + bp})`)
-        bodyGrad.addColorStop(0.35, `rgba(80, 240, 255, ${0.45 + bp * 0.5})`)
-        bodyGrad.addColorStop(1, `rgba(40, 200, 245, ${0.28 + bp * 0.3})`)
+        bodyGrad.addColorStop(0, `rgba(140, 210, 250, ${0.62 + bp})`)
+        bodyGrad.addColorStop(0.35, `rgba(90, 180, 240, ${0.5 + bp * 0.5})`)
+        bodyGrad.addColorStop(1, `rgba(50, 150, 220, ${0.34 + bp * 0.3})`)
       }
       ctx.fillStyle = bodyGrad
     }
     ctx.fill()
+
+    // On-hit red glow — equivalent visual strength to the blood particle tint halos so the
+    // body flash reads as the same impact event as the blood. Additive 'lighter' red gradient
+    // over the wedge plus a halo extending past the body edge. Fades with hitFlash.
+    if (player.hitFlash > 0 && !isGhostDashing) {
+      const hitT = player.hitFlash / HIT_FLASH_DURATION
+      const prevComp = ctx.globalCompositeOperation
+      ctx.globalCompositeOperation = 'lighter'
+      // Inner glow over the wedge — brightens the red HP fill so it pops
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.arc(sx, sy, drawRadius, hpStart, mainEnd)
+      ctx.closePath()
+      const innerGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, drawRadius)
+      innerGrad.addColorStop(0,    `rgba(255, 100, 70, ${hitT * 0.55})`)
+      innerGrad.addColorStop(0.45, `rgba(230, 55, 35, ${hitT * 0.75})`)
+      innerGrad.addColorStop(0.80, `rgba(200, 35, 20, ${hitT * 0.30})`)
+      innerGrad.addColorStop(1,    `rgba(180, 25, 10, 0)`)
+      ctx.fillStyle = innerGrad
+      ctx.fill()
+      ctx.globalCompositeOperation = prevComp
+    }
+
+    // Pulsing glow on the HP fill — additive radial gradient layered over the WHOLE filled
+    // wedge so the health area reads as glowing/alive energy. Two pulse sources mix: a slow
+    // continuous sin "breath" + the beat-synced globalBeatPulse. Brightest at center, fades
+    // outward so the wedge appears to glow from within. Shield state shifts the color violet.
+    if (player.hitFlash <= 0 && !isGhostDashing) {
+      const slowPulse = 0.5 + 0.5 * Math.sin(performance.now() / 380)
+      const totalPulse = slowPulse * 0.45 + globalBeatPulse * 0.55
+      // Additive blue glow — works now that the base HP fill is darker/more saturated. Adds
+      // brightness on top instead of saturating channels to white. Peaks in the middle of the
+      // wedge, fades to zero at the edges (kept from before).
+      const glowA = 0.22 + totalPulse * 0.35
+      const shieldedHP = player.shieldCharges > 0
+      const prevComp = ctx.globalCompositeOperation
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.arc(sx, sy, drawRadius, hpStart, mainEnd)
+      ctx.closePath()
+      // Gradient peaks in the MIDDLE of the wedge and fades to zero before the edges so the
+      // outer arc rim and the wedge boundary don't pick up the glow. Concentrates the light
+      // inside the fill area.
+      const glowGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, drawRadius)
+      if (shieldedHP) {
+        // Subtle violet tint — slight R boost over the normal blue glow, not a full shift.
+        glowGrad.addColorStop(0,    `rgba(140, 170, 255, ${glowA * 0.55})`)
+        glowGrad.addColorStop(0.45, `rgba(110, 145, 255, ${glowA})`)
+        glowGrad.addColorStop(0.80, `rgba(80, 115, 255, ${glowA * 0.20})`)
+        glowGrad.addColorStop(1,    `rgba(70, 105, 255, 0)`)
+      } else {
+        // Saturated blue palette — was washing to white from too-high G channel at low alpha.
+        glowGrad.addColorStop(0,    `rgba(90, 180, 255, ${glowA * 0.55})`)
+        glowGrad.addColorStop(0.45, `rgba(50, 150, 255, ${glowA})`)
+        glowGrad.addColorStop(0.80, `rgba(30, 110, 255, ${glowA * 0.20})`)
+        glowGrad.addColorStop(1,    `rgba(20, 90, 255, 0)`)
+      }
+      ctx.fillStyle = glowGrad
+      ctx.fill()
+      ctx.globalCompositeOperation = prevComp
+    }
 
     // Low HP beat pulse — when HP is at 30% or less, the remaining HP wedge flashes white
     // on every beat. Uses a radial gradient (white center → faded edge) so it layers with
@@ -5727,32 +5982,76 @@ function drawPlayer(player: Player): void {
 
     // Heal juice — glowing leading edge + particles when filling
     const healGap = actualPlayerHp - hpFraction
+    // Gold heal halo — triggered by HP-increase (healPulseRemain timer), separate from the
+    // filling-tip effect. Lasts ~1.2s so it's clearly visible even after displayHp catches up.
+    if (healPulseRemain > 0) {
+      const healEnv = healPulseRemain / HEAL_PULSE_DURATION       // 1 → 0
+      // Power curve so the fade tail drops faster than linear — feels snappier instead of
+      // lingering. Still holds near full for the first ~15%.
+      const sustain = healEnv < 0.85 ? Math.pow(healEnv / 0.85, 1.6) : 1
+      // Anchor the pulse to ELAPSED time since trigger — cos(0)=1 so the halo always starts
+      // at max alpha. Slow ~1.4 Hz breath with a gentle 15% amplitude swing so it reads as
+      // smooth breathing, not flickering. Period ~0.7s.
+      const elapsed = HEAL_PULSE_DURATION - healPulseRemain
+      const fastPulse = 0.85 + 0.15 * Math.cos(elapsed * 9)
+      // Scale by heal amount — power 1.5 curve with a 20% floor so even a 1 HP heal gets a
+      // visible whisper of glow, and larger heals ramp curve-up to full bloom at 5+ HP.
+      const sizeScale = Math.max(0.20, Math.min(1, Math.pow(healPulseAmount / 5, 1.5)))
+      const baseA = sustain * fastPulse * sizeScale * 1.95
+      const prevComp = ctx.globalCompositeOperation
+      ctx.globalCompositeOperation = 'lighter'
+      // (1) Inner glow over the HP wedge — subtle gold tint on the body so the character
+      // appears to softly glow, not blast with light
+      ctx.beginPath()
+      ctx.moveTo(sx, sy)
+      ctx.arc(sx, sy, drawRadius, hpStart, mainEnd)
+      ctx.closePath()
+      const innerGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, drawRadius)
+      innerGrad.addColorStop(0,    `rgba(255, 240, 180, ${baseA * 0.30})`)
+      innerGrad.addColorStop(0.5,  `rgba(255, 215, 110, ${baseA * 0.35})`)
+      innerGrad.addColorStop(1,    `rgba(255, 180, 60, ${baseA * 0.12})`)
+      ctx.fillStyle = innerGrad
+      ctx.fill()
+      // (2) Outer halo ring extending past the body — softer reach, lower alpha
+      const haloR = drawRadius * 1.85
+      const haloGrad = ctx.createRadialGradient(sx, sy, drawRadius * 0.85, sx, sy, haloR)
+      haloGrad.addColorStop(0,    'rgba(255, 235, 150, 0)')
+      haloGrad.addColorStop(0.35, `rgba(255, 230, 150, ${baseA * 0.32})`)
+      haloGrad.addColorStop(0.55, `rgba(255, 215, 120, ${baseA * 0.42})`)
+      haloGrad.addColorStop(0.80, `rgba(255, 195, 80, ${baseA * 0.16})`)
+      haloGrad.addColorStop(1,    'rgba(255, 180, 60, 0)')
+      ctx.fillStyle = haloGrad
+      ctx.beginPath()
+      ctx.arc(sx, sy, haloR, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.globalCompositeOperation = prevComp
+    }
     if (healGap > 0.01) {
       const tipAngle = mainEnd
       const tipX = sx + Math.cos(tipAngle) * drawRadius * 0.7
       const tipY = sy + Math.sin(tipAngle) * drawRadius * 0.7
-      // Leading edge glow
+      // Leading edge glow — gold to match the heal halo palette
       const glowR = drawRadius * 0.5
       const healGlow = ctx.createRadialGradient(tipX, tipY, 0, tipX, tipY, glowR)
-      healGlow.addColorStop(0, 'rgba(100, 255, 160, 0.45)')
-      healGlow.addColorStop(1, 'rgba(100, 255, 160, 0)')
+      healGlow.addColorStop(0, 'rgba(255, 215, 120, 0.45)')
+      healGlow.addColorStop(1, 'rgba(255, 215, 120, 0)')
       ctx.beginPath()
       ctx.arc(tipX, tipY, glowR, 0, Math.PI * 2)
       ctx.fillStyle = healGlow
       ctx.fill()
-      // Bright tip dot
+      // Bright tip dot — warm white-gold
       const edgeX = sx + Math.cos(tipAngle) * drawRadius
       const edgeY = sy + Math.sin(tipAngle) * drawRadius
       ctx.beginPath()
       ctx.arc(edgeX, edgeY, 4, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(150, 255, 200, 0.9)'
+      ctx.fillStyle = 'rgba(255, 240, 180, 0.9)'
       ctx.fill()
-      // Outer glow on tip
+      // Outer glow on tip — gold
       ctx.beginPath()
       ctx.arc(edgeX, edgeY, 8, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(100, 255, 160, 0.15)'
+      ctx.fillStyle = 'rgba(255, 215, 120, 0.15)'
       ctx.fill()
-      // Heal particles — spawn from the tip
+      // Heal particles — spawn from the tip, gold-colored
       for (let hp = 0; hp < 2; hp++) {
         if (Math.random() < 0.4) {
           const pAngle = tipAngle + (Math.random() - 0.5) * 0.8
@@ -5762,7 +6061,7 @@ function drawPlayer(player: Player): void {
             player.x + Math.cos(pAngle) * pDist,
             player.y + Math.sin(pAngle) * pDist,
             Math.cos(pAngle) * speed, Math.sin(pAngle) * speed,
-            100, 255, 160, 0.2 + Math.random() * 0.15, 3.5 + Math.random() * 3)
+            255, 215, 120, 0.2 + Math.random() * 0.15, 3.5 + Math.random() * 3)
         }
       }
     }
@@ -5792,23 +6091,23 @@ function drawPlayer(player: Player): void {
         ctx.strokeStyle = isMissing
           ? shielded
             ? `rgba(255, 50, 200, ${segAlpha + 0.15})`
-            : `rgba(255, 80, 80, ${segAlpha})`
+            : `rgba(255, 255, 255, ${segAlpha + 0.18})`
           : shielded
             ? `rgba(255, 50, 200, ${segAlpha + 0.35})`
-            : `rgba(180, 230, 255, ${segAlpha * 0.6})`
+            : `rgba(255, 255, 255, ${segAlpha + 0.18})`
         ctx.lineWidth = isMissing ? (shielded ? 5 : 3) : shielded ? 6 : 4
         ctx.stroke()
-        // Core line
+        // Core line — pure white but at a softer alpha so the lines don't feel too hot
         ctx.beginPath()
         ctx.moveTo(ix, iy)
         ctx.lineTo(ox, oy)
         ctx.strokeStyle = isMissing
           ? shielded
             ? `rgba(255, 180, 255, ${segAlpha + 0.25})`
-            : `rgba(255, 150, 150, ${segAlpha + 0.1})`
+            : `rgba(255, 255, 255, ${segAlpha + 0.38})`
           : shielded
             ? `rgba(255, 180, 255, ${segAlpha + 0.5})`
-            : `rgba(230, 210, 255, ${segAlpha + 0.12})`
+            : `rgba(255, 255, 255, ${segAlpha + 0.38})`
         ctx.lineWidth = isMissing ? (shielded ? 2 : 1) : shielded ? 2.5 : 1.5
         ctx.stroke()
         // Hit flash — bright red overlay on every segment line (filled + missing).
@@ -6040,41 +6339,39 @@ function drawPlayer(player: Player): void {
     ctx.restore()
   }
 
-  // Shield break particles — explosive burst from body edge
+  // Shield break particles — matches the blood spray vocabulary (fewer chunky drops,
+  // parent-attached so they translate with the player, late tint with cool magenta target,
+  // staggered spawn delays). Pink palette instead of red because shield = pink identity.
   if (player.shieldBreakFlash > SHIELD_BREAK_FLASH - 0.02 && player.shieldBreakFlash <= SHIELD_BREAK_FLASH) {
-    // Main pink shard burst — wide spread
-    for (let i = 0; i < 28; i++) {
-      const angle = (i / 28) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
-      const px = player.x + Math.cos(angle) * drawRadius
-      const py = player.y + Math.sin(angle) * drawRadius
-      const speed = 950 + Math.random() * 700
-      spawnParticle(px, py,
-        Math.cos(angle) * speed + (Math.random() - 0.5) * 120,
-        Math.sin(angle) * speed + (Math.random() - 0.5) * 120,
-        255, 50 + Math.floor(Math.random() * 60), 200,
-        0.26 + Math.random() * 0.17, 7.5 + Math.random() * 8.75)
+    // Main pink shards — uniform spread, chunky drops like player blood (more than blood
+    // since shield break is a bigger event)
+    const shardCount = 15
+    for (let i = 0; i < shardCount; i++) {
+      const angle = (i / shardCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.5
+      const dist = Math.random() * drawRadius
+      const px = player.x + Math.cos(angle) * dist
+      const py = player.y + Math.sin(angle) * dist
+      const speed = 425 + Math.random() * 667
+      const spread = (Math.random() - 0.5) * speed * 0.2
+      const size = 10.0 + Math.random() * 8.0
+      // Cool magenta tint target so shards "cool off" right before dissolving (like blood)
+      spawnParticleAttached(px, py,
+        Math.cos(angle) * speed + spread, Math.sin(angle) * speed + spread,
+        255, 60 + Math.floor(Math.random() * 50), 215,
+        0.31 + Math.random() * 0.22, size,
+        130, 90, 200,
+        player, Math.random() * 0.06, true)
     }
-    // Hot white core sparks — fast, far
-    for (let i = 0; i < 10; i++) {
+    // Hot white-pink core sparks — chunky impact drops, like the blood center burst
+    for (let i = 0; i < 3; i++) {
       const angle = Math.random() * Math.PI * 2
-      const px = player.x + Math.cos(angle) * drawRadius * 0.5
-      const py = player.y + Math.sin(angle) * drawRadius * 0.5
-      const speed = 1050 + Math.random() * 700
-      spawnParticle(px, py,
+      const speed = 230 + Math.random() * 495
+      spawnParticleAttached(player.x, player.y,
         Math.cos(angle) * speed, Math.sin(angle) * speed,
-        255, 220, 255, 0.24 + Math.random() * 0.14, 5 + Math.random() * 3.75)
-    }
-    // Slow drifting embers — linger after the burst
-    for (let i = 0; i < 8; i++) {
-      const angle = Math.random() * Math.PI * 2
-      const dist = drawRadius * (0.5 + Math.random() * 0.5)
-      const speed = 40 + Math.random() * 80
-      spawnParticle(
-        player.x + Math.cos(angle) * dist,
-        player.y + Math.sin(angle) * dist,
-        Math.cos(angle) * speed + (Math.random() - 0.5) * 20,
-        Math.sin(angle) * speed - 20 - Math.random() * 30,
-        255, 100, 220, 0.34 + Math.random() * 0.2, 3.75 + Math.random() * 3.75)
+        255, 220, 255,
+        0.31 + Math.random() * 0.22, 11.0 + Math.random() * 6.0,
+        180, 130, 220,
+        player, Math.random() * 0.05, true)
     }
   }
 
@@ -7280,23 +7577,24 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     const damageArcStart = startAngle + (enemy.hp / enemy.maxHp) * Math.PI * 2
     const damageArcEnd = damageArcStart + damageFraction * Math.PI * 2
     const arcSpan = damageArcEnd - damageArcStart
-    // Spawn blood offset in movement direction so it stays with moving enemies
-    const bloodOffX = enemy.vx * 0.08  // ~5 frames ahead
-    const bloodOffY = enemy.vy * 0.08
-    const bloodCx = enemy.x + bloodOffX
-    const bloodCy = enemy.y + bloodOffY
+    // Particles spawn AT enemy center (no velocity offset which would skew the apparent origin
+    // during bounces/direction changes). They're parented to the enemy so the whole burst
+    // translates with the enemy during the animation — stays visually attached to the body.
     for (let i = 0; i < count; i++) {
       const angle = damageArcStart + Math.random() * arcSpan
       const dist = Math.random() * r
-      const px = bloodCx + Math.cos(angle) * dist
-      const py = bloodCy + Math.sin(angle) * dist
+      const px = enemy.x + Math.cos(angle) * dist
+      const py = enemy.y + Math.sin(angle) * dist
       const speed = (274 + Math.random() * 430) * (0.8 + intensity * 0.2)
-      const outAngle = Math.atan2(py - bloodCy, px - bloodCx)
-      const vx = Math.cos(outAngle) * speed + (Math.random() - 0.5) * speed * 0.2 + enemy.vx
-      const vy = Math.sin(outAngle) * speed + (Math.random() - 0.5) * speed * 0.2 + enemy.vy
+      const vx = Math.cos(angle) * speed + (Math.random() - 0.5) * speed * 0.2
+      const vy = Math.sin(angle) * speed + (Math.random() - 0.5) * speed * 0.2
       const sizeScale = Math.min(r / 44, 1)
       const size = (3.2 + Math.random() * 3.2) * (0.8 + intensity * 0.2) * sizeScale * sizeScale
-      spawnParticle(px, py, vx, vy, 255, 60 + Math.floor(Math.random() * 45), 55, 0.31 + Math.random() * 0.22, size)
+      spawnParticleAttached(px, py, vx, vy,
+        255, 60 + Math.floor(Math.random() * 45), 55,
+        0.31 + Math.random() * 0.22, size,
+        -1, 0, 0,
+        enemy)
     }
     // Blood spray from center — enemy colored
     const sprayCount = Math.floor(1.5 * intensity)
@@ -7305,9 +7603,12 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const speed = 118 + Math.random() * 254 * intensity
       const sizeScale2 = Math.min(r / 44, 1)
       const size = (2.8 + Math.random() * 3.2) * (0.8 + intensity * 0.2) * sizeScale2 * sizeScale2
-      spawnParticle(enemy.x + bloodOffX, enemy.y + bloodOffY,
-        Math.cos(angle) * speed + enemy.vx, Math.sin(angle) * speed + enemy.vy,
-        235 + Math.floor(Math.random() * 20), 30 + Math.floor(Math.random() * 35), 30, 0.31 + Math.random() * 0.22, size)
+      spawnParticleAttached(enemy.x, enemy.y,
+        Math.cos(angle) * speed, Math.sin(angle) * speed,
+        235 + Math.floor(Math.random() * 20), 30 + Math.floor(Math.random() * 35), 30,
+        0.31 + Math.random() * 0.22, size,
+        -1, 0, 0,
+        enemy)
     }
   }
 
@@ -9109,12 +9410,12 @@ function drawDesignerPreview(player: Player): void {
     }
 
     if (pr.attackTimer >= 0) {
-      const expansion = getRingExpansion(pr.attackTimer)
+      const expansion = getRingExpansion(pr.attackTimer, pr.expandTime)
       const currentRadius = pr.ringRadius * expansion
       if (currentRadius > 1) {
         const pExpandTime = pr.expandTime
         const buildup = Math.min(pr.attackTimer / pExpandTime, 1)
-        const alpha = getRingAlpha(pr.attackTimer, 0.3 + 0.5 * buildup)
+        const alpha = getRingAlpha(pr.attackTimer, 0.3 + 0.5 * buildup, pr.expandTime)
 
         for (const o of ringOrigins) {
           ctx.beginPath()
