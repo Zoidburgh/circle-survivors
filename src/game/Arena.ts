@@ -219,29 +219,41 @@ export function updateCamera(
   const halfW = screenW / (2 * zoom)
   const halfH = screenH / (2 * zoom)
 
+  // Per-axis bounds for the camera CENTER. When zoomed far out the viewport gets WIDER than the
+  // arena on an axis, which makes lo > hi — clampAxis then centers on the arena midpoint instead
+  // of snapping to a lopsided edge bound (the "off-center / askew" bug at near-max zoom-out).
+  let loX: number, hiX: number, loY: number, hiY: number
   if (arenaShape === 'cross') {
-    cam.x = Math.max(ARENA_CX - CROSS_HE + halfW - ARENA_BUFFER, Math.min(ARENA_CX + CROSS_HE - halfW + ARENA_BUFFER, cam.x))
-    cam.y = Math.max(ARENA_CY - CROSS_HE + halfH - ARENA_BUFFER, Math.min(ARENA_CY + CROSS_HE - halfH + ARENA_BUFFER, cam.y))
+    loX = ARENA_CX - CROSS_HE + halfW - ARENA_BUFFER; hiX = ARENA_CX + CROSS_HE - halfW + ARENA_BUFFER
+    loY = ARENA_CY - CROSS_HE + halfH - ARENA_BUFFER; hiY = ARENA_CY + CROSS_HE - halfH + ARENA_BUFFER
   } else if (arenaShape === 'pill') {
     const pillLeft = ARENA_CX - PILL_HALF_W - PILL_R
     const pillRight = ARENA_CX + PILL_HALF_W + PILL_R
     const pillTop = ARENA_CY - PILL_R
     const pillBot = ARENA_CY + PILL_R
-    cam.x = Math.max(pillLeft + halfW - ARENA_BUFFER, Math.min(pillRight - halfW + ARENA_BUFFER, cam.x))
-    cam.y = Math.max(pillTop + halfH - ARENA_BUFFER, Math.min(pillBot - halfH + ARENA_BUFFER, cam.y))
+    loX = pillLeft + halfW - ARENA_BUFFER; hiX = pillRight - halfW + ARENA_BUFFER
+    loY = pillTop + halfH - ARENA_BUFFER; hiY = pillBot - halfH + ARENA_BUFFER
   } else if (arenaShape === 'hex') {
     // Hex: width = 2R, height = R*√3 — clamp independently
     const hexHalfW = ARENA_RADIUS
     const hexHalfH = ARENA_RADIUS * Math.cos(Math.PI / 6)
-    cam.x = Math.max(ARENA_CX - hexHalfW + halfW - ARENA_BUFFER, Math.min(ARENA_CX + hexHalfW - halfW + ARENA_BUFFER, cam.x))
-    cam.y = Math.max(ARENA_CY - hexHalfH + halfH - ARENA_BUFFER, Math.min(ARENA_CY + hexHalfH - halfH + ARENA_BUFFER, cam.y))
+    loX = ARENA_CX - hexHalfW + halfW - ARENA_BUFFER; hiX = ARENA_CX + hexHalfW - halfW + ARENA_BUFFER
+    loY = ARENA_CY - hexHalfH + halfH - ARENA_BUFFER; hiY = ARENA_CY + hexHalfH - halfH + ARENA_BUFFER
   } else if (arenaShape === 'circle') {
-    cam.x = Math.max(ARENA_CX - ARENA_RADIUS + halfW - ARENA_BUFFER, Math.min(ARENA_CX + ARENA_RADIUS - halfW + ARENA_BUFFER, cam.x))
-    cam.y = Math.max(ARENA_CY - ARENA_RADIUS + halfH - ARENA_BUFFER, Math.min(ARENA_CY + ARENA_RADIUS - halfH + ARENA_BUFFER, cam.y))
+    loX = ARENA_CX - ARENA_RADIUS + halfW - ARENA_BUFFER; hiX = ARENA_CX + ARENA_RADIUS - halfW + ARENA_BUFFER
+    loY = ARENA_CY - ARENA_RADIUS + halfH - ARENA_BUFFER; hiY = ARENA_CY + ARENA_RADIUS - halfH + ARENA_BUFFER
   } else {
-    cam.x = Math.max(halfW - ARENA_BUFFER, Math.min(ARENA_W + ARENA_BUFFER - halfW, cam.x))
-    cam.y = Math.max(halfH - ARENA_BUFFER, Math.min(ARENA_H + ARENA_BUFFER - halfH, cam.y))
+    loX = halfW - ARENA_BUFFER; hiX = ARENA_W + ARENA_BUFFER - halfW
+    loY = halfH - ARENA_BUFFER; hiY = ARENA_H + ARENA_BUFFER - halfH
   }
+  cam.x = clampAxis(loX, hiX, cam.x)
+  cam.y = clampAxis(loY, hiY, cam.y)
+}
+
+// Clamp v to [lo, hi]; but if the viewport is wider than the arena (lo > hi), center on the
+// arena midpoint ((lo+hi)/2) rather than snapping to a lopsided edge.
+function clampAxis(lo: number, hi: number, v: number): number {
+  return lo <= hi ? Math.max(lo, Math.min(hi, v)) : (lo + hi) / 2
 }
 
 /** Clamp a position inside the arena */

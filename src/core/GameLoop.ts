@@ -1,4 +1,5 @@
 import { FIXED_DT } from '../utils/constants.ts'
+import { recordTickJs } from '../render/Renderer.ts'
 
 export type UpdateFn = (dt: number) => void
 export type RenderFn = (alpha: number) => void
@@ -12,6 +13,8 @@ let running = false
 function tick(timestamp: number): void {
   if (!running) return
 
+  const tickT0 = performance.now()   // measure TOTAL JS for this whole frame (all of update+render)
+
   const elapsed = Math.min(timestamp - lastTime, 100) // cap to avoid spiral of death
   lastTime = timestamp
   accumulator += elapsed
@@ -23,6 +26,9 @@ function tick(timestamp: number): void {
   }
 
   renderFn(accumulator / FIXED_DT)
+  // Total JS time for the frame. Everything not in here (FRAME_REAL - TICK_JS) is GPU paint +
+  // compositing + vsync — not on the JS thread, so unmeasurable here by design.
+  recordTickJs(performance.now() - tickT0)
   requestAnimationFrame(tick)
 }
 

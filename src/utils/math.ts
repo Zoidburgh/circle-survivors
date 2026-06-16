@@ -59,3 +59,28 @@ export function complementColor(r: number, g: number, b: number): [number, numbe
   }
   return [Math.round(nr * 255), Math.round(ng * 255), Math.round(nb * 255)]
 }
+
+// Staccato motion — returns the fraction (0..1) of a bullet's flight it should have covered by
+// `curBeat`, given the absolute beat it was released (`fireBeat`) and how many beat-aligned hops
+// the flight is divided into (`hops`). Frozen between global beats; snaps forward over the last
+// ~18% of each beat (smoothstep) so it ARRIVES on the beat. Reaches 1 at the detonation beat
+// (clamped), preserving the "lands on the beat" invariant. Sim + viz both call this with the same
+// global beat → identical hops with zero data passing. Hardcoded internals (no exposed tunables).
+// Delay the hop grid a hair so the SNAP lands ON the beat instead of finishing in the run-up
+// just before it (the player pulse peaks on the beat; without this the jump reads ~a frame
+// early). Applied to both curBeat and fireBeat so the whole grid shifts uniformly. Dial to taste.
+export const STACCATO_LEAD = 0.08
+// `division` = hops per beat (1 = whole beat, 2 = half-beat / eighth notes). The hop grid scales
+// so boundaries land on each sub-beat; `hops` (the normaliser) must be counted in the same sub-beats.
+// `phaseBeats` shifts the whole grid (0 = on-beat, 0.5 = off-beat / syncopated).
+export function staccatoProgress(curBeat: number, fireBeat: number, hops: number, division = 1, phaseBeats = 0): number {
+  if (hops <= 0) return 1
+  const c = (curBeat - STACCATO_LEAD - phaseBeats) * division
+  const f = (fireBeat - STACCATO_LEAD - phaseBeats) * division
+  const hopsDone = Math.floor(c) - Math.floor(f)   // sub-beat hops since release
+  const phase = c - Math.floor(c)                  // 0..1 within the current sub-beat
+  const LURCH = 0.18                                            // snap window at the tail of each beat
+  const t = phase > 1 - LURCH ? (phase - (1 - LURCH)) / LURCH : 0
+  const eased = t * t * (3 - 2 * t)                            // smoothstep into the next hop
+  return Math.min(1, Math.max(0, (hopsDone + eased) / hops))
+}

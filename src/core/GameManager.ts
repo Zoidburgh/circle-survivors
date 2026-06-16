@@ -13,11 +13,13 @@ import type { XPOrb } from '../entities/XPOrb.ts'
 import { updateCamera, clampToArena, getArenaShape, setArenaShape, findClearSpawnPos, resolveWallCollision, updateWalls, consumeSpringFires, computeWallArc, getWalls } from '../game/Arena.ts'
 import type { Wall } from '../game/Arena.ts'
 import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC, HEAVY_YIELD, DASH_SHOT_SPEED, DASH_SHOT_RADIUS_MULT } from '../utils/constants.ts'
+import { staccatoProgress, STACCATO_LEAD } from '../utils/math.ts'
+import { RING_FIRE_LEAD_SEC } from './PhaseSystem.ts'
 import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } from '../game/UpgradeScreen.ts'
 import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat, getLoopPosition, getAbsoluteBeats } from '../audio/PatternClock.ts'
 import { getBeatZeroTime } from '../audio/BeatLoop.ts'
-import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playFuseStart, playRecallStart, playChillZonePlace, playIceShardBurst, playWallSpringFire, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth, playBoing, playShockPush, playDashShotFire, startDashShotCrackle, stopDashShotCrackle } from '../audio/AudioEngine.ts'
+import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playFuseStart, playRecallStart, playChillZonePlace, playIceShardBurst, playWallSpringFire, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth, playBoing, playShockPush, playDashShotFire, startDashShotCrackle, stopDashShotCrackle, playEnemyBeatTick } from '../audio/AudioEngine.ts'
 import { resetProTip, showToast } from '../render/Renderer.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
 import { getScoresForChallenge, fetchOnlineScores } from '../game/HighScores.ts'
@@ -42,6 +44,7 @@ interface PendingExplosion {
   range: number
   r: number; g: number; b: number
   timer: number  // time since queued (for buildup visual)
+  buildup: number  // seconds the telegraph expands before bursting (default BEAT_SEC; longer for on-beat bullet explosions)
   soundPlayed: boolean
 }
 const pendingExplosions: PendingExplosion[] = []
@@ -173,10 +176,10 @@ function processVolatileExplosions(player: ReturnType<typeof getPlayer>, enemies
       exp.soundPlayed = true
       playVolatileExplosion()
     }
-    if (exp.timer >= BEAT_SEC && getActiveChallenge()?.name === 'Beginner Challenge') {
+    if (exp.timer >= exp.buildup && getActiveChallenge()?.name === 'Beginner Challenge') {
       showToast('BOOM!', { y: 0.14, duration: 1.0, size: 56, id: 'boom', color: [255, 120, 30], style: 'combo' })
     }
-    if (exp.timer >= BEAT_SEC) {
+    if (exp.timer >= exp.buildup) {
       if (!boomBoomPowFired) {
         const now = challengeElapsed
         explosionTimes.push(now)
@@ -244,6 +247,7 @@ on('enemy:killed', (enemy: Enemy) => {
     range: enemy.volatileRange,
     r: enemy.cr, g: enemy.cg, b: enemy.cb,
     timer: 0,
+    buildup: BEAT_SEC,
     soundPlayed: false,
   })
   // DASH YOU FOOL — player within 200px when explosion starts, 1 min CD
@@ -299,51 +303,169 @@ interface ShockWave {
   elapsed: number
   pushedEnemies: WeakSet<Enemy>
   pushedOrbs: WeakSet<XPOrb>
+  pushPlayer: boolean   // enemy reverb detonations push the PLAYER too (player's own reverb doesn't)
+  playerPushed: boolean // one-shot guard so the player only gets shoved once per wave
 }
+
+// Pending delayed sound — used by push-mode bullets to fire the ring sound at exactly
+// RING_FIRE_LEAD_SEC after landing (= the same beat a tether would strike on). Decoupled
+// from the shock wave's lifecycle so the sound still plays even after the wave retires.
+interface PendingSound {
+  timer: number
+  sound: string
+  patternName: string
+}
+const pendingSounds: PendingSound[] = []
+
+// Pending push detonation — delays the shock wave SPAWN + VISUAL by PUSH_DETONATION_DELAY
+// so the wave's mid-expansion aligns with the tether strike beat. Without this delay the
+// wave visually starts at bullet landing (= beat − 0.13s for typical lifetimes), which
+// reads as "a hair early" compared to where the tether snaps. Sound stays on-beat via the
+// existing pendingSounds queue.
+const PUSH_DETONATION_DELAY = 0.10
+interface PendingPushDetonation {
+  timer: number
+  x: number; y: number
+  pushRadius: number
+  pushStrength: number
+  colorR: number; colorG: number; colorB: number
+}
+const pendingPushDetonations: PendingPushDetonation[] = []
 const shockWaves: ShockWave[] = []
-const SHOCK_WAVE_DURATION = 0.42                                   // mirrors Renderer SHOCK_PUSH_DURATION
+const SHOCK_WAVE_DURATION = 0.588                                 // ~40% slower push; mirrors Renderer SHOCK_PUSH_DURATION (keep all three equal so push physics == visual)
 const SHOCK_WAVE_TRAVEL = 0.5                                      // mirrors Renderer RING_TRAVEL
 const SHOCK_WAVE_TRAVEL_TIME = SHOCK_WAVE_DURATION * SHOCK_WAVE_TRAVEL  // front sweeps center→edge in this time
 
-function spawnShockWave(x: number, y: number, pushRadius: number, pushStrength: number, edgeFrac: number, heavyResist: number): void {
-  shockWaves.push({ x, y, pushRadius, pushStrength, edgeFrac, heavyResist, elapsed: 0, pushedEnemies: new WeakSet(), pushedOrbs: new WeakSet() })
+function spawnShockWave(x: number, y: number, pushRadius: number, pushStrength: number, edgeFrac: number, heavyResist: number, pushPlayer: boolean = false): void {
+  shockWaves.push({ x, y, pushRadius, pushStrength, edgeFrac, heavyResist, elapsed: 0, pushedEnemies: new WeakSet(), pushedOrbs: new WeakSet(), pushPlayer, playerPushed: false })
+}
+
+// Queue a sound to play `delaySec` from now. Decoupled from any entity lifecycle so push
+// detonations can fire the ring sound on the same beat a tether would strike on, even
+// after the shock wave has retired.
+function schedulePendingSound(delaySec: number, sound: string, patternName: string): void {
+  if (!sound) return
+  pendingSounds.push({ timer: delaySec, sound, patternName })
+}
+
+function updatePendingSounds(dt: number): void {
+  if (pendingSounds.length === 0) return
+  for (let i = pendingSounds.length - 1; i >= 0; i--) {
+    const ps = pendingSounds[i]!
+    // Trigger when the timer is LESS than half a frame away from zero — picks whichever
+    // frame is closer to the ideal trigger moment, ~halving average frame slop.
+    if (ps.timer <= dt * 0.5) {
+      playEnemyBeatTick(ps.patternName, ps.sound)
+      pendingSounds[i] = pendingSounds[pendingSounds.length - 1]!
+      pendingSounds.pop()
+      continue
+    }
+    ps.timer -= dt
+  }
+}
+
+// Queue a push detonation (shock wave + visual triggers) to fire after `delay` seconds.
+// Same half-frame snap as the sound queue. Sound is NOT queued here — push sounds stay on
+// the existing pendingSounds queue so they remain locked to the beat regardless of the
+// wave's visual delay.
+const PUSH_EDGE_FRAC_QUEUED = 0.35
+const REVERB_HEAVY_RESIST_QUEUED = 0.6
+function schedulePushDetonation(delay: number, x: number, y: number, pushRadius: number, pushStrength: number, colorR: number, colorG: number, colorB: number): void {
+  pendingPushDetonations.push({ timer: delay, x, y, pushRadius, pushStrength, colorR, colorG, colorB })
+}
+
+function updatePendingPushDetonations(dt: number): void {
+  if (pendingPushDetonations.length === 0) return
+  for (let i = pendingPushDetonations.length - 1; i >= 0; i--) {
+    const p = pendingPushDetonations[i]!
+    if (p.timer <= dt * 0.5) {
+      spawnShockWave(p.x, p.y, p.pushRadius, p.pushStrength, PUSH_EDGE_FRAC_QUEUED, REVERB_HEAVY_RESIST_QUEUED, true)
+      Renderer.triggerEnemyShockPush(p.x, p.y, p.pushRadius, p.colorR, p.colorG, p.colorB)
+      Renderer.triggerColoredLightning(p.x, p.y, p.pushRadius * 0.45, p.colorR, p.colorG, p.colorB)
+      pendingPushDetonations[i] = pendingPushDetonations[pendingPushDetonations.length - 1]!
+      pendingPushDetonations.pop()
+      continue
+    }
+    p.timer -= dt
+  }
 }
 
 // Advance active shock waves and push any entity the front has just reached. Called from BOTH
 // the main update loop and the designer update loop (Reverb can fire in either).
+//
+// Perf notes: many simultaneous waves (cluster + volley push-mode bullets) used to O(W × E)
+// iterate every enemy per wave. Now:
+//   - Enemy broadphase uses the SpatialGrid — only enemies whose cells overlap the wave's
+//     reach disc are even considered. The query entity is reused across waves to avoid
+//     per-wave allocation.
+//   - Squared-distance early-out before computing sqrt skips entities clearly out of reach.
+//   - Per-wave constants (1 / pushRadius, etc.) hoisted out of inner loops.
+// Behavior is identical — only the work done to arrive at the same push set is reduced.
+const SHOCK_WAVE_BROADPHASE_PAD = 150   // padding added to query radius to cover any enemy size (true max in game is well under this; conservative is safe)
+const _shockQueryEntity = { x: 0, y: 0, radius: 0 }
 function updateShockWaves(dt: number): void {
   if (shockWaves.length === 0) return
-  const enemies = getEnemies()
+  const grid = getGrid()
   const orbs = getOrbs()
   for (let i = shockWaves.length - 1; i >= 0; i--) {
     const w = shockWaves[i]!
     w.elapsed += dt
     const frontProg = Math.min(1, w.elapsed / SHOCK_WAVE_TRAVEL_TIME)
     const frontRadius = w.pushRadius * (1 - Math.pow(1 - frontProg, 2.4))   // ease-out — matches visual leading ring
-    for (const enemy of enemies) {
+    const invPushRadius = 1 / w.pushRadius
+    // ── Enemies — broadphase via spatial grid (only nearby cells), then exact check.
+    _shockQueryEntity.x = w.x
+    _shockQueryEntity.y = w.y
+    _shockQueryEntity.radius = frontRadius + SHOCK_WAVE_BROADPHASE_PAD
+    const candidates = grid.query(_shockQueryEntity)
+    for (let c = 0; c < candidates.length; c++) {
+      const enemy = candidates[c] as Enemy
       if (!enemy.alive || enemy.dying) continue
       if (w.pushedEnemies.has(enemy)) continue
       const dx = enemy.x - w.x
       const dy = enemy.y - w.y
       const d2 = dx * dx + dy * dy
+      const reach = frontRadius + enemy.radius
+      if (d2 > reach * reach) continue   // front hasn't reached the body yet (sqrt-free reject)
       const dist = Math.sqrt(d2)
-      if (dist - enemy.radius > frontRadius) continue   // front hasn't reached the body yet (also defers out-of-range until retire)
-      const falloff = Math.max(w.edgeFrac, 1 - dist / w.pushRadius)
+      const falloff = w.edgeFrac > (1 - dist * invPushRadius) ? w.edgeFrac : (1 - dist * invPushRadius)
       const str = w.pushStrength * falloff * (enemy.immovable ? w.heavyResist : 1)
       applyLaunch(enemy, dx, dy, d2, str)
       w.pushedEnemies.add(enemy)
     }
-    for (const orb of orbs) {
+    // ── Orbs — no grid for them; linear scan with squared-distance early-out. HP orbs are
+    // intrinsically heavier (heart-mass) — they absorb a fraction of the wave impulse so a
+    // Reverb / push-mode wave nudges them rather than yeeting them across the arena. The
+    // wave math itself is identical between player + enemy sources; only the orb's response
+    // differs by type. XP orbs unchanged.
+    for (let o = 0; o < orbs.length; o++) {
+      const orb = orbs[o]!
       if (!orb.alive || orb.dying) continue
       if (w.pushedOrbs.has(orb)) continue
       const dx = orb.x - w.x
       const dy = orb.y - w.y
       const d2 = dx * dx + dy * dy
+      const reach = frontRadius + orb.radius
+      if (d2 > reach * reach) continue
       const dist = Math.sqrt(d2)
-      if (dist - orb.radius > frontRadius) continue
-      const falloff = Math.max(w.edgeFrac, 1 - dist / w.pushRadius)
-      applyLaunch(orb, dx, dy, d2, w.pushStrength * falloff)
+      const falloff = w.edgeFrac > (1 - dist * invPushRadius) ? w.edgeFrac : (1 - dist * invPushRadius)
+      const heaviness = orb.orbType === 'hp' ? 0.35 : 1.0
+      applyLaunch(orb, dx, dy, d2, w.pushStrength * falloff * heaviness)
       w.pushedOrbs.add(orb)
+    }
+    // ── Player — squared-distance gate, then sqrt + push. One-shot per wave.
+    if (w.pushPlayer && !w.playerPushed) {
+      const player = getPlayer()
+      const dx = player.x - w.x
+      const dy = player.y - w.y
+      const d2 = dx * dx + dy * dy
+      const reach = frontRadius + player.hitRadius
+      if (d2 <= reach * reach) {
+        const dist = Math.sqrt(d2)
+        const falloff = w.edgeFrac > (1 - dist * invPushRadius) ? w.edgeFrac : (1 - dist * invPushRadius)
+        applyLaunch(player, dx, dy, d2, w.pushStrength * falloff)
+        w.playerPushed = true
+      }
     }
     // Front has reached full radius — every in-range entity got pushed on this frame; retire.
     if (w.elapsed >= SHOCK_WAVE_TRAVEL_TIME) {
@@ -370,6 +492,120 @@ interface DashShotProjectile {
   crackleId: number     // sustained lightning crackle audio — stopped when projectile detonates
 }
 const dashShotProjectiles: DashShotProjectile[] = []
+
+// Enemy ranged bullet — fired by a ring with rangedMode on. Travels for `lifetime` seconds,
+// then detonates into a one-shot ring AOE at its current position using the ring's existing
+// radius/expandTime/color properties. ringRef captures the ring config at fire time so even
+// if the ring changes mid-flight, the detonation uses the values that were fired with.
+interface EnemyBullet {
+  x: number; y: number
+  vx: number; vy: number
+  elapsed: number
+  lifetime: number
+  launchDelay: number      // volley stagger — bullet holds at owner's live position until elapsed >= launchDelay
+  released: boolean        // true once the stagger window has elapsed; controls re-anchor + velocity recompute
+  offX: number; offY: number   // offset from enemy center at fire time — preserved as enemy moves
+  isSurround: boolean      // surround_player needs velocity recomputed at release to keep landing target fixed
+  surroundTargetX: number  // landing point (used only when isSurround)
+  surroundTargetY: number
+  ringRadius: number       // detonation AOE final radius
+  expandTime: number       // detonation expand time
+  damage: number           // damage at peak (uses enemy.damage at fire time)
+  colorR: number           // for visual (bullet trail + detonation ring tint)
+  colorG: number
+  colorB: number
+  ownerEnemy: Enemy        // reference for stats AND live position during volley hold (parent bullets only)
+  ringIndex: number        // which ring config — needed to look up rs at cluster split time
+  layerIndex: number       // cluster generation: 0 = parent fire, 1 = gen 1 child, 2 = gen 2 grandchild, 3 = gen 3
+  bornRotation: number     // rotation snapshot this bullet's salvo fired with. ALL siblings of a generation share the same value, so cluster children of any one parent bullet rotate uniformly with all the other gen-N children — no per-spawn drift.
+  anchorToEnemy: boolean   // parent: true (follows enemy during hold). child: false (stays at spawn point).
+  trackingRate: number     // radians/sec — 0 = no tracking; >0 = homes toward player
+  pushMode: boolean        // detonation = reverb shock push (no damage ring) instead of normal AOE
+  staccato: boolean        // freeze-between-beats, snap-forward-on-beat movement
+  staccatoDivision: number // hops per beat (1 = whole, 2 = half-beat)
+  staccatoPhase: number    // hop-grid phase shift in beats (0 = on-beat, 0.5 = off-beat)
+  staccatoFireBeat: number // absolute beat captured at release (lazy-init)
+  staccatoHops: number     // # of beat-aligned hops across the remaining flight
+  staccatoReleased: number // 0..1 flight fraction already moved; -1 = not yet initialised
+  salvoId: number          // groups this bullet with its siblings for tether beam formation
+  salvoIndex: number       // stable 0-based position within the salvo (for topology ordering)
+}
+
+// Tether entity — at the salvo's detonation beat, this materializes with the captured
+// detonation points and the bullets' linkage topology. Damage flashes once per player along
+// each beam segment; the visual lingers for TETHER_DUR seconds then fades.
+import type { TetherTopology } from '../entities/EnemyTypes.ts'
+interface TetherEntity {
+  xs: number[]; ys: number[]     // detonation points in order
+  topology: TetherTopology
+  width: number                  // beam thickness (used for hit detection padding)
+  damage: number
+  colorR: number; colorG: number; colorB: number
+  timer: number                  // counts up from 0; the entity is invisible + inert until timer >= prearmTime, then visual + hit window run
+  prearmTime: number             // seconds to wait after spawn before the tether materializes — makes damage land exactly TETHER_RING_LEAD seconds before ring peak
+  playerHit: boolean             // one-shot guard so a single beam window can't tick damage twice
+  consume: boolean               // owner has consume? — eat orbs touching beams, heal owner
+  enemyOwner: Enemy              // source enemy ref for heal target
+  consumeFired: boolean          // one-shot guard mirroring playerHit
+  tetherSound: string            // played when the tether STRIKES (materializes). Empty = silent.
+  patternName: string            // routed to playEnemyBeatTick
+  soundFired: boolean            // one-shot guard for the strike sound
+}
+const tetherEntities: TetherEntity[] = []
+const TETHER_DUR = 0.20            // total visual lifetime in seconds (after prearm)
+const TETHER_HIT_WINDOW = 0.10     // damage can only land in the first ~half (the bright flash, after prearm)
+// How many seconds BEFORE the ring's peak the tether should snap. So:
+//   prearmTime = max(0, ringExpandTime - TETHER_RING_LEAD)
+// With expandTime=0.68 → prearm=0.18 (tether fires 0.18s after landing → 0.5s before peak).
+// With expandTime=0.5  → prearm=0    (tether fires at landing → 0.5s before peak).
+// With expandTime<0.5  → prearm=0    (tether fires at landing → less than 0.5s before peak — clamped).
+const TETHER_RING_LEAD = 0.5
+// Early-lead applied to beat-critical sounds so the HEARD tick lands on the visual/beat despite
+// audio output latency. Shared by the push-detonation sound and the tether strike sound so they
+// stay consistent — change it once, both move together.
+const SOUND_AUDIO_LATENCY = 0.015
+// The tether tick fires from the game loop (not sample-accurate like scheduled sounds), so it
+// needs this extra lead on top of the shared latency to cover the up-to-one-frame timer slop.
+const TETHER_SOUND_EXTRA = 0.005
+
+// Pending salvo registry — bullets register their detonation point under salvoId at their
+// salvoIndex (stable position). When the last sibling lands (registered == expected) we
+// spawn the Tether (sim + viz) and clear. Indexed assignment instead of push so the topology
+// matches the firing order (matters for 'open' and 'pairs').
+interface PendingSalvo {
+  expected: number
+  received: number
+  xs: number[]; ys: number[]
+  topology: TetherTopology
+  width: number
+  damage: number
+  colorR: number; colorG: number; colorB: number
+  consume: boolean               // captured at fire time so consume tracks the original owner state
+  enemyOwner: Enemy              // healing target
+  expandTime: number             // ring expansion time — drives tether prearm so it fires TETHER_RING_LEAD seconds before ring peak
+  tetherSound: string            // played when the tether STRIKES (materializes + deals damage)
+  patternName: string            // routed to playEnemyBeatTick alongside tetherSound
+}
+const pendingSalvos = new Map<number, PendingSalvo>()
+let nextSalvoId = 1
+const enemyBullets: EnemyBullet[] = []
+
+// Active detonation — a one-shot ring AOE spawned when an EnemyBullet expires. Has its own
+// expanding attackTimer and applies damage at peak via direct hit check.
+interface EnemyDetonation {
+  x: number; y: number
+  attackTimer: number
+  expandTime: number
+  ringRadius: number       // final radius at peak
+  damage: number
+  colorR: number; colorG: number; colorB: number
+  peakFired: boolean       // one-shot guard so peak hit check fires exactly once
+  consume: boolean         // owner has consume? — eat orbs at ring peak, heal owner
+  enemyOwner: Enemy        // source enemy ref for heal target (mirrored from bullet)
+  sound: string            // played at ring peak (damage moment). Empty = silent.
+  patternName: string      // routed to playEnemyBeatTick alongside sound
+}
+const enemyDetonations: EnemyDetonation[] = []
 
 function spawnDashShot(x: number, y: number, dirX: number, dirY: number, targetRadius: number, damage: number, pushScale: number): void {
   // Normalize the direction defensively (dashDirX/Y is unit, but cheap to ensure).
@@ -437,6 +673,651 @@ function updateDashShots(dt: number): void {
       applyBeatDashImpact(p.x, p.y, p.targetRadius, p.damage, p.pushScale)
       dashShotProjectiles[i] = dashShotProjectiles[dashShotProjectiles.length - 1]!
       dashShotProjectiles.pop()
+    }
+  }
+}
+
+// ── Enemy ranged bullets + detonations ──
+// Compute the BASE angles for a salvo (before universal rotation offset). One angle per
+// bullet. For 'surround_player' these are angles around the player; for others they're
+// directions FROM the origin.
+function computeBaseAngles(rs: import('../entities/Enemy.ts').RingState, originX: number, originY: number, playerX: number, playerY: number): number[] {
+  const dx = playerX - originX
+  const dy = playerY - originY
+  const aimAngle = Math.atan2(dy, dx)
+  const n = Math.max(1, rs.bulletCount)
+  switch (rs.rangedPattern) {
+    case 'aimed':
+      return [aimAngle]
+    case 'radial': {
+      // Evenly-spaced directions from origin
+      const angles: number[] = []
+      for (let i = 0; i < n; i++) angles.push((i / n) * Math.PI * 2)
+      return angles
+    }
+    case 'surround_player': {
+      // Evenly-spaced angles AROUND the player. The velocity calc later targets these points.
+      const angles: number[] = []
+      for (let i = 0; i < n; i++) angles.push((i / n) * Math.PI * 2)
+      return angles
+    }
+    case 'spread_cone': {
+      if (n === 1) return [aimAngle]
+      // Spread evenly across spreadAngle, centered on aimAngle
+      const angles: number[] = []
+      for (let i = 0; i < n; i++) {
+        const t = i / (n - 1)   // 0..1
+        angles.push(aimAngle - rs.spreadAngle / 2 + t * rs.spreadAngle)
+      }
+      return angles
+    }
+    case 'rotating': {
+      switch (rs.rotationMode) {
+        case 'turret':           return [rs.rotationAngle]   // ignore player; sweeps freely
+        case 'player_anchored':  return [aimAngle + rs.rotationAngle]
+        case 'oscillate':        return [aimAngle + Math.sin(rs.rotationAngle) * (Math.PI / 3)]
+      }
+      return [aimAngle]
+    }
+  }
+  return [aimAngle]
+}
+
+// Compute bullet velocity vectors for a salvo. Dispatches per pattern; applies universal
+// rotation offset (rs.rotationAngle is added to ALL pattern angles, not just 'rotating', so
+// rotationStep can rotate radial/surround/cone arrangements between fires too).
+function computeSalvoVelocities(rs: import('../entities/Enemy.ts').RingState, originX: number, originY: number, playerX: number, playerY: number, bornRotation: number): Array<{ vx: number; vy: number }> {
+  // bornRotation is the rotation snapshot for THIS salvo. For parent fires it's rs.rotationAngle
+  // (and rs.rotationAngle advances afterward). For cluster children it's parent.bornRotation
+  // + nextLayer.rotationStep — all siblings of a generation share the same value so the salvos
+  // visually rotate as one unit.
+  // For 'rotating' pattern, baseAngles already contain rs.rotationAngle, so we offset by
+  // (bornRotation - rs.rotationAngle) to swap the baked-in rotation for bornRotation.
+  const angles = computeBaseAngles(rs, originX, originY, playerX, playerY)
+  const isRotating = rs.rangedPattern === 'rotating'
+  const extra = isRotating ? (bornRotation - rs.rotationAngle) : bornRotation
+  const out: Array<{ vx: number; vy: number }> = []
+  if (rs.rangedPattern === 'surround_player') {
+    const life = Math.max(0.05, rs.bulletLifetime)
+    for (let i = 0; i < angles.length; i++) {
+      const a = angles[i]! + extra
+      const tx = playerX + Math.cos(a) * rs.surroundRadius
+      const ty = playerY + Math.sin(a) * rs.surroundRadius
+      out.push({ vx: (tx - originX) / life, vy: (ty - originY) / life })
+    }
+  } else {
+    for (let i = 0; i < angles.length; i++) {
+      const a = angles[i]! + extra
+      out.push({ vx: Math.cos(a) * rs.bulletSpeed, vy: Math.sin(a) * rs.bulletSpeed })
+    }
+  }
+  return out
+}
+
+// Spawn a salvo from a given origin point. layerIndex picks the RingState to fire with:
+//   0      = the parent ring (event handler fires from enemy on beats)
+//   1..N   = cluster generation N (resolved from parent.childLayers[layerIndex - 1])
+// Each layer has its own pattern, count, push/tether, etc. — driven entirely by the
+// resolved RingState's fields.
+function spawnSalvo(enemy: Enemy, ringIndex: number, layerIndex: number, originX: number, originY: number, anchorToEnemy: boolean, bornRotationOverride?: number, startElapsed: number = 0): void {
+  const parentRs = enemy.rings[ringIndex]
+  if (!parentRs) return
+  const rs = layerIndex === 0
+    ? parentRs
+    : parentRs.childLayers[layerIndex - 1]
+  if (!rs) return
+  const player = getPlayer()
+  // bornRotation = the rotation ALL siblings of this salvo fire with. For parent fires
+  // (no override) it's the layer's current rotationAngle. For cluster children it's the
+  // parent-bullet's bornRotation + the child layer's rotationStep — supplied by caller.
+  const bornRotation = bornRotationOverride ?? rs.rotationAngle
+  // startElapsed is the parent bullet's frame overshoot (`elapsed - lifetime` at detonation
+  // time). Children inherit it so each generation absorbs its parent's frame slop and
+  // detonates back on the ideal beat — no drift accumulation across cluster layers.
+  const vels = computeSalvoVelocities(rs, originX, originY, player.x, player.y, bornRotation)
+  const n = vels.length
+  const cr = enemy.cr, cg = enemy.cg, cb = enemy.cb
+  const trackingRate = rs.tracking ? rs.trackingStrength : 0
+  const useVolley = rs.volleyMode && n > 1
+  const isSurround = rs.rangedPattern === 'surround_player'
+  const baseLife = Math.max(0.05, rs.bulletLifetime)
+  // Offset from enemy center captured ONLY when anchored — for child salvos the origin is
+  // a fixed world point (the parent's detonation), so the enemy's motion shouldn't drag it.
+  const offX = anchorToEnemy ? originX - enemy.x : 0
+  const offY = anchorToEnemy ? originY - enemy.y : 0
+  // Tether bookkeeping — every bullet in this call shares a salvoId. If tether is active
+  // and there are ≥2 bullets, register an empty pending salvo; bullets will fill in their
+  // detonation points as they land, and the last lander spawns the Tether.
+  const salvoId = nextSalvoId++
+  // Staccato salvos fire a tether on EVERY hop (fireStaccatoHopTethers), so they must NOT also
+  // register the one-shot detonation tether — otherwise the last hop + the detonation strike
+  // stack into a double hit on the final beat.
+  const useTether = rs.tetherMode !== 'off' && n >= 2 && !rs.staccato
+  if (useTether) {
+    // Pre-fill arrays with zeros at correct length so indexed assignment by salvoIndex
+    // is order-stable (otherwise sparse indices show up as `undefined`).
+    const xs = new Array<number>(n).fill(0)
+    const ys = new Array<number>(n).fill(0)
+    pendingSalvos.set(salvoId, {
+      expected: n,
+      received: 0,
+      xs, ys,
+      topology: rs.tetherMode,
+      width: rs.tetherWidth,
+      damage: enemy.damage,
+      colorR: cr, colorG: cg, colorB: cb,
+      consume: enemy.consume,
+      enemyOwner: enemy,
+      expandTime: rs.expandTime,
+      tetherSound: rs.tetherSound,
+      patternName: rs.patternName,
+    })
+  }
+  for (let i = 0; i < n; i++) {
+    const v = vels[i]!
+    let launchDelay = useVolley ? (i / (n - 1)) * rs.volleyWindow : 0
+    // Off-beat enemy salvos: hold the bullet INVISIBLE (launchDelay hides it) for half a beat so
+    // it "appears" right before its first off-beat hop — same short idle as on-beat — instead of
+    // sitting at the enemy through the whole half-beat. elapsed keeps ticking, so it still
+    // detonates on its original beat. Enemy-fired only (layerIndex 0); cluster children unchanged.
+    if (rs.staccatoPhase > 0 && layerIndex === 0) launchDelay += 0.5 * BEAT_SEC
+    let vx = v.vx, vy = v.vy
+    const surroundTargetX = isSurround ? originX + v.vx * baseLife : 0
+    const surroundTargetY = isSurround ? originY + v.vy * baseLife : 0
+    if (useVolley && isSurround && launchDelay > 0) {
+      const scale = baseLife / Math.max(0.05, baseLife - launchDelay)
+      vx *= scale; vy *= scale
+    }
+    enemyBullets.push({
+      x: originX, y: originY,
+      vx, vy,
+      elapsed: startElapsed,
+      lifetime: rs.bulletLifetime,
+      launchDelay,
+      released: launchDelay <= startElapsed,
+      offX, offY,
+      isSurround,
+      surroundTargetX, surroundTargetY,
+      ringRadius: rs.ring.radius,
+      expandTime: rs.expandTime,
+      damage: enemy.damage,
+      colorR: cr, colorG: cg, colorB: cb,
+      ownerEnemy: enemy,
+      ringIndex,
+      layerIndex,
+      bornRotation,
+      anchorToEnemy,
+      trackingRate,
+      pushMode: rs.pushMode,
+      staccato: rs.staccato,
+      staccatoDivision: rs.staccatoDivision,
+      staccatoPhase: rs.staccatoPhase,
+      staccatoFireBeat: 0,
+      staccatoHops: 1,
+      staccatoReleased: -1,
+      salvoId,
+      salvoIndex: i,
+    })
+    Renderer.addEnemyBulletViz(originX, originY, vx, vy, rs.bulletLifetime, rs.ring.radius, cr, cg, cb, trackingRate, launchDelay, anchorToEnemy ? enemy : null, offX, offY, isSurround, surroundTargetX, surroundTargetY, salvoId, i, rs.tetherMode, rs.tetherWidth, rs.pushMode, rs.staccato, rs.staccatoDivision, rs.staccatoPhase, layerIndex > 0, rs.explodeMode)
+  }
+  // Layer rotation only advances on a FRESH parent fire (no override). Cluster child salvos
+  // inherit their rotation directly from the parent bullet's bornRotation + step, so they
+  // don't and shouldn't touch the layer's rotationAngle counter — otherwise N parent bullets
+  // each spawning a child salvo would advance the layer N times per beat instead of zero.
+  if (bornRotationOverride === undefined) {
+    rs.rotationAngle += rs.rotationStep
+  }
+}
+
+// Subscribe to enemy ranged ring fires — initial salvo from the enemy (layer 0).
+on('enemy:rangedFire', (enemy: Enemy, ringIndex: number, originX: number, originY: number) => {
+  spawnSalvo(enemy, ringIndex, 0, originX, originY, true)
+})
+
+// Advance enemy bullets and detonate when their lifetime expires (spawns a detonation entry).
+function updateEnemyBullets(dt: number): void {
+  if (enemyBullets.length === 0) return
+  const player = getPlayer()
+  for (let i = enemyBullets.length - 1; i >= 0; i--) {
+    const b = enemyBullets[i]!
+    b.elapsed += dt
+    // Volley hold — parent bullets follow the enemy's live position so they pop out of
+    // where the enemy actually is (incl. edge offset). Child bullets (cluster split) stay
+    // at their spawn point (= parent's detonation) since they're not tied to the enemy.
+    // elapsed still ticks either way so the salvo detonates on the SAME beat.
+    if (!b.released) {
+      if (b.anchorToEnemy) {
+        b.x = b.ownerEnemy.x + b.offX
+        b.y = b.ownerEnemy.y + b.offY
+      }
+      if (b.elapsed < b.launchDelay) continue
+      // Release this frame — for surround_player, recompute velocity from the LIVE origin so
+      // the bullet still reaches its captured target landing point in the remaining flight time.
+      b.released = true
+      if (b.isSurround) {
+        const remaining = Math.max(0.05, b.lifetime - b.elapsed)
+        b.vx = (b.surroundTargetX - b.x) / remaining
+        b.vy = (b.surroundTargetY - b.y) / remaining
+      }
+    }
+    // Tracking — rotate velocity vector toward the player's current position, limited by
+    // trackingRate (radians/sec). Preserves bullet speed (only direction changes).
+    if (b.trackingRate > 0) {
+      const speed = Math.sqrt(b.vx * b.vx + b.vy * b.vy)
+      if (speed > 0.01) {
+        const curAng = Math.atan2(b.vy, b.vx)
+        const desAng = Math.atan2(player.y - b.y, player.x - b.x)
+        let delta = desAng - curAng
+        if (delta > Math.PI) delta -= 2 * Math.PI
+        else if (delta < -Math.PI) delta += 2 * Math.PI
+        const maxTurn = b.trackingRate * dt
+        if (delta > maxTurn) delta = maxTurn
+        else if (delta < -maxTurn) delta = -maxTurn
+        const newAng = curAng + delta
+        b.vx = Math.cos(newAng) * speed
+        b.vy = Math.sin(newAng) * speed
+      }
+    }
+    if (b.staccato) {
+      // Staccato — frozen between global beats, snaps forward on each. Lazy-init the release beat
+      // + hop count on the first post-release frame (so volley/cluster capture at their real
+      // release). Movement = the per-frame DELTA of the beat-quantized progress applied along the
+      // current velocity (so it composes with tracking — re-aims, then lunges).
+      if (b.staccatoReleased < 0) {
+        b.staccatoFireBeat = getAbsoluteBeats()
+        // Count the ACTUAL hop-grid boundaries between release and detonation (accounts for the
+        // phase + lead so off-beat / launch-delayed bullets reach full distance on the LAST hop,
+        // not early). round(duration) was undercounting and parking the bullet a hop short.
+        const detBeat = b.staccatoFireBeat + (b.lifetime - b.elapsed) / BEAT_SEC
+        b.staccatoHops = Math.max(1, Math.floor((detBeat - STACCATO_LEAD - b.staccatoPhase) * b.staccatoDivision) - Math.floor((b.staccatoFireBeat - STACCATO_LEAD - b.staccatoPhase) * b.staccatoDivision))
+        b.staccatoReleased = 0
+      }
+      const target = staccatoProgress(getAbsoluteBeats(), b.staccatoFireBeat, b.staccatoHops, b.staccatoDivision, b.staccatoPhase)
+      const move = target - b.staccatoReleased
+      if (move > 0) {
+        b.x += b.vx * move * b.lifetime
+        b.y += b.vy * move * b.lifetime
+        b.staccatoReleased = target
+      }
+    } else {
+      b.x += b.vx * dt
+      b.y += b.vy * dt
+    }
+    if (b.elapsed >= b.lifetime) {
+      // Lead the detonation forward along the velocity direction by ~15ms of motion to
+      // compensate for perceptual motion-induced position shift (see note added earlier).
+      const LEAD_TIME = 0.015
+      const dx = b.x + b.vx * LEAD_TIME
+      const dy = b.y + b.vy * LEAD_TIME
+      // Resolve the layer's RingState — used to capture detonation/tether sounds + pattern
+      // name onto the spawned detonation/tether entities so they play at DAMAGE TIME (ring
+      // peak / tether strike), not at landing.
+      const detRs = b.layerIndex === 0
+        ? b.ownerEnemy.rings[b.ringIndex]
+        : b.ownerEnemy.rings[b.ringIndex]?.childLayers[b.layerIndex - 1]
+      const detSound = detRs?.sound ?? ''
+      const detPatternName = detRs?.patternName ?? b.ownerEnemy.typeName
+      const detTetherSound = detRs?.tetherSound ?? ''
+      // ringRadius 0 = NO detonation at all (no ring, no push, no damage, no FX) — the bullet
+      // simply splits into the next cluster layer below. Lets a layer be a pure "relay" hop.
+      if (b.ringRadius <= 0) {
+        // no-op — fall through to tether registration + cluster split
+      } else if (b.pushMode) {
+        // Push-mode detonation — Reverb-style shock wave in the ring's color INSTEAD of the
+        // expanding damage ring. Push radius = the configured ringRadius. Strength scales
+        // with ringRadius so bigger rings shove harder. Falls off toward the rim.
+        // The wave + visual are DELAYED by PUSH_DETONATION_DELAY (0.10s) so the wave's
+        // mid-expansion aligns with the tether-strike beat — felt as "push and tether hit
+        // together" rather than "push slightly early." Sound stays locked to the beat via
+        // the separate pendingSounds queue.
+        const pushRadius = b.ringRadius
+        const pushStrength = b.ringRadius * 30   // ringRadius 100 → 3000 base; scales linearly
+        const overshoot = b.elapsed - b.lifetime
+        schedulePushDetonation(PUSH_DETONATION_DELAY - overshoot, dx, dy, pushRadius, pushStrength, b.colorR, b.colorG, b.colorB)
+        // Sound is queued separately — fires at landing + RING_FIRE_LEAD_SEC (on the beat),
+        // independent of the wave's delayed visual start.
+        schedulePendingSound(RING_FIRE_LEAD_SEC - overshoot - SOUND_AUDIO_LATENCY, detSound, detPatternName)
+      } else if (detRs?.explodeMode) {
+        // Explode-mode detonation — behave EXACTLY like a volatile enemy blowing up, just sourced
+        // from a bullet. Queue the SAME pendingExplosion the volatile-death path uses, so it gets
+        // the identical telegraph buildup, blast animation, sound, and filled-disc damage to the
+        // player AND nearby enemies. ringRadius = blast range (like push uses it for its radius).
+        // The telegraph circle starts expanding IMMEDIATELY at the bullet's destruction (no
+        // dormant gap), but the buildup window is STRETCHED so the burst still lands on the beat.
+        // The bullet detonates RING_FIRE_LEAD_SEC before its felt beat (it fires early to land on
+        // rhythm), so the buildup = one beat + that lead (minus frame overshoot). Same on-beat
+        // burst as a volatile death, but the circle brews from frame one — and since it appears
+        // instantly at detonation, dx/dy's small lead is right (no extra lead needed).
+        const overshoot = Math.max(0, b.elapsed - b.lifetime)
+        // Lead the explosion's center forward along the heading, scaled by the bullet's own speed
+        // (faster bullets lead more) — same basis as the ring/push, just a bit longer since the
+        // explosion's telegraph/blast is slower to read.
+        const EXPLODE_LEAD = 0.165
+        const exX = b.x + b.vx * EXPLODE_LEAD
+        const exY = b.y + b.vy * EXPLODE_LEAD
+        pendingExplosions.push({
+          x: exX, y: exY,
+          range: b.ringRadius,
+          r: b.colorR, g: b.colorG, b: b.colorB,
+          timer: 0,
+          buildup: BEAT_SEC + Math.max(0, RING_FIRE_LEAD_SEC - overshoot),
+          soundPlayed: false,
+        })
+        // Destruction burst — the dart shatters (flash + hot ember scatter) at the shatter point
+        // as the telegraph begins expanding, so the transition reads as a violent ignition.
+        Renderer.spawnExplodeBulletDestruction(exX, exY)
+      } else {
+        // Normal detonation — expanding damage ring, hit check applied at peak.
+        enemyDetonations.push({
+          x: dx, y: dy,
+          attackTimer: 0,
+          expandTime: b.expandTime,
+          ringRadius: b.ringRadius,
+          damage: b.damage,
+          colorR: b.colorR, colorG: b.colorG, colorB: b.colorB,
+          peakFired: false,
+          consume: b.ownerEnemy.consume,
+          enemyOwner: b.ownerEnemy,
+          sound: detSound,
+          patternName: detPatternName,
+        })
+        Renderer.addEnemyDetonationViz(dx, dy, b.expandTime, b.ringRadius, b.colorR, b.colorG, b.colorB)
+      }
+      // Tether registration — write our detonation point at our stable salvoIndex slot.
+      // When the LAST sibling lands (received == expected) we materialize the tether.
+      const pending = pendingSalvos.get(b.salvoId)
+      if (pending) {
+        pending.xs[b.salvoIndex] = dx
+        pending.ys[b.salvoIndex] = dy
+        pending.received++
+        if (pending.received >= pending.expected) {
+          // prearmTime locks the tether's strike to the natural beat the bullets were aimed
+          // at. Bullets fire RING_FIRE_LEAD_SEC (0.23s) BEFORE their scheduled beat so the
+          // ring lands on rhythm. If we delay the tether by exactly RING_FIRE_LEAD_SEC after
+          // landing, the strike happens at: (beat - lead) + bulletLifetime + lead = beat +
+          // bulletLifetime — i.e., the next clean beat/half-beat regardless of expandTime.
+          const prearmTime = RING_FIRE_LEAD_SEC
+          tetherEntities.push({
+            xs: pending.xs, ys: pending.ys,
+            topology: pending.topology,
+            width: pending.width,
+            damage: pending.damage,
+            colorR: pending.colorR, colorG: pending.colorG, colorB: pending.colorB,
+            timer: 0,
+            prearmTime,
+            playerHit: false,
+            consume: pending.consume,
+            enemyOwner: pending.enemyOwner,
+            consumeFired: false,
+            tetherSound: pending.tetherSound,
+            patternName: pending.patternName,
+            soundFired: false,
+          })
+          Renderer.addTetherViz(pending.xs, pending.ys, pending.topology, pending.width, pending.colorR, pending.colorG, pending.colorB, prearmTime)
+          pendingSalvos.delete(b.salvoId)
+        }
+      }
+      // Cluster — if this bullet has a NEXT layer configured, spawn a child salvo at the
+      // detonation point driven by that layer's RingState (its pattern, count, push/tether,
+      // rotation, etc — all independent of this bullet's layer). Children are anchored to
+      // the world (not the enemy) so their volley hold stays at the detonation point.
+      // Telegraph the children's directions via a directional starburst FX so the player
+      // can read the next salvo's threat shape from the impact moment.
+      const parentRs = b.ownerEnemy.rings[b.ringIndex]
+      const nextLayerIndex = b.layerIndex + 1
+      if (parentRs && nextLayerIndex <= parentRs.childLayers.length) {
+        const nextRs = parentRs.childLayers[nextLayerIndex - 1]!
+        // Children's bornRotation = THIS bullet's bornRotation + child layer's step. ALL
+        // children of this generation share the same bornRotation so the gen rotates as one.
+        const childBornRotation = b.bornRotation + nextRs.rotationStep
+        const childVels = computeSalvoVelocities(nextRs, dx, dy, player.x, player.y, childBornRotation)
+        const angles: number[] = []
+        for (const v of childVels) angles.push(Math.atan2(v.vy, v.vx))
+        Renderer.spawnClusterSplitFX(dx, dy, b.colorR, b.colorG, b.colorB, angles)
+        // Pass parent overshoot as child startElapsed — each generation absorbs its parent's
+        // frame slop so timing stays locked to the ideal beat regardless of cluster depth.
+        const parentOvershoot = Math.max(0, b.elapsed - b.lifetime)
+        spawnSalvo(b.ownerEnemy, b.ringIndex, nextLayerIndex, dx, dy, false, childBornRotation, parentOvershoot)
+      }
+      enemyBullets[i] = enemyBullets[enemyBullets.length - 1]!
+      enemyBullets.pop()
+    }
+  }
+  fireStaccatoHopTethers()
+}
+
+// Staccato + Tether — the salvo's beam re-snaps between the FROZEN bullets on EACH beat (not just
+// at detonation), so it walks toward the player and strikes every time they hold position. Fired
+// once per integer beat per salvo at the bullets' current hop positions, reusing the normal tether
+// visual + strike (prearmTime 0 = instant snap on the beat). Skips the spawn beat (bullets still
+// bunched at the enemy) by requiring at least one completed hop.
+const staccatoTetherFiredBeat = new Map<number, number>()  // salvoId → last integer beat fired
+function fireStaccatoHopTethers(): void {
+  const curBeat = getAbsoluteBeats()
+  const groups = new Map<number, EnemyBullet[]>()
+  for (const b of enemyBullets) {
+    if (!b.staccato || !b.released || b.elapsed < b.launchDelay) continue
+    if (b.staccatoReleased <= 0.001) continue   // not hopped yet
+    const rs = b.layerIndex === 0 ? b.ownerEnemy.rings[b.ringIndex] : b.ownerEnemy.rings[b.ringIndex]?.childLayers[b.layerIndex - 1]
+    if (!rs || rs.tetherMode === 'off') continue
+    let arr = groups.get(b.salvoId)
+    if (!arr) { arr = []; groups.set(b.salvoId, arr) }
+    arr.push(b)
+  }
+  for (const [salvoId, arr] of groups) {
+    if (arr.length < 2) continue
+    arr.sort((a, b) => a.salvoIndex - b.salvoIndex)
+    const b0 = arr[0]!
+    // Fire exactly when a HOP completes, so the strike lands on the beat grid (never mid-beat —
+    // that was making the first one late + muddling the SFX). Mirror the bullet's own hop grid,
+    // dedupe by hop so each strikes once. Fire from hop 1 — the first STOP is already a spread-out
+    // position (not the bunched origin), so the web starts there.
+    const div = b0.staccatoDivision
+    const ph = b0.staccatoPhase
+    const hopsDone = Math.floor((curBeat - STACCATO_LEAD - ph) * div) - Math.floor((b0.staccatoFireBeat - STACCATO_LEAD - ph) * div)
+    if (hopsDone < 1) continue
+    if (staccatoTetherFiredBeat.get(salvoId) === hopsDone) continue
+    staccatoTetherFiredBeat.set(salvoId, hopsDone)
+    const rs0 = b0.layerIndex === 0 ? b0.ownerEnemy.rings[b0.ringIndex] : b0.ownerEnemy.rings[b0.ringIndex]?.childLayers[b0.layerIndex - 1]
+    if (!rs0) continue
+    const xs = arr.map(b => b.x)
+    const ys = arr.map(b => b.y)
+    tetherEntities.push({
+      xs, ys, topology: rs0.tetherMode, width: rs0.tetherWidth, damage: b0.damage,
+      colorR: b0.colorR, colorG: b0.colorG, colorB: b0.colorB,
+      // prearmTime = RING_FIRE_LEAD_SEC so the STRIKE lands on the FELT beat (same lead the
+      // detonation tether uses) instead of the raw scheduling-beat, which reads ~0.23s early.
+      // The red-dashed telegraph fills that lead-in, then the beam snaps on the beat.
+      timer: 0, prearmTime: RING_FIRE_LEAD_SEC, playerHit: false,
+      consume: b0.ownerEnemy.consume, enemyOwner: b0.ownerEnemy,
+      consumeFired: false, tetherSound: rs0.tetherSound, patternName: rs0.patternName,
+      soundFired: false,
+    })
+    Renderer.addTetherViz(xs, ys, rs0.tetherMode, rs0.tetherWidth, b0.colorR, b0.colorG, b0.colorB, RING_FIRE_LEAD_SEC)
+  }
+  // Keep the dedupe map bounded to live salvos
+  if (staccatoTetherFiredBeat.size > groups.size) {
+    for (const sid of staccatoTetherFiredBeat.keys()) if (!groups.has(sid)) staccatoTetherFiredBeat.delete(sid)
+  }
+}
+
+// Advance enemy detonations. At peak, apply damage to the player if in range. Detonations
+// are removed when their attackTimer exceeds expandTime + linger.
+function updateEnemyDetonations(dt: number): void {
+  if (enemyDetonations.length === 0) return
+  const player = getPlayer()
+  for (let i = enemyDetonations.length - 1; i >= 0; i--) {
+    const d = enemyDetonations[i]!
+    const prev = d.attackTimer
+    d.attackTimer += dt
+    // Peak hit check — fires exactly once on the frame where attackTimer crosses expandTime
+    if (!d.peakFired && prev < d.expandTime && d.attackTimer >= d.expandTime) {
+      d.peakFired = true
+      // Ring sound — fires exactly at the damage moment (peak), not at landing. Player
+      // perceives this as "the ring hit" rather than "the bullet arrived."
+      if (d.sound) playEnemyBeatTick(d.patternName, d.sound)
+      // Player hit if distance from detonation center to player crosses the ring at peak.
+      // Mirrors enemy-ring hit detection logic (`Math.abs(dist - ringRadius) < hitRadius`).
+      const px = player.x - d.x
+      const py = player.y - d.y
+      const pdist = Math.sqrt(px * px + py * py)
+      if (Math.abs(pdist - d.ringRadius) < player.hitRadius) {
+        // Skip if ghost-dashing (matches existing player-ring damage gating)
+        if (!(player.dashTimer >= 0 && hasBonus('ghostDash'))) {
+          if (hurtPlayer(player, d.damage)) playPlayerHit()
+        }
+      }
+      // Consume — eat orbs touching the ring's circumference at peak, heal source enemy.
+      // Mirrors revenge-ring consume logic. Skips if owner is dead.
+      if (d.consume) {
+        const owner = d.enemyOwner
+        const allOrbs = getOrbs()
+        for (const orb of allOrbs) {
+          if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
+          const odx = orb.x - d.x
+          const ody = orb.y - d.y
+          const oDist = Math.sqrt(odx * odx + ody * ody)
+          if (Math.abs(oDist - d.ringRadius) < orb.radius + 2) {
+            collectOrb(orb, 'enemy')
+            if (owner.alive && !owner.dying && owner.hp < owner.maxHp) {
+              owner.hp = Math.min(owner.hp + 1, owner.maxHp)
+            }
+            const isHP = orb.orbType === 'hp'
+            Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 140 : 255, isHP ? 140 : 200, owner.x, owner.y)
+          }
+        }
+      }
+    }
+    // Remove after linger window
+    if (d.attackTimer > d.expandTime + 0.05) {
+      enemyDetonations[i] = enemyDetonations[enemyDetonations.length - 1]!
+      enemyDetonations.pop()
+    }
+  }
+}
+
+// Accessors for the renderer to draw bullets + detonations
+export function getEnemyBullets(): readonly EnemyBullet[] { return enemyBullets }
+export function getEnemyDetonations(): readonly EnemyDetonation[] { return enemyDetonations }
+
+// Iterate the connection pairs for a given topology — produces (a, b) index pairs for the
+// `n` points. Used by the hit check + (mirrored) by the renderer for the visual beams.
+function* tetherPairs(topology: TetherTopology, n: number): Generator<[number, number]> {
+  if (n < 2) return
+  if (topology === 'closed') {
+    for (let i = 0; i < n; i++) yield [i, (i + 1) % n]
+  } else if (topology === 'open') {
+    for (let i = 0; i < n - 1; i++) yield [i, i + 1]
+  } else if (topology === 'pairs') {
+    for (let i = 0; i + 1 < n; i += 2) yield [i, i + 1]
+  } else if (topology === 'star') {
+    // Hub = centroid; treat as virtual index n. Caller must compute centroid separately.
+    for (let i = 0; i < n; i++) yield [i, n]
+  } else if (topology === 'all') {
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) yield [i, j]
+  }
+}
+
+// Squared distance from a point to a line segment AB.
+function distSqPointToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const abx = bx - ax, aby = by - ay
+  const lenSq = abx * abx + aby * aby
+  if (lenSq < 0.001) {
+    const ex0 = px - ax, ey0 = py - ay
+    return ex0 * ex0 + ey0 * ey0
+  }
+  let t = ((px - ax) * abx + (py - ay) * aby) / lenSq
+  if (t < 0) t = 0
+  else if (t > 1) t = 1
+  const cx = ax + abx * t, cy = ay + aby * t
+  const ex = px - cx, ey = py - cy
+  return ex * ex + ey * ey
+}
+
+function updateTethers(dt: number): void {
+  if (tetherEntities.length === 0) return
+  const player = getPlayer()
+  for (let i = tetherEntities.length - 1; i >= 0; i--) {
+    const t = tetherEntities[i]!
+    t.timer += dt
+    // Pre-arm gate — tether is dormant until prearmTime elapses. Bullets have landed and
+    // rings are already expanding by the time we reach this point, but no damage/visual yet.
+    // Strike sound — fired SOUND_AUDIO_LATENCY before materialization so the heard tick lands with
+    // the visual (same audio-latency lead the other beat sounds use). Checked BEFORE the prearm gate.
+    if (!t.soundFired && t.timer >= t.prearmTime - (SOUND_AUDIO_LATENCY + TETHER_SOUND_EXTRA)) {
+      t.soundFired = true
+      if (t.tetherSound) playEnemyBeatTick(t.patternName, t.tetherSound)
+    }
+    if (t.timer < t.prearmTime) continue
+    // Effective tether time = how long we've been MATERIALIZED. Hit windows + retire timing
+    // are all measured from materialization, not raw spawn.
+    const effective = t.timer - t.prearmTime
+    // Player hit check — applies once per tether during the early bright window. Treat each
+    // beam segment as a fat line of width tetherWidth; player hits if perpendicular distance
+    // to any segment <= (hitRadius + width/2). Ghost-dash invuln mirrors the ring damage gate.
+    if (!t.playerHit && effective <= TETHER_HIT_WINDOW) {
+      const ghost = player.dashTimer >= 0 && hasBonus('ghostDash')
+      if (!ghost) {
+        const reach = player.hitRadius + t.width * 0.5
+        const reachSq = reach * reach
+        const n = t.xs.length
+        let hubX = 0, hubY = 0
+        if (t.topology === 'star') {
+          for (let k = 0; k < n; k++) { hubX += t.xs[k]!; hubY += t.ys[k]! }
+          hubX /= n; hubY /= n
+        }
+        for (const [a, b] of tetherPairs(t.topology, n)) {
+          const ax = t.xs[a]!, ay = t.ys[a]!
+          const bx = b === n ? hubX : t.xs[b]!
+          const by = b === n ? hubY : t.ys[b]!
+          if (distSqPointToSegment(player.x, player.y, ax, ay, bx, by) <= reachSq) {
+            if (hurtPlayer(player, t.damage)) playPlayerHit()
+            t.playerHit = true
+            break
+          }
+        }
+      }
+    }
+    // Consume — eat any orbs touching the beam segments, heal source enemy. One-shot during
+    // the bright window (post-prearm). Mirrors revenge-ring consume.
+    if (t.consume && !t.consumeFired && effective <= TETHER_HIT_WINDOW) {
+      t.consumeFired = true
+      const owner = t.enemyOwner
+      const n = t.xs.length
+      let hubX = 0, hubY = 0
+      if (t.topology === 'star') {
+        for (let k = 0; k < n; k++) { hubX += t.xs[k]!; hubY += t.ys[k]! }
+        hubX /= n; hubY /= n
+      }
+      const halfW = t.width * 0.5
+      const allOrbs = getOrbs()
+      for (const orb of allOrbs) {
+        if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
+        const reach = orb.radius + halfW
+        const reachSq = reach * reach
+        let hit = false
+        for (const [a, b] of tetherPairs(t.topology, n)) {
+          const ax = t.xs[a]!, ay = t.ys[a]!
+          const bx = b === n ? hubX : t.xs[b]!
+          const by = b === n ? hubY : t.ys[b]!
+          if (distSqPointToSegment(orb.x, orb.y, ax, ay, bx, by) <= reachSq) {
+            hit = true
+            break
+          }
+        }
+        if (hit) {
+          collectOrb(orb, 'enemy')
+          if (owner.alive && !owner.dying && owner.hp < owner.maxHp) {
+            owner.hp = Math.min(owner.hp + 1, owner.maxHp)
+          }
+          const isHP = orb.orbType === 'hp'
+          Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 140 : 255, isHP ? 140 : 200, owner.x, owner.y)
+        }
+      }
+    }
+    if (effective >= TETHER_DUR) {
+      tetherEntities[i] = tetherEntities[tetherEntities.length - 1]!
+      tetherEntities.pop()
     }
   }
 }
@@ -1223,6 +2104,11 @@ function resolveOrbCollision(
     orbPush = 0; otherPush = total
   } else if (!launchedOrb && launchedOther) {
     orbPush = total; otherPush = 0
+  } else if (isEnemy && orb.orbType === 'hp') {
+    // Heart vs regular enemy (neither launched) — heart is heavier, enemy yields slightly
+    // more so hearts act as a soft obstacle in enemy pathing. Subtle nudge over the 0.5/0.5
+    // default used for XP orbs (and for hearts vs other orbs).
+    orbPush = total * 0.35; otherPush = total * 0.65
   } else {
     orbPush = total * 0.5; otherPush = total * 0.5
   }
@@ -1518,8 +2404,14 @@ export function resetPendingEffects(): void {
   pendingShrineSpawns.length = 0
   pendingDetonations.length = 0
   shockWaves.length = 0
+  pendingSounds.length = 0
+  pendingPushDetonations.length = 0
   for (const p of dashShotProjectiles) stopDashShotCrackle(p.crackleId)   // silence any in-flight bolts before clearing the list
   dashShotProjectiles.length = 0
+  enemyBullets.length = 0
+  enemyDetonations.length = 0
+  tetherEntities.length = 0
+  pendingSalvos.clear()
   activeChillZone = null
   Renderer.clearChillZoneViz()
   lowHpToastFired = false
@@ -1595,6 +2487,10 @@ export function resetPendingEffects(): void {
 }
 
 function updateDesigner(dt: number): void {
+  // D_TOTAL = whole designer-update path. The designer skips the normal update() body, so
+  // WITHOUT this the designer's per-frame sim cost (bullets/tethers/enemies/collision) was
+  // completely unmeasured — only R_TOTAL (render) showed up. Mirrors U_TOTAL for gameplay.
+  perfStart('D_TOTAL')
   tickAudioHealth()
   advanceGlobalTime(dt)
   advancePatternClock(dt)
@@ -1613,8 +2509,13 @@ function updateDesigner(dt: number): void {
   const enemies = getEnemies()
   const grid = getGrid()
   updatePlayer(player, dt)
-  updateShockWaves(dt)   // Reverb push wave — pushes enemies/orbs as the expanding front reaches them
-  updateDashShots(dt)    // Bolt projectiles — advance and detonate on lifetime expiry
+  perfStart('d_dashshots'); updateDashShots(dt); perfEnd('d_dashshots')     // Bolt projectiles
+  perfStart('d_bullets'); updateEnemyBullets(dt); perfEnd('d_bullets')      // bullets travel + cluster cascade spawn
+  perfStart('d_shockwaves'); updateShockWaves(dt); perfEnd('d_shockwaves')  // Reverb / push-mode wave
+  perfStart('d_detons'); updateEnemyDetonations(dt); perfEnd('d_detons')    // detonation rings + peak damage
+  perfStart('d_tethers'); updateTethers(dt); perfEnd('d_tethers')           // tether beams + damage window
+  updatePendingPushDetonations(dt) // Push-mode wave/visual queue — fires 0.10s after landing so wave mid-point aligns with tether strike
+  updatePendingSounds(dt) // Push-mode ring sound queue — fires on the correct beat after wave retires
   // Tick all alive enemies (spawn-test ephemerals AND any children they summon — totems,
   // shrines, summoners. Without this, summoned children stay frozen at spawn radius 1 = "tiny specs").
   // Player can take damage normally — but won't die because death check is gated to phase 'playing'.
@@ -1675,10 +2576,12 @@ function updateDesigner(dt: number): void {
       if (e.zoneSlowFrac !== 0) e.zoneSlowFrac = 0
     }
   }
+  perfStart('d_enemies')
   for (const e of enemies) {
     if (e.dying) updateDeath(e, dt)
     else if (e.alive) updateEnemy(e, player, dt, grid)
   }
+  perfEnd('d_enemies')
   // Ritual nodes (orbiting nodes around summoners) — without this, summoner nodes are frozen.
   updateRitualNodes(dt)
   // Tick orbs (grow-in, animations). Player pushes orbs aside on contact — collection happens
@@ -1701,6 +2604,7 @@ function updateDesigner(dt: number): void {
       player.y -= ny * overlap * 0.15
     }
   }
+  perfStart('d_collision')
   // Orb separation (grid-accelerated, mirrors real-game pass). Uses resolveOrbCollision
   // helper so the battering-ram rules stay in sync with the real-game pass below.
   for (const orb of orbs) {
@@ -1806,6 +2710,7 @@ function updateDesigner(dt: number): void {
   }
   const pc = clampToArena(player.x, player.y, player.hitRadius)
   player.x = pc.x; player.y = pc.y
+  perfEnd('d_collision')
   // Drop dead/cleaned enemies (ephemerals + their offspring)
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i]!
@@ -1814,6 +2719,7 @@ function updateDesigner(dt: number): void {
   const dir = Input.getMovementDir()
   updateCamera(cam, player.x, player.y, dir.x, dir.y, Renderer.getLogicalSize().w, Renderer.getLogicalSize().h, dt, Renderer.getCameraZoom())
   updatePreviewEnemy(dt)
+  perfEnd('D_TOTAL')
 }
 
 export function clearDesignerEphemerals(): void {
@@ -1825,6 +2731,15 @@ export function clearDesignerEphemerals(): void {
 }
 
 export function update(dt: number): void {
+  // Perf-log export (P) — checked BEFORE the per-phase early-returns so it works in the
+  // designer / paused / any phase, not just active play. Perf data accumulates every frame in
+  // render() regardless of phase, so the export is valid wherever you press it.
+  if (Input.isKeyDown('p') && !perfExportLock) {
+    perfExportLock = true
+    exportPerfLog()
+  }
+  if (!Input.isKeyDown('p')) perfExportLock = false
+
   const phase = getPhase()
 
   if (phase === 'designer') {
@@ -1983,13 +2898,6 @@ export function update(dt: number): void {
   }
   if (!Input.isKeyDown('g')) arenaToggleLock = false
 
-  // P = export perf log
-  if (Input.isKeyDown('p') && !perfExportLock) {
-    perfExportLock = true
-    exportPerfLog()
-  }
-  if (!Input.isKeyDown('p')) perfExportLock = false
-
   perfStart('U_TOTAL')
 
   tickAudioHealth()  // auto-fix suspended AudioContext on mobile
@@ -2031,8 +2939,13 @@ export function update(dt: number): void {
   updatePlayer(player, dt)
   perfEnd('u_player')
 
-  updateShockWaves(dt)   // Reverb push wave — pushes enemies/orbs as the expanding front reaches them
-  updateDashShots(dt)    // Bolt projectiles — advance and detonate on lifetime expiry
+  updateDashShots(dt)    // Bolt projectiles — advance and detonate on lifetime expiry (may spawn shock waves)
+  updateEnemyBullets(dt) // Enemy ranged ring bullets — travel, then spawn detonation on expiry (push mode may spawn shock waves)
+  updateShockWaves(dt)   // Reverb / push-mode wave — runs AFTER spawners so newly-spawned waves push on the same frame
+  updateEnemyDetonations(dt)  // Detonation rings expand; apply damage at peak
+  updateTethers(dt)      // Tether beams — apply damage in the bright window, retire after fade
+  updatePendingPushDetonations(dt) // Push-mode wave/visual queue — fires 0.10s after landing so wave mid-point aligns with tether strike
+  updatePendingSounds(dt) // Push-mode ring sound queue — fires on the correct beat after wave retires
 
   // Danger music — dark layer when low HP
   updateDangerMusic(player.hp / player.maxHp)

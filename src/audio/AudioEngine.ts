@@ -65,7 +65,10 @@ function createReverb(audioCtx: AudioContext): { input: GainNode; output: GainNo
 
 function ensureContext(): AudioContext {
   if (!ctx) {
-    ctx = new AudioContext()
+    // latencyHint 'interactive' = smallest practical output buffer → lowest scheduling delay.
+    // This is the default, but pinning it guards against a browser picking a larger buffer.
+    // Critical for reaction sounds (player hit) that must land on the exact off-beat frame.
+    ctx = new AudioContext({ latencyHint: 'interactive' })
     compressor = ctx.createDynamicsCompressor()
     compressor.threshold.value = -12
     compressor.knee.value = 6
@@ -239,54 +242,101 @@ export function playKill(): void {
   osc.stop(t + 0.3)
 }
 
-export function playPlayerHit(): void {
+// Core "shield crash" synthesis — a descending dissonant shatter (ping + sub + noise + moan).
+// Shared by the player damage hit and the shield-break event so the two stay in sync. `speed`
+// scales every envelope time (smaller = quicker/snappier), `pitchMul` shifts all oscillators
+// (higher = glassier), and the DRY layers (sub + noise) route to `dryDest` so a caller can
+// color them through a filter; the WET layers (ping + moan) always feed reverb. The old player
+// hit was a thin tonal stab that felt dinky — it now reuses this fuller crash instead.
+function shieldCrash(speed: number, pitchMul: number, dryDest: AudioNode): void {
   ensureContext()
   const c = ctx!
   const t = c.currentTime
 
-  // Tonal hit — minor chord stab, musical but painful
-  const click = c.createOscillator()
-  const clickGain = c.createGain()
-  click.type = 'square'
-  click.frequency.setValueAtTime(440, t)  // A4 — cuts through
-  click.frequency.exponentialRampToValueAtTime(110, t + 0.08)
-  clickGain.gain.setValueAtTime(rVol(0.55), t)
-  clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.1)
-  click.connect(clickGain)
-  clickGain.connect(master)
-  click.start(t)
-  click.stop(t + 0.1)
+  // Descending dissonant crash — minor second interval, feels wrong
+  const ping = c.createOscillator()
+  const ping2 = c.createOscillator()
+  const pingGain = c.createGain()
+  ping.type = 'sawtooth'
+  ping2.type = 'sawtooth'
+  ping.frequency.setValueAtTime(rPitch(1400 * pitchMul), t)
+  ping.frequency.exponentialRampToValueAtTime(rPitch(180 * pitchMul), t + 0.35 * speed)
+  ping2.frequency.setValueAtTime(rPitch(1480 * pitchMul), t) // minor second = dissonance
+  ping2.frequency.exponentialRampToValueAtTime(rPitch(170 * pitchMul), t + 0.35 * speed)
+  pingGain.gain.setValueAtTime(rVol(0.3), t)
+  pingGain.gain.exponentialRampToValueAtTime(0.001, t + 0.4 * speed)
+  const pingFilter = c.createBiquadFilter()
+  pingFilter.type = 'lowpass'
+  pingFilter.frequency.setValueAtTime(4000, t)
+  pingFilter.frequency.exponentialRampToValueAtTime(500, t + 0.35 * speed)
+  ping.connect(pingFilter)
+  ping2.connect(pingFilter)
+  pingFilter.connect(pingGain)
+  pingGain.connect(reverbInput)
+  ping.start(t)
+  ping2.start(t)
+  ping.stop(t + 0.4 * speed)
+  ping2.stop(t + 0.4 * speed)
 
-  // Dissonant minor second — the "pain" interval
-  const dis = c.createOscillator()
-  const disGain = c.createGain()
-  dis.type = 'sawtooth'
-  dis.frequency.setValueAtTime(466, t)  // Bb4 — half step above A = tension
-  dis.frequency.exponentialRampToValueAtTime(116, t + 0.08)
-  disGain.gain.setValueAtTime(rVol(0.35), t)
-  disGain.gain.exponentialRampToValueAtTime(0.001, t + 0.08)
-  dis.connect(disGain)
-  disGain.connect(master)
-  dis.start(t)
-  dis.stop(t + 0.08)
+  // Heavy sub drop — ominous gut punch
+  const sub = c.createOscillator()
+  const subGain = c.createGain()
+  sub.type = 'sine'
+  sub.frequency.setValueAtTime(rPitch(120 * pitchMul), t)
+  sub.frequency.exponentialRampToValueAtTime(rPitch(20 * pitchMul), t + 0.3 * speed)
+  subGain.gain.setValueAtTime(rVol(0.6), t)
+  subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.3 * speed)
+  sub.connect(subGain)
+  subGain.connect(dryDest)
+  sub.start(t)
+  sub.stop(t + 0.3 * speed)
 
-  // Low thud body
-  const osc1 = c.createOscillator()
-  const osc2 = c.createOscillator()
-  const gain = c.createGain()
-  osc1.type = 'triangle'
-  osc1.frequency.value = rPitch(50)
-  osc2.type = 'sawtooth'
-  osc2.frequency.value = rPitch(75)
-  gain.gain.setValueAtTime(rVol(0.75), t)
-  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
-  osc1.connect(gain)
-  osc2.connect(gain)
-  gain.connect(master)
-  osc1.start(t)
-  osc2.start(t)
-  osc1.stop(t + 0.2)
-  osc2.stop(t + 0.2)
+  // Harsh shatter noise — loud, aggressive
+  const noiseDur = 0.25 * speed
+  const noiseBuf = c.createBuffer(1, Math.floor(c.sampleRate * noiseDur), c.sampleRate)
+  const noiseData = noiseBuf.getChannelData(0)
+  for (let i = 0; i < noiseData.length; i++) noiseData[i] = (Math.random() * 2 - 1) * 0.7
+  const noise = c.createBufferSource()
+  noise.buffer = noiseBuf
+  const noiseGain = c.createGain()
+  noiseGain.gain.setValueAtTime(rVol(0.45), t)
+  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + noiseDur)
+  const hpf = c.createBiquadFilter()
+  hpf.type = 'highpass'
+  hpf.frequency.value = 1200
+  noise.connect(hpf)
+  hpf.connect(noiseGain)
+  noiseGain.connect(dryDest)
+  noise.start(t)
+  noise.stop(t + noiseDur)
+
+  // Dark descending moan — tritone dissonance, something went wrong
+  const moan = c.createOscillator()
+  const moan2 = c.createOscillator()
+  const moanGain = c.createGain()
+  moan.type = 'triangle'
+  moan2.type = 'triangle'
+  moan.frequency.setValueAtTime(rPitch(300 * pitchMul), t + 0.05 * speed)
+  moan.frequency.exponentialRampToValueAtTime(rPitch(150 * pitchMul), t + 0.5 * speed)
+  moan2.frequency.setValueAtTime(rPitch(424 * pitchMul), t + 0.05 * speed) // tritone = devil's interval
+  moan2.frequency.exponentialRampToValueAtTime(rPitch(212 * pitchMul), t + 0.5 * speed)
+  moanGain.gain.setValueAtTime(0.001, t + 0.05 * speed)
+  moanGain.gain.linearRampToValueAtTime(rVol(0.2), t + 0.12 * speed)
+  moanGain.gain.exponentialRampToValueAtTime(0.001, t + 0.5 * speed)
+  moan.connect(moanGain)
+  moan2.connect(moanGain)
+  moanGain.connect(reverbInput)
+  moan.start(t + 0.05 * speed)
+  moan2.start(t + 0.05 * speed)
+  moan.stop(t + 0.5 * speed)
+  moan2.stop(t + 0.5 * speed)
+}
+
+export function playPlayerHit(): void {
+  // Was a thin tonal stab (too dinky) — now the fuller shield-crash body, sped up for a
+  // snappier impact. Dry layers go straight to master: this is the "clean" reference version,
+  // while playShieldBreak runs the same crash through a filter to stay distinct.
+  shieldCrash(0.8, 1.0, master)
 }
 
 export function playVolatileExplosion(): void {
@@ -548,85 +598,17 @@ export function playEnemyShieldRestore(): void {
 export function playShieldBreak(): void {
   ensureContext()
   const c = ctx!
-  const t = c.currentTime
-
-  // Descending dissonant crash — minor second interval, feels wrong
-  const ping = c.createOscillator()
-  const ping2 = c.createOscillator()
-  const pingGain = c.createGain()
-  ping.type = 'sawtooth'
-  ping2.type = 'sawtooth'
-  ping.frequency.setValueAtTime(rPitch(1400), t)
-  ping.frequency.exponentialRampToValueAtTime(rPitch(180), t + 0.35)
-  ping2.frequency.setValueAtTime(rPitch(1480), t) // minor second = dissonance
-  ping2.frequency.exponentialRampToValueAtTime(rPitch(170), t + 0.35)
-  pingGain.gain.setValueAtTime(rVol(0.3), t)
-  pingGain.gain.exponentialRampToValueAtTime(0.001, t + 0.4)
-  const pingFilter = c.createBiquadFilter()
-  pingFilter.type = 'lowpass'
-  pingFilter.frequency.setValueAtTime(4000, t)
-  pingFilter.frequency.exponentialRampToValueAtTime(500, t + 0.35)
-  ping.connect(pingFilter)
-  ping2.connect(pingFilter)
-  pingFilter.connect(pingGain)
-  pingGain.connect(reverbInput)
-  ping.start(t)
-  ping2.start(t)
-  ping.stop(t + 0.4)
-  ping2.stop(t + 0.4)
-
-  // Heavy sub drop — ominous gut punch
-  const sub = c.createOscillator()
-  const subGain = c.createGain()
-  sub.type = 'sine'
-  sub.frequency.setValueAtTime(rPitch(120), t)
-  sub.frequency.exponentialRampToValueAtTime(rPitch(20), t + 0.3)
-  subGain.gain.setValueAtTime(rVol(0.6), t)
-  subGain.gain.exponentialRampToValueAtTime(0.001, t + 0.3)
-  sub.connect(subGain)
-  subGain.connect(master)
-  sub.start(t)
-  sub.stop(t + 0.3)
-
-  // Harsh shatter noise — loud, aggressive
-  const noiseDur = 0.25
-  const noiseBuf = c.createBuffer(1, Math.floor(c.sampleRate * noiseDur), c.sampleRate)
-  const noiseData = noiseBuf.getChannelData(0)
-  for (let i = 0; i < noiseData.length; i++) noiseData[i] = (Math.random() * 2 - 1) * 0.7
-  const noise = c.createBufferSource()
-  noise.buffer = noiseBuf
-  const noiseGain = c.createGain()
-  noiseGain.gain.setValueAtTime(rVol(0.45), t)
-  noiseGain.gain.exponentialRampToValueAtTime(0.001, t + noiseDur)
-  const hpf = c.createBiquadFilter()
-  hpf.type = 'highpass'
-  hpf.frequency.value = 1200
-  noise.connect(hpf)
-  hpf.connect(noiseGain)
-  noiseGain.connect(master)
-  noise.start(t)
-  noise.stop(t + noiseDur)
-
-  // Dark descending moan — tritone dissonance, something went wrong
-  const moan = c.createOscillator()
-  const moan2 = c.createOscillator()
-  const moanGain = c.createGain()
-  moan.type = 'triangle'
-  moan2.type = 'triangle'
-  moan.frequency.setValueAtTime(rPitch(300), t + 0.05)
-  moan.frequency.exponentialRampToValueAtTime(rPitch(150), t + 0.5)
-  moan2.frequency.setValueAtTime(rPitch(424), t + 0.05) // tritone = devil's interval
-  moan2.frequency.exponentialRampToValueAtTime(rPitch(212), t + 0.5)
-  moanGain.gain.setValueAtTime(0.001, t + 0.05)
-  moanGain.gain.linearRampToValueAtTime(rVol(0.2), t + 0.12)
-  moanGain.gain.exponentialRampToValueAtTime(0.001, t + 0.5)
-  moan.connect(moanGain)
-  moan2.connect(moanGain)
-  moanGain.connect(reverbInput)
-  moan.start(t + 0.05)
-  moan2.start(t + 0.05)
-  moan.stop(t + 0.5)
-  moan2.stop(t + 0.5)
+  // Same crash as the player hit, made UNIQUE so the two don't sound identical: pitched up a
+  // touch for a glassier shatter, and the dry layers run through a resonant peaking filter
+  // (metallic/crystalline ring) instead of going flat to master. Sped up the most for a sharp
+  // "shield shattered" snap.
+  const glass = c.createBiquadFilter()
+  glass.type = 'peaking'
+  glass.frequency.value = 2600
+  glass.Q.value = 1.8
+  glass.gain.value = 9
+  glass.connect(master)
+  shieldCrash(0.75, 1.12, glass)
 }
 
 export function playShieldRestore(): void {

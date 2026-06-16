@@ -19,7 +19,7 @@ import { emit } from '../core/EventBus.ts'
 import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC, SHIELD_BREAK_FLASH, HEAVY_YIELD } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import type { Player } from './Player.ts'
-import type { EnemyType, MovePattern, SummonPhase, ShrinePhase } from './EnemyTypes.ts'
+import type { EnemyType, MovePattern, SummonPhase, ShrinePhase, RangedPattern, RangedRotationMode, TetherTopology, ClusterLayer } from './EnemyTypes.ts'
 import { getEnemyType } from './EnemyTypes.ts'
 import { SpatialGrid } from '../core/SpatialGrid.ts'
 import { getChillRank } from '../game/UpgradeManager.ts'
@@ -40,6 +40,36 @@ export interface RingState {
   peakX: number            // enemy position at ring peak
   peakY: number
   peakCaptured: boolean
+  // Ranged mode — when on, beat-fire launches bullets that detonate this ring's properties
+  // at their landing position instead of firing in place at the enemy.
+  rangedMode: boolean
+  rangedPattern: RangedPattern
+  bulletCount: number
+  bulletSpeed: number
+  bulletLifetime: number
+  surroundRadius: number
+  spreadAngle: number
+  rotationStep: number
+  rotationMode: RangedRotationMode
+  rotationAngle: number    // runtime state — accumulated angle for rotating patterns
+  tracking: boolean
+  trackingStrength: number // radians per second
+  volleyMode: boolean
+  volleyWindow: number     // seconds — total stagger duration across the salvo
+  pushMode: boolean        // detonation = Reverb-style shock push (no damage ring)
+  explodeMode: boolean     // detonation = volatile explosion (anim + sound), filled blast disc damage
+  staccato: boolean        // bullets freeze between beats and snap forward on each beat
+  staccatoDivision: number // hops per beat: 1 = whole beat, 2 = half beat (eighth notes)
+  staccatoPhase: number    // hop-grid phase shift in beats: 0 = on-beat, 0.5 = off-beat (&s)
+  tetherMode: TetherTopology  // damage beams between bullets at the detonation beat
+  tetherWidth: number      // beam thickness in px
+  tetherSound: string      // sound played at tether strike (empty = silent)
+  // Per-generation cluster states. Length = number of cluster generations (gen 1, gen 2, ...).
+  // Each entry is a FULL RingState derived from the parent (this state's fields) merged with
+  // its ClusterLayer overrides. Each has its OWN mutable rotation/edge state. When a bullet
+  // detonates with layerIndex < childLayers.length, the next layer's RingState drives the
+  // child salvo's pattern, count, push/tether, etc.
+  childLayers: RingState[]
 }
 
 export interface Enemy {
@@ -189,29 +219,129 @@ export function getRingOrigins(enemy: Enemy, rs: RingState): { x: number; y: num
   return origins
 }
 
+// Build a child-layer RingState by cloning the parent's state, resetting mutable runtime
+// fields, and applying any per-layer override. Mutable state (rotation, edge cycle, peak
+// capture) is INDEPENDENT per layer so each generation's rotation/etc advances on its own.
+// The `ring` field is shallow-cloned only when ringRadius is overridden (otherwise siblings
+// share the same Ring object harmlessly — RingState doesn't mutate ring.radius).
+function buildChildLayerState(parent: RingState, layer: ClusterLayer): RingState {
+  const cloned: RingState = { ...parent }
+  // Reset runtime state — each layer's rotation/edge cycle/etc is independent.
+  cloned.attackTimer = -1
+  cloned.rotationAngle = 0
+  cloned.edgeIndex = 0
+  cloned.edgeAngle = 0
+  cloned.edgeBeatCount = 0
+  cloned.peakX = 0
+  cloned.peakY = 0
+  cloned.peakCaptured = false
+  cloned.childLayers = []
+  // Apply overrides
+  if (layer.rangedPattern !== undefined) cloned.rangedPattern = layer.rangedPattern
+  if (layer.bulletCount !== undefined) cloned.bulletCount = layer.bulletCount
+  if (layer.bulletSpeed !== undefined) cloned.bulletSpeed = layer.bulletSpeed
+  if (layer.bulletLifetime !== undefined) cloned.bulletLifetime = layer.bulletLifetime
+  if (layer.surroundRadius !== undefined) cloned.surroundRadius = layer.surroundRadius
+  if (layer.spreadAngle !== undefined) cloned.spreadAngle = layer.spreadAngle
+  if (layer.rotationStep !== undefined) cloned.rotationStep = layer.rotationStep
+  if (layer.rotationMode !== undefined) cloned.rotationMode = layer.rotationMode
+  if (layer.tracking !== undefined) cloned.tracking = layer.tracking
+  if (layer.trackingStrength !== undefined) cloned.trackingStrength = layer.trackingStrength
+  if (layer.volleyMode !== undefined) cloned.volleyMode = layer.volleyMode
+  if (layer.volleyWindow !== undefined) cloned.volleyWindow = layer.volleyWindow
+  if (layer.pushMode !== undefined) cloned.pushMode = layer.pushMode
+  if (layer.explodeMode !== undefined) cloned.explodeMode = layer.explodeMode
+  if (layer.staccato !== undefined) cloned.staccato = layer.staccato
+  if (layer.staccatoHalfBeat !== undefined) cloned.staccatoDivision = layer.staccatoHalfBeat ? 2 : 1
+  if (layer.staccatoOffbeat !== undefined) cloned.staccatoPhase = layer.staccatoOffbeat ? 0.5 : 0
+  if (layer.tetherMode !== undefined) cloned.tetherMode = layer.tetherMode
+  if (layer.tetherWidth !== undefined) cloned.tetherWidth = layer.tetherWidth
+  if (layer.expandTime !== undefined) cloned.expandTime = layer.expandTime
+  if (layer.sound !== undefined && layer.sound !== '') cloned.sound = layer.sound
+  if (layer.tetherSound !== undefined && layer.tetherSound !== '') cloned.tetherSound = layer.tetherSound
+  if (layer.ringRadius !== undefined) {
+    // Need a new Ring object since ring.radius differs from parent's
+    cloned.ring = { ...parent.ring, radius: layer.ringRadius }
+  }
+  return cloned
+}
+
 export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
   // Build ring states from type config
   const ringConfigs = type.rings ?? [
     { ringRadius: type.ringRadius, sound: type.role, beats: [] }
   ]
 
-  const rings: RingState[] = ringConfigs.map((rc, i) => ({
-    ring: createRing(rc.ringRadius, 1, hexToRgba(type.color), 'enemy'),
-    attackTimer: -1,
-    expandTime: ATTACK_EXPAND_TIME,
-    patternName: ringConfigs.length > 1 ? `${type.name}_r${i}` : type.name,
-    sound: rc.sound,
-    edgeMode: rc.edgeMode ?? false,
-    edgePoints: rc.edgePoints ?? 3,
-    edgeActive: rc.edgeActive ?? 1,
-    edgeSwitchBeats: rc.edgeSwitchBeats ?? 1,
-    edgeIndex: 0,
-    edgeAngle: 0,
-    edgeBeatCount: 0,
-    peakX: 0,
-    peakY: 0,
-    peakCaptured: false,
-  }))
+  const rings: RingState[] = ringConfigs.map((rc, i) => {
+    const baseState: RingState = {
+      ring: createRing(rc.ringRadius, 1, hexToRgba(type.color), 'enemy'),
+      attackTimer: -1,
+      expandTime: ATTACK_EXPAND_TIME,
+      patternName: ringConfigs.length > 1 ? `${type.name}_r${i}` : type.name,
+      sound: rc.sound,
+      edgeMode: rc.edgeMode ?? false,
+      edgePoints: rc.edgePoints ?? 3,
+      edgeActive: rc.edgeActive ?? 1,
+      edgeSwitchBeats: rc.edgeSwitchBeats ?? 1,
+      edgeIndex: 0,
+      edgeAngle: 0,
+      edgeBeatCount: 0,
+      peakX: 0,
+      peakY: 0,
+      peakCaptured: false,
+      // Ranged mode — all optional in config, normalized to required RingState fields with
+      // sensible defaults. `rangedMode: false` keeps existing per-ring behavior unchanged.
+      rangedMode: rc.rangedMode ?? false,
+      rangedPattern: (rc.rangedPattern ?? 'aimed') as RangedPattern,
+      bulletCount: rc.bulletCount ?? 1,
+      bulletSpeed: rc.bulletSpeed ?? 280,
+      bulletLifetime: rc.bulletLifetime ?? 1.0,
+      surroundRadius: rc.surroundRadius ?? 70,
+      spreadAngle: rc.spreadAngle ?? Math.PI / 3,
+      rotationStep: rc.rotationStep ?? 0,
+      rotationMode: (rc.rotationMode ?? 'player_anchored') as RangedRotationMode,
+      rotationAngle: 0,
+      tracking: rc.tracking ?? false,
+      trackingStrength: rc.trackingStrength ?? (Math.PI / 2),  // default 90°/s
+      volleyMode: rc.volleyMode ?? false,
+      volleyWindow: rc.volleyWindow ?? 0.25,
+      pushMode: rc.pushMode ?? false,
+      explodeMode: rc.explodeMode ?? false,
+      staccato: rc.staccato ?? false,
+      staccatoDivision: rc.staccatoHalfBeat ? 2 : 1,
+      staccatoPhase: rc.staccatoOffbeat ? 0.5 : 0,
+      tetherMode: (rc.tetherMode ?? 'off') as TetherTopology,
+      tetherWidth: rc.tetherWidth ?? 8,
+      tetherSound: rc.tetherSound ?? '',
+      childLayers: [],
+    }
+    // Migrate legacy `clusterSplits: N` to N empty-override layers (each gen inherits parent
+    // fully — same fractal behavior the old field produced). New configs use clusterLayers
+    // directly. Cap at 3.
+    const layerConfigs: ClusterLayer[] = rc.clusterLayers
+      ?? (rc.clusterSplits && rc.clusterSplits > 0
+        ? Array.from({ length: Math.min(3, rc.clusterSplits) }, () => ({}))
+        : [])
+    // Each layer = a CLONED parent state with mutable runtime fields reset + overrides applied.
+    // Layers chain inheritance: layer N starts from layer (N-1)'s resolved state, so unset
+    // fields in later layers cascade from earlier ones.
+    // ringRadius 0 means "no ring — relay/split only" for THAT layer. But a blank (inherit) child
+    // shouldn't silently adopt a 0 ancestor and lose its own explosion — so for non-overridden
+    // children we fall back to the nearest POSITIVE ancestor radius (or 120). An EXPLICIT 0 on a
+    // child is still respected (it stays a relay).
+    let prev = baseState
+    let lastPositiveRadius = baseState.ring.radius > 0 ? baseState.ring.radius : 120
+    for (const layer of layerConfigs.slice(0, 3)) {
+      const next = buildChildLayerState(prev, layer)
+      if (layer.ringRadius === undefined && next.ring.radius <= 0) {
+        next.ring = { ...next.ring, radius: lastPositiveRadius }   // new obj — don't mutate the shared parent ring
+      }
+      if (next.ring.radius > 0) lastPositiveRadius = next.ring.radius
+      baseState.childLayers.push(next)
+      prev = next
+    }
+    return baseState
+  })
 
   const e: Enemy = {
     x,
@@ -624,8 +754,16 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
           const interval = getBeatInterval(rs.patternName)
           const baseExpand = isBig ? 0.75 : ATTACK_EXPAND_TIME
           rs.expandTime = Math.min(baseExpand, interval * 0.8)
-          rs.attackTimer = 0
-          playWindup(rs.expandTime, false)
+          if (rs.rangedMode) {
+            // Ranged mode — fire bullets instead of firing the ring in place. The ring's
+            // attackTimer stays at -1 (idle). Detonation is handled by GameManager when the
+            // bullet's lifetime expires.
+            const origins = getRingOrigins(enemy, rs)
+            for (const o of origins) emit('enemy:rangedFire', enemy, i, o.x, o.y)
+          } else {
+            rs.attackTimer = 0
+            playWindup(rs.expandTime, false)
+          }
           if (rs.edgeMode) {
             rs.edgeBeatCount++
             if (rs.edgeBeatCount >= rs.edgeSwitchBeats) {
@@ -1027,10 +1165,17 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
         const interval = getBeatInterval(rs.patternName)
         const baseExpand = isBig2 ? 0.75 : ATTACK_EXPAND_TIME
         rs.expandTime = Math.min(baseExpand, interval * 0.8)
-        rs.attackTimer = 0
-        rs.peakCaptured = false
-        playWindup(rs.expandTime, false)
-        // Edge mode: advance point after N beats
+        if (rs.rangedMode) {
+          // Ranged mode — emit fire event; GameManager spawns bullets. Ring's attackTimer
+          // stays idle. Edge mode still advances below so the bullet origin rotates.
+          const origins = getRingOrigins(enemy, rs)
+          for (const o of origins) emit('enemy:rangedFire', enemy, i, o.x, o.y)
+        } else {
+          rs.attackTimer = 0
+          rs.peakCaptured = false
+          playWindup(rs.expandTime, false)
+        }
+        // Edge mode: advance point after N beats (applies regardless of ranged mode)
         if (rs.edgeMode) {
           rs.edgeBeatCount++
           if (rs.edgeBeatCount >= rs.edgeSwitchBeats) {

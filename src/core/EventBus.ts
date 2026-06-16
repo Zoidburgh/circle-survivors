@@ -13,6 +13,10 @@ export interface GameEventMap {
   'summon:phase': [enemy: Enemy]
   'player:beatDash': [player: Player]
   'player:shieldRechargeReset': [player: Player]
+  // Enemy ranged ring fire — payload carries the origin point (which respects edge mode).
+  // GameManager handles salvo computation + bullet spawn + tracking. ringIndex lets the
+  // handler look up the ring's ranged config (pattern, count, speed, etc).
+  'enemy:rangedFire': [enemy: Enemy, ringIndex: number, originX: number, originY: number]
 }
 
 type EventName = keyof GameEventMap

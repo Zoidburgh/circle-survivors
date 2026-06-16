@@ -405,6 +405,9 @@ window.addEventListener('keydown', e => {
     Renderer.toggleDebugOverlay()
     return
   }
+  // [ / ] — tune render-resolution scale live (perf vs sharpness). Shown in the perf overlay.
+  if (e.key === '[') { Renderer.setRenderScale(Renderer.getRenderScale() - 0.05); return }
+  if (e.key === ']') { Renderer.setRenderScale(Renderer.getRenderScale() + 0.05); return }
   // F1-F5: switch beat presets
   if (e.key.startsWith('F') && e.key.length <= 3) {
     const num = parseInt(e.key.slice(1))

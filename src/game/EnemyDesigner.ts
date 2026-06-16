@@ -53,7 +53,7 @@ export const SOUND_POOL = [
 
 export type SoundName = typeof SOUND_POOL[number]
 
-import type { RingConfig } from '../entities/EnemyTypes.ts'
+import type { RingConfig, ClusterLayer } from '../entities/EnemyTypes.ts'
 
 export interface DesignedEnemy extends EnemyType {
   sound: SoundName       // default sound (first ring)
@@ -400,6 +400,146 @@ const inputCSS = `
   padding: 6px; font: 13px monospace; border-radius: 3px; box-sizing: border-box;
 `
 const labelCSS = `font-size: 11px; color: #888; margin-bottom: 2px; display: block;`
+
+// Generate one cluster-layer card. Controls use the `ed-cl-*` prefix so they don't collide
+// with the base ring's `ed-rranged-*` controls; reads use `card.querySelector(...)` scoped
+// to the individual card div. `layer` may be undefined (use defaults) or a saved ClusterLayer.
+function renderLayerCardHTML(layerIdx: number, layer: ClusterLayer | undefined): string {
+  const l = layer ?? {}
+  return `
+    <div class="ed-rranged-layer" data-layer-idx="${layerIdx}" style="border:1px solid #553a4e;border-radius:3px;padding:5px 6px;margin-top:4px;background:rgba(255,107,157,0.05);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px;">
+        <span class="ed-cl-title" style="color:#FF6B9D;font:bold 10px monospace;">Layer ${layerIdx}</span>
+        <button type="button" class="ed-cl-remove" style="background:transparent;border:none;color:#999;cursor:pointer;font:11px monospace;padding:0 4px;">× remove</button>
+      </div>
+      <div style="display:flex;gap:6px;">
+        <div style="flex:2;"><span style="color:#999;font:9px monospace;">Pattern</span>
+          <select class="ed-cl-pat" style="${inputCSS}">
+            <option value="aimed" ${(!l.rangedPattern || l.rangedPattern === 'aimed') ? 'selected' : ''}>Aimed</option>
+            <option value="surround_player" ${l.rangedPattern === 'surround_player' ? 'selected' : ''}>Surround Player</option>
+            <option value="radial" ${l.rangedPattern === 'radial' ? 'selected' : ''}>Radial</option>
+            <option value="spread_cone" ${l.rangedPattern === 'spread_cone' ? 'selected' : ''}>Spread Cone</option>
+            <option value="rotating" ${l.rangedPattern === 'rotating' ? 'selected' : ''}>Rotating</option>
+          </select></div>
+        <div style="flex:1;"><span style="color:#999;font:9px monospace;">Count</span><input class="ed-cl-cnt" type="number" min="1" max="16" value="${l.bulletCount ?? 1}" style="${inputCSS}"></div>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:3px;">
+        <div style="flex:1;" title="Detonation ring radius for THIS layer. Leave blank to inherit from previous layer. Set to 0 for NO ring — the bullet just splits into the next layer with no detonation/damage."><span style="color:#FF9CFC;font:9px monospace;">Ring R</span><input class="ed-cl-rad" type="number" min="0" max="400" step="5" value="${l.ringRadius != null ? l.ringRadius : ''}" placeholder="(inherit)" style="${inputCSS}"></div>
+        <div style="flex:1;" title="Sound played when THIS layer's bullets detonate. Leave at (inherit) to use the previous layer / base ring's sound."><span style="color:#FF9CFC;font:9px monospace;">Sound</span>
+          <select class="ed-cl-sound" style="${inputCSS}">
+            <option value="" ${!l.sound ? 'selected' : ''}>(inherit)</option>
+            ${SOUND_POOL.map(s => `<option value="${s}" ${l.sound === s ? 'selected' : ''}>${s}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:3px;">
+        <div style="flex:1;"><span style="color:#999;font:9px monospace;">Speed</span><input class="ed-cl-speed" type="number" min="50" max="1500" step="10" value="${l.bulletSpeed ?? 280}" style="${inputCSS}"></div>
+        <div style="flex:1;"><span style="color:#999;font:9px monospace;">Travel (s)</span><input class="ed-cl-life" type="number" min="0.1" max="5" step="0.1" value="${l.bulletLifetime ?? 1.0}" style="${inputCSS}"></div>
+        <div style="flex:1;"><span style="color:#999;font:9px monospace;">Rotate°</span><input class="ed-cl-rot" type="number" min="-360" max="360" step="1" value="${l.rotationStep != null ? Math.round((l.rotationStep * 180 / Math.PI) * 10) / 10 : 0}" style="${inputCSS}"></div>
+      </div>
+      <div class="ed-cl-surround" style="display:${l.rangedPattern === 'surround_player' ? 'flex' : 'none'};gap:6px;margin-top:3px;">
+        <div style="flex:1;"><span style="color:#999;font:9px monospace;">Surround R</span><input class="ed-cl-sr" type="number" min="20" max="400" step="5" value="${l.surroundRadius ?? 70}" style="${inputCSS}"></div>
+      </div>
+      <div class="ed-cl-spread" style="display:${l.rangedPattern === 'spread_cone' ? 'flex' : 'none'};gap:6px;margin-top:3px;">
+        <div style="flex:1;"><span style="color:#999;font:9px monospace;">Spread°</span><input class="ed-cl-sp" type="number" min="5" max="360" step="1" value="${l.spreadAngle != null ? Math.round((l.spreadAngle * 180 / Math.PI)) : 60}" style="${inputCSS}"></div>
+      </div>
+      <div class="ed-cl-rotmode" style="display:${l.rangedPattern === 'rotating' ? 'flex' : 'none'};gap:6px;margin-top:3px;">
+        <div style="flex:1;"><span style="color:#999;font:9px monospace;">Rotation Mode</span>
+          <select class="ed-cl-rm" style="${inputCSS}">
+            <option value="player_anchored" ${(!l.rotationMode || l.rotationMode === 'player_anchored') ? 'selected' : ''}>Player Anchored</option>
+            <option value="turret" ${l.rotationMode === 'turret' ? 'selected' : ''}>Turret</option>
+            <option value="oscillate" ${l.rotationMode === 'oscillate' ? 'selected' : ''}>Oscillate</option>
+          </select></div>
+      </div>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;">
+        <input class="ed-cl-trk" type="checkbox" ${l.tracking ? 'checked' : ''}>
+        <span style="color:#7DE4FF;font:10px monospace;">Tracking</span>
+      </label>
+      <div class="ed-cl-trk-opts" style="display:${l.tracking ? 'flex' : 'none'};gap:6px;margin-top:3px;">
+        <div style="flex:1;"><span style="color:#999;font:9px monospace;">Turn°/sec</span><input class="ed-cl-trkstr" type="number" min="1" max="540" step="1" value="${l.trackingStrength != null ? Math.round((l.trackingStrength * 180 / Math.PI)) : 90}" style="${inputCSS}"></div>
+      </div>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;">
+        <input class="ed-cl-vol" type="checkbox" ${l.volleyMode ? 'checked' : ''}>
+        <span style="color:#FFB86B;font:10px monospace;">Volley</span>
+      </label>
+      <div class="ed-cl-vol-opts" style="display:${l.volleyMode ? 'flex' : 'none'};gap:6px;margin-top:3px;">
+        <div style="flex:1;"><span style="color:#999;font:9px monospace;">Window (s)</span><input class="ed-cl-volwin" type="number" min="0.05" max="2" step="0.05" value="${l.volleyWindow ?? 0.25}" style="${inputCSS}"></div>
+      </div>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;">
+        <input class="ed-cl-push" type="checkbox" ${l.pushMode ? 'checked' : ''}>
+        <span style="color:#7DFFE4;font:10px monospace;">Push</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:2px;" title="Explode — detonate with the volatile explosion (anim + sound), filled blast disc damage. Blast radius = this layer's ring radius.">
+        <input class="ed-cl-explode" type="checkbox" ${l.explodeMode ? 'checked' : ''}>
+        <span style="color:#FF9F6E;font:10px monospace;">Explode</span>
+      </label>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;">
+        <input class="ed-cl-staccato" type="checkbox" ${l.staccato ? 'checked' : ''}>
+        <span style="color:#7DBFFF;font:10px monospace;">Staccato</span>
+        <input class="ed-cl-staccato-half" type="checkbox" ${l.staccatoHalfBeat ? 'checked' : ''} style="margin-left:6px;" title="Half-beat hops (eighth notes)">
+        <span style="color:#7DBFFF;font:10px monospace;">½</span>
+        <input class="ed-cl-staccato-off" type="checkbox" ${l.staccatoOffbeat ? 'checked' : ''} style="margin-left:6px;" title="Off-beat only (the &s)">
+        <span style="color:#7DBFFF;font:10px monospace;">&</span>
+      </label>
+      <div style="display:flex;gap:6px;margin-top:4px;">
+        <div style="flex:2;"><span style="color:#FFD27D;font:9px monospace;">Tether</span>
+          <select class="ed-cl-teth" style="${inputCSS}">
+            <option value="off" ${(!l.tetherMode || l.tetherMode === 'off') ? 'selected' : ''}>Off</option>
+            <option value="closed" ${l.tetherMode === 'closed' ? 'selected' : ''}>Closed</option>
+            <option value="open" ${l.tetherMode === 'open' ? 'selected' : ''}>Open</option>
+            <option value="pairs" ${l.tetherMode === 'pairs' ? 'selected' : ''}>Pairs</option>
+            <option value="star" ${l.tetherMode === 'star' ? 'selected' : ''}>Star</option>
+            <option value="all" ${l.tetherMode === 'all' ? 'selected' : ''}>All</option>
+          </select></div>
+        <div style="flex:1;"><span style="color:#999;font:9px monospace;">Width</span><input class="ed-cl-tethw" type="number" min="2" max="30" step="1" value="${l.tetherWidth ?? 8}" style="${inputCSS}"></div>
+      </div>
+      <div style="display:flex;gap:6px;margin-top:3px;" title="Sound played when the tether STRIKES (deals damage). Leave at (none) for silent. The 'Sound' above plays at ring damage; this one plays at tether damage.">
+        <div style="flex:1;"><span style="color:#FFD27D;font:9px monospace;">Tether Sound</span>
+          <select class="ed-cl-tethsnd" style="${inputCSS}">
+            <option value="" ${!l.tetherSound ? 'selected' : ''}>(none)</option>
+            ${SOUND_POOL.map(s => `<option value="${s}" ${l.tetherSound === s ? 'selected' : ''}>${s}</option>`).join('')}
+          </select>
+        </div>
+      </div>
+    </div>
+  `
+}
+
+// Read one cluster-layer card back to a ClusterLayer object. Empty inherit-fields stay
+// undefined so the sim falls through to previous-layer defaults.
+function readLayerCard(card: Element): ClusterLayer {
+  const result: ClusterLayer = {}
+  result.rangedPattern = ((card.querySelector('.ed-cl-pat') as HTMLSelectElement)?.value ?? 'aimed') as NonNullable<ClusterLayer['rangedPattern']>
+  result.bulletCount = parseInt((card.querySelector('.ed-cl-cnt') as HTMLInputElement)?.value) || 1
+  result.bulletSpeed = parseInt((card.querySelector('.ed-cl-speed') as HTMLInputElement)?.value) || 280
+  result.bulletLifetime = parseFloat((card.querySelector('.ed-cl-life') as HTMLInputElement)?.value) || 1.0
+  const rotDeg = parseFloat((card.querySelector('.ed-cl-rot') as HTMLInputElement)?.value) || 0
+  result.rotationStep = rotDeg * Math.PI / 180
+  result.surroundRadius = parseInt((card.querySelector('.ed-cl-sr') as HTMLInputElement)?.value) || 70
+  const spreadDeg = parseInt((card.querySelector('.ed-cl-sp') as HTMLInputElement)?.value) || 60
+  result.spreadAngle = spreadDeg * Math.PI / 180
+  result.rotationMode = ((card.querySelector('.ed-cl-rm') as HTMLSelectElement)?.value ?? 'player_anchored') as NonNullable<ClusterLayer['rotationMode']>
+  result.tracking = (card.querySelector('.ed-cl-trk') as HTMLInputElement)?.checked ?? false
+  const trkDeg = parseFloat((card.querySelector('.ed-cl-trkstr') as HTMLInputElement)?.value) || 90
+  result.trackingStrength = trkDeg * Math.PI / 180
+  result.volleyMode = (card.querySelector('.ed-cl-vol') as HTMLInputElement)?.checked ?? false
+  result.volleyWindow = parseFloat((card.querySelector('.ed-cl-volwin') as HTMLInputElement)?.value) || 0.25
+  result.pushMode = (card.querySelector('.ed-cl-push') as HTMLInputElement)?.checked ?? false
+  result.explodeMode = (card.querySelector('.ed-cl-explode') as HTMLInputElement)?.checked ?? false
+  result.staccato = (card.querySelector('.ed-cl-staccato') as HTMLInputElement)?.checked ?? false
+  result.staccatoHalfBeat = (card.querySelector('.ed-cl-staccato-half') as HTMLInputElement)?.checked ?? false
+  result.staccatoOffbeat = (card.querySelector('.ed-cl-staccato-off') as HTMLInputElement)?.checked ?? false
+  result.tetherMode = ((card.querySelector('.ed-cl-teth') as HTMLSelectElement)?.value ?? 'off') as NonNullable<ClusterLayer['tetherMode']>
+  result.tetherWidth = Math.max(2, Math.min(30, parseInt((card.querySelector('.ed-cl-tethw') as HTMLInputElement)?.value) || 8))
+  const ringR = parseFloat((card.querySelector('.ed-cl-rad') as HTMLInputElement)?.value)
+  // >= 0 (not > 0): an explicit 0 means "NO ring — split only", distinct from blank (NaN = inherit).
+  if (!isNaN(ringR) && ringR >= 0) result.ringRadius = ringR
+  const sound = (card.querySelector('.ed-cl-sound') as HTMLSelectElement)?.value
+  if (sound && sound !== '') result.sound = sound
+  const tetherSound = (card.querySelector('.ed-cl-tethsnd') as HTMLSelectElement)?.value
+  if (tetherSound && tetherSound !== '') result.tetherSound = tetherSound
+  return result
+}
 
 export function initDesigner(): void {
   panel = document.createElement('div')
@@ -1921,6 +2061,103 @@ function addEnemyForm(existing?: DesignedEnemy): void {
         <div style="flex:1;"><span style="color:#999;font:9px monospace;">Active</span><input class="ed-redge-act" type="number" min="1" max="6" value="${rc?.edgeActive ?? 1}" style="${inputCSS}"></div>
         <div style="flex:1;"><span style="color:#999;font:9px monospace;">Switch</span><input class="ed-redge-sw" type="number" min="1" max="8" value="${rc?.edgeSwitchBeats ?? 1}" style="${inputCSS}"></div>
       </div>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;">
+        <input class="ed-rranged" type="checkbox" ${rc?.rangedMode ? 'checked' : ''}>
+        <span style="color:#FF9CFC;font:10px monospace;">Ranged (fires bullet → detonates at landing)</span>
+      </label>
+      <div class="ed-rranged-opts" style="display:${rc?.rangedMode ? 'block' : 'none'};margin-top:3px;">
+        <div style="display:flex;gap:6px;">
+          <div style="flex:2;"><span style="color:#999;font:9px monospace;">Pattern</span>
+            <select class="ed-rranged-pat" style="${inputCSS}">
+              <option value="aimed" ${(!rc?.rangedPattern || rc?.rangedPattern === 'aimed') ? 'selected' : ''}>Aimed</option>
+              <option value="surround_player" ${rc?.rangedPattern === 'surround_player' ? 'selected' : ''}>Surround Player</option>
+              <option value="radial" ${rc?.rangedPattern === 'radial' ? 'selected' : ''}>Radial</option>
+              <option value="spread_cone" ${rc?.rangedPattern === 'spread_cone' ? 'selected' : ''}>Spread Cone</option>
+              <option value="rotating" ${rc?.rangedPattern === 'rotating' ? 'selected' : ''}>Rotating</option>
+            </select></div>
+          <div style="flex:1;"><span style="color:#999;font:9px monospace;">Count</span><input class="ed-rranged-cnt" type="number" min="1" max="16" value="${rc?.bulletCount ?? 1}" style="${inputCSS}"></div>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:3px;">
+          <div style="flex:1;" title="Bullet velocity. For Surround Player this is ignored — speed is derived from Travel + target distance so all bullets arrive simultaneously."><span style="color:#999;font:9px monospace;">Speed</span><input class="ed-rranged-speed" type="number" min="50" max="1500" step="10" value="${rc?.bulletSpeed ?? 280}" style="${inputCSS}"></div>
+          <div style="flex:1;" title="Time bullets travel before detonating. For Surround Player this is the simultaneous arrival clock."><span style="color:#999;font:9px monospace;">Travel (s)</span><input class="ed-rranged-life" type="number" min="0.1" max="5" step="0.1" value="${rc?.bulletLifetime ?? 1.0}" style="${inputCSS}"></div>
+          <div style="flex:1;" title="Per-fire angle step applied to ALL patterns. Rotates the salvo arrangement between fires (e.g. radial rotates, cone rotates, surround circle rotates)."><span style="color:#999;font:9px monospace;">Rotate°</span><input class="ed-rranged-rot" type="number" min="-360" max="360" step="1" value="${rc?.rotationStep != null ? Math.round((rc.rotationStep * 180 / Math.PI) * 10) / 10 : 0}" style="${inputCSS}"></div>
+        </div>
+        <div class="ed-rranged-surround" style="display:${rc?.rangedPattern === 'surround_player' ? 'flex' : 'none'};gap:6px;margin-top:3px;">
+          <div style="flex:1;"><span style="color:#999;font:9px monospace;">Surround R</span><input class="ed-rranged-sr" type="number" min="20" max="400" step="5" value="${rc?.surroundRadius ?? 70}" style="${inputCSS}"></div>
+        </div>
+        <div class="ed-rranged-spread" style="display:${rc?.rangedPattern === 'spread_cone' ? 'flex' : 'none'};gap:6px;margin-top:3px;">
+          <div style="flex:1;"><span style="color:#999;font:9px monospace;">Spread°</span><input class="ed-rranged-sp" type="number" min="5" max="360" step="1" value="${rc?.spreadAngle != null ? Math.round((rc.spreadAngle * 180 / Math.PI)) : 60}" style="${inputCSS}"></div>
+        </div>
+        <div class="ed-rranged-rotmode" style="display:${rc?.rangedPattern === 'rotating' ? 'flex' : 'none'};gap:6px;margin-top:3px;">
+          <div style="flex:1;"><span style="color:#999;font:9px monospace;">Rotation Mode</span>
+            <select class="ed-rranged-rm" style="${inputCSS}">
+              <option value="player_anchored" ${(!rc?.rotationMode || rc?.rotationMode === 'player_anchored') ? 'selected' : ''}>Player Anchored</option>
+              <option value="turret" ${rc?.rotationMode === 'turret' ? 'selected' : ''}>Turret (ignore player)</option>
+              <option value="oscillate" ${rc?.rotationMode === 'oscillate' ? 'selected' : ''}>Oscillate</option>
+            </select></div>
+        </div>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;" title="When on, bullets curve toward the player's current position mid-flight. Most natural for aimed / spread / rotating; will override the formation of radial / surround.">
+          <input class="ed-rranged-trk" type="checkbox" ${rc?.tracking ? 'checked' : ''}>
+          <span style="color:#7DE4FF;font:10px monospace;">Tracking (homes toward player)</span>
+        </label>
+        <div class="ed-rranged-trk-opts" style="display:${rc?.tracking ? 'flex' : 'none'};gap:6px;margin-top:3px;">
+          <div style="flex:1;" title="How fast the bullet can rotate its velocity toward the player. 90°/s is moderate; 180°/s is aggressive; 30°/s is gentle drift."><span style="color:#999;font:9px monospace;">Turn°/sec</span><input class="ed-rranged-trkstr" type="number" min="1" max="540" step="1" value="${rc?.trackingStrength != null ? Math.round((rc.trackingStrength * 180 / Math.PI)) : 90}" style="${inputCSS}"></div>
+        </div>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;" title="Stagger the launch of the salvo over a short window so bullets fire in sequence but all detonate on the same beat. No effect with Count = 1. Travel distances vary per pattern; surround_player auto-scales speed so all bullets still land at the target ring.">
+          <input class="ed-rranged-vol" type="checkbox" ${rc?.volleyMode ? 'checked' : ''}>
+          <span style="color:#FFB86B;font:10px monospace;">Volley (stagger launch, same-beat detonation)</span>
+        </label>
+        <div class="ed-rranged-vol-opts" style="display:${rc?.volleyMode ? 'flex' : 'none'};gap:6px;margin-top:3px;">
+          <div style="flex:1;" title="Total stagger duration across the salvo. 0.25s feels like a quick burst; 0.5s is a clear sequence. Should stay smaller than Travel to keep all bullets in the air at once."><span style="color:#999;font:9px monospace;">Window (s)</span><input class="ed-rranged-volwin" type="number" min="0.05" max="2" step="0.05" value="${rc?.volleyWindow ?? 0.25}" style="${inputCSS}"></div>
+        </div>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;" title="Push mode — detonation REPLACES the expanding damage ring with a Reverb-style shock-push wave in the ring's color. No damage on contact; instead shoves the player + nearby enemies + orbs outward. Push radius = ringRadius. Strength scales with ringRadius so bigger rings hit harder.">
+          <input class="ed-rranged-push" type="checkbox" ${rc?.pushMode ? 'checked' : ''}>
+          <span style="color:#7DFFE4;font:10px monospace;">Push (Reverb-style shock, no damage ring)</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;" title="Explode mode — detonation REPLACES the expanding ring with the volatile explosion (same anim + sound as when something blows up). Damages the player as a FILLED blast disc (caught if within ringRadius), not a ring edge. Blast radius = ringRadius.">
+          <input class="ed-rranged-explode" type="checkbox" ${rc?.explodeMode ? 'checked' : ''}>
+          <span style="color:#FF9F6E;font:10px monospace;">Explode (volatile-style blast, fills radius)</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;" title="Staccato — bullets FREEZE between beats and snap forward on each beat, dividing the flight into beat-aligned hops that still land on the detonation beat. Movement only (detonation/push/tether unchanged). Hops lock to the global beat so volley/cluster siblings stay in unison. Dodge in the frozen gaps.">
+          <input class="ed-rranged-staccato" type="checkbox" ${rc?.staccato ? 'checked' : ''}>
+          <span style="color:#7DBFFF;font:10px monospace;">Staccato (freeze + snap on each beat)</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:2px;margin-left:16px;" title="Half-beat — staccato hops on every HALF beat (eighth notes) instead of every whole beat. Twice as many, faster stutter. Only matters when Staccato is on.">
+          <input class="ed-rranged-staccato-half" type="checkbox" ${rc?.staccatoHalfBeat ? 'checked' : ''}>
+          <span style="color:#7DBFFF;font:10px monospace;">↳ Half-beat hops (eighth notes)</span>
+        </label>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:2px;margin-left:16px;" title="Off-beat — shift the hops half a beat so the bullets stop on the OFF-beats (the &s), not the downbeats. Syncopated. Only matters when Staccato is on.">
+          <input class="ed-rranged-staccato-off" type="checkbox" ${rc?.staccatoOffbeat ? 'checked' : ''}>
+          <span style="color:#7DBFFF;font:10px monospace;">↳ Off-beat only (the &s)</span>
+        </label>
+        <div style="display:flex;gap:6px;margin-top:4px;" title="Tether — at the detonation beat, damaging beams snap between salvo siblings. The pattern's geometric SHAPE becomes the threat (radial 5 + closed = damage pentagon, surround + closed = cage around player, spread_cone + open = scanning fan). Beams flash for 0.2s + damage anything they touch once. Needs ≥2 bullets. Each cluster child salvo gets its own tether at its detonation beat.">
+          <div style="flex:2;"><span style="color:#FFD27D;font:9px monospace;">Tether</span>
+            <select class="ed-rranged-teth" style="${inputCSS}">
+              <option value="off" ${(!rc?.tetherMode || rc?.tetherMode === 'off') ? 'selected' : ''}>Off</option>
+              <option value="closed" ${rc?.tetherMode === 'closed' ? 'selected' : ''}>Chain (closed polygon)</option>
+              <option value="open" ${rc?.tetherMode === 'open' ? 'selected' : ''}>Chain (open path)</option>
+              <option value="pairs" ${rc?.tetherMode === 'pairs' ? 'selected' : ''}>Pairs (0-1, 2-3…)</option>
+              <option value="star" ${rc?.tetherMode === 'star' ? 'selected' : ''}>Star (hub at centroid)</option>
+              <option value="all" ${rc?.tetherMode === 'all' ? 'selected' : ''}>All-to-all (cage)</option>
+            </select></div>
+          <div style="flex:1;" title="Beam thickness in px. Default 8 reads as a chunky beam. Thin = precise, easy to slip through; thick = wide kill zone."><span style="color:#999;font:9px monospace;">Width</span><input class="ed-rranged-tethw" type="number" min="2" max="30" step="1" value="${rc?.tetherWidth ?? 8}" style="${inputCSS}"></div>
+        </div>
+        <div style="display:flex;gap:6px;margin-top:3px;" title="Sound played at TETHER STRIKE (the damage moment). The ring's main Sound (above) plays at ring damage; this plays at tether damage.">
+          <div style="flex:1;"><span style="color:#FFD27D;font:9px monospace;">Tether Sound</span>
+            <select class="ed-rranged-tethsnd" style="${inputCSS}">
+              <option value="" ${!rc?.tetherSound ? 'selected' : ''}>(none)</option>
+              ${SOUND_POOL.map(s => `<option value="${s}" ${rc?.tetherSound === s ? 'selected' : ''}>${s}</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div class="ed-rranged-cluster" style="margin-top:6px;border-top:1px solid #444;padding-top:5px;" title="Cluster Layers — each layer is one CHILD generation that spawns when a bullet detonates. Each layer has its own pattern, count, push/tether, etc. so children can do something completely different than their parent. Max 3 layers.">
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="color:#FF6B9D;font:bold 10px monospace;">▼ Cluster Layers</span>
+            <button type="button" class="ed-rranged-addlayer" style="background:#2a1a22;border:1px solid #553a4e;color:#FF6B9D;cursor:pointer;font:9px monospace;padding:2px 8px;border-radius:3px;">+ Add Layer</button>
+          </div>
+          <div class="ed-rranged-layers" style="margin-top:3px;"></div>
+        </div>
+      </div>
     `
     ringsContainer.appendChild(ringDiv)
 
@@ -1953,6 +2190,164 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       edgeOpts.style.display = edgeCheck.checked ? 'flex' : 'none'
     })
 
+    const rangedCheck = ringDiv.querySelector('.ed-rranged') as HTMLInputElement
+    const rangedOpts = ringDiv.querySelector('.ed-rranged-opts') as HTMLDivElement
+    rangedCheck.addEventListener('change', () => {
+      rangedOpts.style.display = rangedCheck.checked ? 'block' : 'none'
+    })
+
+    // Show/hide pattern-specific subsections based on Pattern dropdown
+    const rangedPatSel = ringDiv.querySelector('.ed-rranged-pat') as HTMLSelectElement
+    const rangedSurroundRow = ringDiv.querySelector('.ed-rranged-surround') as HTMLDivElement
+    const rangedSpreadRow = ringDiv.querySelector('.ed-rranged-spread') as HTMLDivElement
+    const rangedRotmodeRow = ringDiv.querySelector('.ed-rranged-rotmode') as HTMLDivElement
+    const rangedRotInp = ringDiv.querySelector('.ed-rranged-rot') as HTMLInputElement
+    const syncRangedSubs = () => {
+      rangedSurroundRow.style.display = rangedPatSel.value === 'surround_player' ? 'flex' : 'none'
+      rangedSpreadRow.style.display = rangedPatSel.value === 'spread_cone' ? 'flex' : 'none'
+      rangedRotmodeRow.style.display = rangedPatSel.value === 'rotating' ? 'flex' : 'none'
+    }
+    rangedPatSel.addEventListener('change', () => {
+      // When Rotating is selected and Rotate° is still 0, auto-fill a sensible default so
+      // the rotation actually advances (otherwise it feels identical to Aimed).
+      if (rangedPatSel.value === 'rotating' && parseFloat(rangedRotInp.value) === 0) {
+        rangedRotInp.value = '30'
+      }
+      syncRangedSubs()
+    })
+
+    // Tracking checkbox — show/hide the Turn°/sec input
+    const rangedTrkCheck = ringDiv.querySelector('.ed-rranged-trk') as HTMLInputElement
+    const rangedTrkOpts = ringDiv.querySelector('.ed-rranged-trk-opts') as HTMLDivElement
+    rangedTrkCheck.addEventListener('change', () => {
+      rangedTrkOpts.style.display = rangedTrkCheck.checked ? 'flex' : 'none'
+    })
+
+    // Volley checkbox — show/hide the Window input
+    const rangedVolCheck = ringDiv.querySelector('.ed-rranged-vol') as HTMLInputElement
+    const rangedVolOpts = ringDiv.querySelector('.ed-rranged-vol-opts') as HTMLDivElement
+    rangedVolCheck.addEventListener('change', () => {
+      rangedVolOpts.style.display = rangedVolCheck.checked ? 'flex' : 'none'
+    })
+
+    // ── Cluster layers — stack of per-generation override cards ──
+    const layersContainer = ringDiv.querySelector('.ed-rranged-layers') as HTMLDivElement
+    const addLayerBtn = ringDiv.querySelector('.ed-rranged-addlayer') as HTMLButtonElement
+    const MAX_LAYERS = 3
+
+    // Renumber the visible "Layer N" labels after add/remove so they always read 1..N
+    function renumberLayerCards(): void {
+      const cards = Array.from(layersContainer.querySelectorAll(':scope > .ed-rranged-layer'))
+      cards.forEach((card, i) => {
+        card.setAttribute('data-layer-idx', String(i + 1))
+        const title = card.querySelector('.ed-cl-title') as HTMLSpanElement
+        if (title) title.textContent = `Layer ${i + 1}`
+      })
+      addLayerBtn.disabled = cards.length >= MAX_LAYERS
+      addLayerBtn.style.opacity = cards.length >= MAX_LAYERS ? '0.4' : '1'
+      addLayerBtn.style.cursor = cards.length >= MAX_LAYERS ? 'not-allowed' : 'pointer'
+    }
+
+    // Wire one layer card's interior — pattern conditionals, tracking/volley toggles,
+    // remove button. Called for each card we create.
+    function wireLayerCard(card: HTMLElement): void {
+      const patSel = card.querySelector('.ed-cl-pat') as HTMLSelectElement
+      const surroundRow = card.querySelector('.ed-cl-surround') as HTMLDivElement
+      const spreadRow = card.querySelector('.ed-cl-spread') as HTMLDivElement
+      const rotmodeRow = card.querySelector('.ed-cl-rotmode') as HTMLDivElement
+      const rotInp = card.querySelector('.ed-cl-rot') as HTMLInputElement
+      const syncSubs = () => {
+        surroundRow.style.display = patSel.value === 'surround_player' ? 'flex' : 'none'
+        spreadRow.style.display = patSel.value === 'spread_cone' ? 'flex' : 'none'
+        rotmodeRow.style.display = patSel.value === 'rotating' ? 'flex' : 'none'
+      }
+      patSel.addEventListener('change', () => {
+        if (patSel.value === 'rotating' && parseFloat(rotInp.value) === 0) rotInp.value = '30'
+        syncSubs()
+      })
+      const trkCheck = card.querySelector('.ed-cl-trk') as HTMLInputElement
+      const trkOpts = card.querySelector('.ed-cl-trk-opts') as HTMLDivElement
+      trkCheck.addEventListener('change', () => {
+        trkOpts.style.display = trkCheck.checked ? 'flex' : 'none'
+      })
+      const volCheck = card.querySelector('.ed-cl-vol') as HTMLInputElement
+      const volOpts = card.querySelector('.ed-cl-vol-opts') as HTMLDivElement
+      volCheck.addEventListener('change', () => {
+        volOpts.style.display = volCheck.checked ? 'flex' : 'none'
+      })
+      ;(card.querySelector('.ed-cl-remove') as HTMLButtonElement).addEventListener('click', () => {
+        card.remove()
+        renumberLayerCards()
+        updatePreview()
+      })
+      // Wire inputs in this card to preview update too
+      card.querySelectorAll('input, select').forEach(inp => {
+        inp.addEventListener('input', updatePreview)
+        inp.addEventListener('change', updatePreview)
+      })
+    }
+
+    function addLayerCard(layer?: ClusterLayer): void {
+      const existing = layersContainer.querySelectorAll(':scope > .ed-rranged-layer').length
+      if (existing >= MAX_LAYERS) return
+      // Seed from existing layer values, or from the BASE ring's current settings if first layer
+      let seed: ClusterLayer = layer ?? {}
+      if (!layer) {
+        // Copy from the last existing card (so each new layer starts like the previous one),
+        // falling back to the base ring's current values if no layers yet.
+        const lastCard = layersContainer.querySelector(':scope > .ed-rranged-layer:last-child') as HTMLElement | null
+        if (lastCard) seed = readLayerCard(lastCard)
+        else {
+          // Seed from the base ring's current control values so the user starts from a
+          // copy of their main config rather than blank defaults.
+          const basePat = (ringDiv.querySelector('.ed-rranged-pat') as HTMLSelectElement)?.value ?? 'aimed'
+          const baseRm = (ringDiv.querySelector('.ed-rranged-rm') as HTMLSelectElement)?.value ?? 'player_anchored'
+          const baseTeth = (ringDiv.querySelector('.ed-rranged-teth') as HTMLSelectElement)?.value ?? 'off'
+          seed = {
+            rangedPattern: basePat as NonNullable<ClusterLayer['rangedPattern']>,
+            bulletCount: parseInt((ringDiv.querySelector('.ed-rranged-cnt') as HTMLInputElement)?.value) || 1,
+            bulletSpeed: parseInt((ringDiv.querySelector('.ed-rranged-speed') as HTMLInputElement)?.value) || 280,
+            bulletLifetime: parseFloat((ringDiv.querySelector('.ed-rranged-life') as HTMLInputElement)?.value) || 1.0,
+            rotationStep: (parseFloat((ringDiv.querySelector('.ed-rranged-rot') as HTMLInputElement)?.value) || 0) * Math.PI / 180,
+            surroundRadius: parseInt((ringDiv.querySelector('.ed-rranged-sr') as HTMLInputElement)?.value) || 70,
+            spreadAngle: (parseInt((ringDiv.querySelector('.ed-rranged-sp') as HTMLInputElement)?.value) || 60) * Math.PI / 180,
+            rotationMode: baseRm as NonNullable<ClusterLayer['rotationMode']>,
+            tracking: (ringDiv.querySelector('.ed-rranged-trk') as HTMLInputElement)?.checked ?? false,
+            trackingStrength: (parseFloat((ringDiv.querySelector('.ed-rranged-trkstr') as HTMLInputElement)?.value) || 90) * Math.PI / 180,
+            volleyMode: (ringDiv.querySelector('.ed-rranged-vol') as HTMLInputElement)?.checked ?? false,
+            volleyWindow: parseFloat((ringDiv.querySelector('.ed-rranged-volwin') as HTMLInputElement)?.value) || 0.25,
+            pushMode: (ringDiv.querySelector('.ed-rranged-push') as HTMLInputElement)?.checked ?? false,
+            explodeMode: (ringDiv.querySelector('.ed-rranged-explode') as HTMLInputElement)?.checked ?? false,
+            staccato: (ringDiv.querySelector('.ed-rranged-staccato') as HTMLInputElement)?.checked ?? false,
+            staccatoHalfBeat: (ringDiv.querySelector('.ed-rranged-staccato-half') as HTMLInputElement)?.checked ?? false,
+            staccatoOffbeat: (ringDiv.querySelector('.ed-rranged-staccato-off') as HTMLInputElement)?.checked ?? false,
+            tetherMode: baseTeth as NonNullable<ClusterLayer['tetherMode']>,
+            tetherWidth: parseInt((ringDiv.querySelector('.ed-rranged-tethw') as HTMLInputElement)?.value) || 8,
+          }
+        }
+      }
+      const html = renderLayerCardHTML(existing + 1, seed)
+      const wrapper = document.createElement('div')
+      wrapper.innerHTML = html
+      const card = wrapper.firstElementChild as HTMLElement
+      layersContainer.appendChild(card)
+      wireLayerCard(card)
+      renumberLayerCards()
+    }
+
+    addLayerBtn.addEventListener('click', () => {
+      addLayerCard()
+      updatePreview()
+    })
+
+    // Initial load — build layer cards from existing config. Honors both new clusterLayers
+    // and legacy clusterSplits (N empty cards inheriting from base, preserving old behavior).
+    const initialLayers: ClusterLayer[] = rc?.clusterLayers
+      ?? ((rc?.clusterSplits && rc.clusterSplits > 0)
+        ? Array.from({ length: Math.min(MAX_LAYERS, rc.clusterSplits) }, () => ({} as ClusterLayer))
+        : [])
+    for (const layer of initialLayers) addLayerCard(layer)
+
     ringDiv.querySelector('.ed-rdel')!.addEventListener('click', () => {
       ringDiv.remove()
       updatePreview()
@@ -1975,14 +2370,44 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const result: RingConfig[] = []
     ringDivs.forEach(rd => {
       const sound = (rd.querySelector('.ed-rsound') as HTMLSelectElement).value
-      const ringRadius = parseInt((rd.querySelector('.ed-rradius') as HTMLInputElement).value) || 120
+      // `|| 120` would coerce an explicit 0 to 120; use isNaN so 0 (= no ring, split-only) survives.
+      const radRaw = parseInt((rd.querySelector('.ed-rradius') as HTMLInputElement).value)
+      const ringRadius = isNaN(radRaw) ? 120 : radRaw
       const beatsStr = (rd.querySelector('.ed-rbeats') as HTMLInputElement).value
       const beats = beatsStr.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n))
       const edgeMode = (rd.querySelector('.ed-redge') as HTMLInputElement)?.checked ?? false
       const edgePoints = parseInt((rd.querySelector('.ed-redge-pts') as HTMLInputElement)?.value) || 3
       const edgeActive = parseInt((rd.querySelector('.ed-redge-act') as HTMLInputElement)?.value) || 1
       const edgeSwitchBeats = parseInt((rd.querySelector('.ed-redge-sw') as HTMLInputElement)?.value) || 1
-      result.push({ ringRadius, sound, beats, edgeMode, edgePoints, edgeActive, edgeSwitchBeats })
+      const rangedMode = (rd.querySelector('.ed-rranged') as HTMLInputElement)?.checked ?? false
+      const rangedPattern = ((rd.querySelector('.ed-rranged-pat') as HTMLSelectElement)?.value ?? 'aimed') as NonNullable<RingConfig['rangedPattern']>
+      const bulletCount = parseInt((rd.querySelector('.ed-rranged-cnt') as HTMLInputElement)?.value) || 1
+      const bulletSpeed = parseInt((rd.querySelector('.ed-rranged-speed') as HTMLInputElement)?.value) || 280
+      const bulletLifetime = parseFloat((rd.querySelector('.ed-rranged-life') as HTMLInputElement)?.value) || 1.0
+      const rotDeg = parseFloat((rd.querySelector('.ed-rranged-rot') as HTMLInputElement)?.value) || 0
+      const rotationStep = rotDeg * Math.PI / 180
+      const surroundRadius = parseInt((rd.querySelector('.ed-rranged-sr') as HTMLInputElement)?.value) || 70
+      const spreadDeg = parseInt((rd.querySelector('.ed-rranged-sp') as HTMLInputElement)?.value) || 60
+      const spreadAngle = spreadDeg * Math.PI / 180
+      const rotationMode = ((rd.querySelector('.ed-rranged-rm') as HTMLSelectElement)?.value ?? 'player_anchored') as NonNullable<RingConfig['rotationMode']>
+      const tracking = (rd.querySelector('.ed-rranged-trk') as HTMLInputElement)?.checked ?? false
+      const trkDeg = parseFloat((rd.querySelector('.ed-rranged-trkstr') as HTMLInputElement)?.value) || 90
+      const trackingStrength = trkDeg * Math.PI / 180
+      const volleyMode = (rd.querySelector('.ed-rranged-vol') as HTMLInputElement)?.checked ?? false
+      const volleyWindow = parseFloat((rd.querySelector('.ed-rranged-volwin') as HTMLInputElement)?.value) || 0.25
+      const pushMode = (rd.querySelector('.ed-rranged-push') as HTMLInputElement)?.checked ?? false
+      const explodeMode = (rd.querySelector('.ed-rranged-explode') as HTMLInputElement)?.checked ?? false
+      const staccato = (rd.querySelector('.ed-rranged-staccato') as HTMLInputElement)?.checked ?? false
+      const staccatoHalfBeat = (rd.querySelector('.ed-rranged-staccato-half') as HTMLInputElement)?.checked ?? false
+      const staccatoOffbeat = (rd.querySelector('.ed-rranged-staccato-off') as HTMLInputElement)?.checked ?? false
+      const tetherMode = ((rd.querySelector('.ed-rranged-teth') as HTMLSelectElement)?.value ?? 'off') as NonNullable<RingConfig['tetherMode']>
+      const tetherWidth = Math.max(2, Math.min(30, parseInt((rd.querySelector('.ed-rranged-tethw') as HTMLInputElement)?.value) || 8))
+      const tetherSound = (rd.querySelector('.ed-rranged-tethsnd') as HTMLSelectElement)?.value || ''
+      // Read cluster layers from the stack of layer cards (each one is one generation override)
+      const layerCards = rd.querySelectorAll('.ed-rranged-layers > .ed-rranged-layer')
+      const clusterLayers: ClusterLayer[] = []
+      layerCards.forEach(card => clusterLayers.push(readLayerCard(card)))
+      result.push({ ringRadius, sound, beats, edgeMode, edgePoints, edgeActive, edgeSwitchBeats, rangedMode, rangedPattern, bulletCount, bulletSpeed, bulletLifetime, rotationStep, surroundRadius, spreadAngle, rotationMode, tracking, trackingStrength, volleyMode, volleyWindow, clusterLayers, pushMode, explodeMode, staccato, staccatoHalfBeat, staccatoOffbeat, tetherMode, tetherWidth, tetherSound })
     })
     return result
   }
