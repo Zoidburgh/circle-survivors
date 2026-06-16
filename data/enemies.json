@@ -2010,6 +2010,7 @@
               "volleyMode": false,
               "volleyWindow": 0.25,
               "pushMode": true,
+              "explodeMode": false,
               "staccato": true,
               "staccatoHalfBeat": false,
               "staccatoOffbeat": false,
@@ -2017,16 +2018,17 @@
               "tetherWidth": 8,
               "ringRadius": 180,
               "sound": "whistle",
-              "tetherSound": "clap"
+              "tetherSound": "click"
             }
           ],
           "pushMode": false,
+          "explodeMode": false,
           "staccato": true,
           "staccatoHalfBeat": false,
           "staccatoOffbeat": true,
           "tetherMode": "star",
           "tetherWidth": 8,
-          "tetherSound": "bell"
+          "tetherSound": "snap"
         }
       ],
       "blocksRings": false,
@@ -2078,8 +2080,8 @@
       "radius": 85,
       "ringRadius": 120,
       "key": "33",
-      "role": "rim",
-      "sound": "rim",
+      "role": "ping",
+      "sound": "ping",
       "beats": [
         0.5,
         1.5,
@@ -2093,7 +2095,7 @@
       "rings": [
         {
           "ringRadius": 120,
-          "sound": "rim",
+          "sound": "ping",
           "beats": [
             0.5,
             1.5,

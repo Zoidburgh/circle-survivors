@@ -1,4 +1,5 @@
 import { on, emit } from '../core/EventBus.ts'
+import { probe } from '../audio/TimingProbe.ts'
 import { getPlayer, getGrid, getEnemies } from '../core/GameState.ts'
 import { getEffectiveRadius, hurtPlayer } from '../entities/Player.ts'
 import { damageEnemy, getRingOrigins, spawnDrops } from '../entities/Enemy.ts'
@@ -20,6 +21,7 @@ let sweepMasterCooldown = 0
 
 export function initHitDetection(): void {
   on('player:beat', () => {
+    probe('player')   // reference: the player ring PEAK = the felt on-beat moment
     sweepMasterCooldown = Math.max(0, sweepMasterCooldown - 1)  // tick down per beat (~1/sec at 60bpm)
     incrementRunBeat()
     const player = getPlayer()
@@ -257,6 +259,7 @@ export function initHitDetection(): void {
       }
     }
     playEnemyBeatTick(rs.patternName, rs.sound, sameTypeCount)
+    probe('enemy-ring')
 
     const ringRadius = rs.ring.radius * getRingExpansion(rs.attackTimer, rs.expandTime)
     const origins = getRingOrigins(enemy, rs)

@@ -4,6 +4,7 @@ import { BEAT_PRESETS } from './BeatPresets.ts'
 import { initDrone, startDrone } from './MusicDrone.ts'
 import { generateWaveMusic, pickMelodyNote, pickChordNotes } from './MusicScale.ts'
 import type { WaveMusic } from './MusicScale.ts'
+import { initMusicalSFX, setMusicalSFXMusic, playAttackNoteForEnemy, isScaleLock } from './MusicalSFX.ts'
 import { AUDIO_THROTTLE_INTERVAL } from '../utils/constants.ts'
 
 // ── Micro-variation: prevents repetition fatigue ──
@@ -93,9 +94,11 @@ function ensureContext(): AudioContext {
     initSynth(ctx, reverbInput)
     initDrone(ctx, reverbInput)
     initBeatLoop(ctx, reverbInput, 60) // matches MASTER_BPM
+    initMusicalSFX(ctx, reverbInput)   // musical combat-SFX layer (shares the bus)
 
     // Start with wave 1 music
     currentMusic = generateWaveMusic(1)
+    setMusicalSFXMusic(currentMusic)
     startDrone(currentMusic.droneRoot, currentMusic.droneFifth)
     loadPreset(BEAT_PRESETS[0]!)
     startBeatLoop()
@@ -170,6 +173,7 @@ export function getAudioTime(): number {
 export function setWaveMusic(waveNum: number): void {
   ensureContext()
   currentMusic = generateWaveMusic(waveNum)
+  setMusicalSFXMusic(currentMusic)
 }
 
 // ── Player sounds ──
@@ -2811,14 +2815,22 @@ function addHarmonyNote(sound: string, freqMult: number, volMult: number, delay:
 export function playEnemyBeatTick(enemyType: string, sound?: string, harmony = 1): void {
   ensureContext()
   const c = ctx!
+  // Musical path — route through the scale-quantized SFX layer so attacks land in-key.
+  // The `sound` string still picks the timbre + register; pitch comes from the scale. NO
+  // per-type throttle here: a salvo's members must all sound (they walk into an arpeggio);
+  // density is managed by MusicalSFX's voice cap + per-pitch dedupe instead.
+  if (isScaleLock()) {
+    playAttackNoteForEnemy(enemyType, sound ?? 'pop', harmony)
+    return
+  }
+
+  // Legacy fixed-pitch path (scaleLock off — used for A/B in the Sound Lab). The per-type
+  // throttle guards against click-storms here, where there's no voice manager.
   const lastTime = lastTickByType.get(enemyType) ?? 0
   if (c.currentTime - lastTime < TICK_MIN_INTERVAL) return
   lastTickByType.set(enemyType, c.currentTime)
-
   const soundFn = SOUND_MAP[sound ?? 'pop']
   if (soundFn) soundFn()
-
-  // Harmony — add chord notes when multiple same-type enemies exist
   if (harmony >= 2) addHarmonyNote(sound ?? 'pop', 1.25, 1.0, 0.01)   // major third, slight delay
   if (harmony >= 3) addHarmonyNote(sound ?? 'pop', 1.5, 0.8, 0.02)    // perfect fifth, more delay
 }

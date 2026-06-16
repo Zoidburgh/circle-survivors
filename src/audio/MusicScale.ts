@@ -80,6 +80,19 @@ export function generateWaveMusic(waveNum: number): WaveMusic {
   return { root: rootName, mode, bpm, bassNote, chordNotes, melodyNotes, droneRoot, droneFifth }
 }
 
+/** Resolve a scale DEGREE to a frequency in the current wave's pentatonic.
+ *  `degree` indexes the 5-note scale and wraps across octaves (degree 5 = degree 0 one octave up).
+ *  `octaveShift` nudges the whole result by octaves (−1 = down an octave, etc.). The scale itself
+ *  lives in octave 4 (music.melodyNotes), so octaveShift −1 ≈ bass register, +1 ≈ high register.
+ *  This is the single source of pitch for the musical-SFX layer — callers pass degrees, never Hz. */
+export function degreeToFreq(music: WaveMusic, degree: number, octaveShift = 0): number {
+  const scale = music.melodyNotes
+  const n = scale.length
+  const idx = ((degree % n) + n) % n
+  const oct = Math.floor(degree / n) + octaveShift
+  return scale[idx]! * Math.pow(2, oct)
+}
+
 /** Pick a random melody note from the current wave's scale */
 export function pickMelodyNote(music: WaveMusic): number {
   return music.melodyNotes[Math.floor(Math.random() * music.melodyNotes.length)]!

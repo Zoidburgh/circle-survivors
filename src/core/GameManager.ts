@@ -29,6 +29,7 @@ import { HIT_FLASH_DURATION } from '../utils/constants.ts'
 import { perfStart, perfEnd, exportPerfLog, addSpawnEffect, addVolatileExplosion, setPendingExplosions } from '../render/Renderer.ts'
 import { getEnemyType } from '../entities/EnemyTypes.ts'
 import { hasBonus } from '../game/UpgradeManager.ts'
+import { probe } from '../audio/TimingProbe.ts'
 
 let fps = 0
 let frameCount = 0
@@ -550,6 +551,7 @@ interface TetherEntity {
   tetherSound: string            // played when the tether STRIKES (materializes). Empty = silent.
   patternName: string            // routed to playEnemyBeatTick
   soundFired: boolean            // one-shot guard for the strike sound
+  probeTag: string               // 'deton' | 'hop' — which path, for the TimingProbe split
 }
 const tetherEntities: TetherEntity[] = []
 const TETHER_DUR = 0.20            // total visual lifetime in seconds (after prearm)
@@ -567,6 +569,13 @@ const SOUND_AUDIO_LATENCY = 0.015
 // The tether tick fires from the game loop (not sample-accurate like scheduled sounds), so it
 // needs this extra lead on top of the shared latency to cover the up-to-one-frame timer slop.
 const TETHER_SOUND_EXTRA = 0.005
+// Tether beat-alignment (measured via TimingProbe vs the player's felt-beat pulse). The two
+// tether paths strike at DIFFERENT phases, so each gets its own prearm so both land on the felt
+// beat. The strike sound is anchored to prearmTime, so it follows automatically.
+//   • staccato-hop tethers were ~55ms EARLY  → delay them (+0.055)
+//   • detonation/cluster tethers were ~66ms LATE → strike them earlier (−0.066)
+const TETHER_PREARM_HOP = RING_FIRE_LEAD_SEC + 0.055
+const TETHER_PREARM_DETON = RING_FIRE_LEAD_SEC - 0.066
 
 // Pending salvo registry — bullets register their detonation point under salvoId at their
 // salvoIndex (stable position). When the last sibling lands (registered == expected) we
@@ -938,6 +947,7 @@ function updateEnemyBullets(dt: number): void {
         b.x += b.vx * move * b.lifetime
         b.y += b.vy * move * b.lifetime
         b.staccatoReleased = target
+        probe('staccato-hop')   // the snap-forward moment
       }
     } else {
       b.x += b.vx * dt
@@ -1036,7 +1046,9 @@ function updateEnemyBullets(dt: number): void {
           // ring lands on rhythm. If we delay the tether by exactly RING_FIRE_LEAD_SEC after
           // landing, the strike happens at: (beat - lead) + bulletLifetime + lead = beat +
           // bulletLifetime — i.e., the next clean beat/half-beat regardless of expandTime.
-          const prearmTime = RING_FIRE_LEAD_SEC
+          // TETHER_PREARM_DETON nudges it onto the player's felt beat (chaining/cluster tethers
+          // were measured ~66ms late vs the pulse).
+          const prearmTime = TETHER_PREARM_DETON
           tetherEntities.push({
             xs: pending.xs, ys: pending.ys,
             topology: pending.topology,
@@ -1052,6 +1064,7 @@ function updateEnemyBullets(dt: number): void {
             tetherSound: pending.tetherSound,
             patternName: pending.patternName,
             soundFired: false,
+            probeTag: 'deton',
           })
           Renderer.addTetherViz(pending.xs, pending.ys, pending.topology, pending.width, pending.colorR, pending.colorG, pending.colorB, prearmTime)
           pendingSalvos.delete(b.salvoId)
@@ -1125,15 +1138,14 @@ function fireStaccatoHopTethers(): void {
     tetherEntities.push({
       xs, ys, topology: rs0.tetherMode, width: rs0.tetherWidth, damage: b0.damage,
       colorR: b0.colorR, colorG: b0.colorG, colorB: b0.colorB,
-      // prearmTime = RING_FIRE_LEAD_SEC so the STRIKE lands on the FELT beat (same lead the
-      // detonation tether uses) instead of the raw scheduling-beat, which reads ~0.23s early.
-      // The red-dashed telegraph fills that lead-in, then the beam snaps on the beat.
-      timer: 0, prearmTime: RING_FIRE_LEAD_SEC, playerHit: false,
+      // prearmTime = TETHER_PREARM_HOP so the STRIKE lands on the FELT beat (staccato-hop tethers
+      // measured ~55ms early). The red-dashed telegraph fills the lead-in, then the beam snaps.
+      timer: 0, prearmTime: TETHER_PREARM_HOP, playerHit: false,
       consume: b0.ownerEnemy.consume, enemyOwner: b0.ownerEnemy,
       consumeFired: false, tetherSound: rs0.tetherSound, patternName: rs0.patternName,
-      soundFired: false,
+      soundFired: false, probeTag: 'hop',
     })
-    Renderer.addTetherViz(xs, ys, rs0.tetherMode, rs0.tetherWidth, b0.colorR, b0.colorG, b0.colorB, RING_FIRE_LEAD_SEC)
+    Renderer.addTetherViz(xs, ys, rs0.tetherMode, rs0.tetherWidth, b0.colorR, b0.colorG, b0.colorB, TETHER_PREARM_HOP)
   }
   // Keep the dedupe map bounded to live salvos
   if (staccatoTetherFiredBeat.size > groups.size) {
@@ -1248,6 +1260,7 @@ function updateTethers(dt: number): void {
       t.soundFired = true
       if (t.tetherSound) playEnemyBeatTick(t.patternName, t.tetherSound)
     }
+    if (t.timer >= t.prearmTime && t.timer - dt < t.prearmTime) probe('tether-' + t.probeTag)  // one-shot on materialization, per path
     if (t.timer < t.prearmTime) continue
     // Effective tether time = how long we've been MATERIALIZED. Hit windows + retire timing
     // are all measured from materialization, not raw spawn.

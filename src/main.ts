@@ -3,6 +3,8 @@ import * as Input from './game/InputManager.ts'
 import * as Renderer from './render/Renderer.ts'
 import { getSpawnPanelClick } from './render/Renderer.ts'
 import * as Audio from './audio/AudioEngine.ts'
+import * as SoundLab from './audio/SoundLab.ts'
+import * as TimingProbe from './audio/TimingProbe.ts'
 import { createEnemy } from './entities/Enemy.ts'
 import { ENEMY_TYPES } from './entities/EnemyTypes.ts'
 import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameState, getRunFinalTime, enterDesigner, exitDesigner, getDesignerReturnPhase, setDesignerPrevArenaShape, getDesignerPrevArenaShape, setInDesignerTestPlay, isInDesignerTestPlay, getCamera, getPausedReturnPhase, setPausedReturnPhase } from './core/GameState.ts'
@@ -82,6 +84,8 @@ nameInput.addEventListener('keydown', e => {
 import { loadScores, setLeaderboardUrl } from './game/HighScores.ts'
 initHitDetection()
 initDesigner()
+if (__DEV__) SoundLab.initSoundLab()
+if (__DEV__) TimingProbe.initTimingProbe()
 loadScores()
 setLeaderboardUrl('https://beatback-leaderboard.pohling777.workers.dev')
 
@@ -403,6 +407,14 @@ window.addEventListener('keydown', e => {
   }
   if (e.key === '\\') {
     Renderer.toggleDebugOverlay()
+    return
+  }
+  if (e.key === 'k' || e.key === 'K') {
+    SoundLab.toggleSoundLab()
+    return
+  }
+  if (e.key === 'j' || e.key === 'J') {
+    TimingProbe.toggleTimingProbe()
     return
   }
   // [ / ] — tune render-resolution scale live (perf vs sharpness). Shown in the perf overlay.

@@ -2,6 +2,7 @@ import type { Ring } from './Ring.ts'
 import { createRing } from './Ring.ts'
 import { ATTACK_TOTAL_TIME, ATTACK_EXPAND_TIME, RING_FIRE_LEAD_SEC } from '../core/PhaseSystem.ts'
 import { shouldFire } from '../audio/PatternClock.ts'
+import { probe } from '../audio/TimingProbe.ts'
 import * as Input from '../game/InputManager.ts'
 import { emit } from '../core/EventBus.ts'
 import { playDash, playWindup, playChargeReady } from '../audio/AudioEngine.ts'
@@ -281,6 +282,7 @@ export function hurtPlayer(player: Player, amount: number): boolean {
   // Echo Step recall traversal — player is mid-warp, completely invulnerable. Mirrors
   // ghost-dash's gate but unconditional (the upgrade IS the invuln window).
   if (player.recallTimer >= 0) return false
+  probe('player-hit')   // every applied hit (shield or HP) — the hit-sound fires this same frame
 
   // Shield absorb — no HP loss
   if (player.shieldCharges > 0) {
