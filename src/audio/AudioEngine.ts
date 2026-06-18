@@ -2,7 +2,7 @@ import { initSynth, playKick, playBass, playChord, playPluck } from './MusicSynt
 import { initBeatLoop, startBeatLoop, loadPreset, getCurrentPresetName, setGenerative } from './BeatLoop.ts'
 import { BEAT_PRESETS } from './BeatPresets.ts'
 import { initDrone, startDrone } from './MusicDrone.ts'
-import { generateWaveMusic, pickMelodyNote, pickChordNotes } from './MusicScale.ts'
+import { generateWaveMusic, pickMelodyNote, pickChordNotes, degreeToFreq } from './MusicScale.ts'
 import type { WaveMusic } from './MusicScale.ts'
 import { initMusicalSFX, setMusicalSFXMusic, playAttackNoteForEnemy, isScaleLock } from './MusicalSFX.ts'
 import { AUDIO_THROTTLE_INTERVAL } from '../utils/constants.ts'
@@ -35,6 +35,7 @@ const lastTickByType = new Map<string, number>()
 const TICK_MIN_INTERVAL = AUDIO_THROTTLE_INTERVAL
 
 let currentMusic: WaveMusic | null = null
+let explodeWalkStep = 0   // walks the scale so successive explosions are different in-key notes
 
 function createReverb(audioCtx: AudioContext): { input: GainNode; output: GainNode } {
   const input = audioCtx.createGain()
@@ -343,79 +344,163 @@ export function playPlayerHit(): void {
   shieldCrash(0.8, 1.0, master)
 }
 
-export function playVolatileExplosion(): void {
+export function playVolatileExplosion(buildupSec = 1.0): void {
   ensureContext()
   const c = ctx!
   const t = c.currentTime
+  // Boom lands ON the visual burst: the sound is triggered at the buildup START, the burst is
+  // `buildupSec` later (−~one frame the trigger already consumed). Everything keys off popTime.
+  const popTime = t + Math.max(0.12, buildupSec - 0.02)
 
-  // Hissing buildup — filtered noise rising in pitch, matches BEAT_SEC
-  const hissLen = 1.0
-  const hissBuf = c.createBuffer(1, Math.floor(c.sampleRate * hissLen), c.sampleRate)
-  const hissData = hissBuf.getChannelData(0)
-  for (let i = 0; i < hissData.length; i++) hissData[i] = (Math.random() * 2 - 1) * 0.4
-  const hiss = c.createBufferSource()
-  hiss.buffer = hissBuf
-  const hissFilter = c.createBiquadFilter()
-  hissFilter.type = 'highpass'
-  hissFilter.frequency.setValueAtTime(1000, t)
-  hissFilter.frequency.exponentialRampToValueAtTime(4000, t + hissLen)
-  const hissGain = c.createGain()
-  hissGain.gain.setValueAtTime(rVol(0.15), t)
-  hissGain.gain.linearRampToValueAtTime(rVol(0.4), t + hissLen * 0.7)
-  hissGain.gain.exponentialRampToValueAtTime(0.001, t + hissLen)
-  hiss.connect(hissFilter)
-  hissFilter.connect(hissGain)
-  hissGain.connect(master)
-  hiss.start(t)
-  hiss.stop(t + hissLen)
+  // Charge RISER — pitch + brightness + volume all rise together and resolve onto the key's ROOT
+  // exactly on the boom. Smooth, accelerating tension (exponential ramps speed up toward the end)
+  // that lands as a musical resolution into the bang. Two detuned saws through an opening lowpass
+  // = the classic "about to blow" sweep, in-key so it sits in the music.
+  // Build-up = a warm ASCENDING ARPEGGIO that climbs the scale and RESOLVES onto the boom's note.
+  // Discrete in-key notes (musical + rhythmic, tension→resolution) instead of a continuous glide
+  // (siren-like / annoying) or percussive thumps (clunky). It swells as it climbs, and the whole
+  // figure is transposed by the walk so each explosion is a different phrase, like the rings.
+  const baseDeg = explodeWalkStep++ % 5
+  const tonic = currentMusic ? degreeToFreq(currentMusic, baseDeg, 0) : 262
+  const boomTonic = tonic * 0.4   // lower-pitched boom
+  if (currentMusic) {
+    const aStart = t + 0.02   // present from the very start of the animation
 
-  // Explosion boom
-  const popTime = t + hissLen * 0.95
+    // Relaxing HUM that builds to the explosion — a warm sustained chord on a STABLE pitch (no
+    // glide/siren), in-key (tonic + octave below + a detuned twin for chorus warmth). Audible from
+    // the first instant and gently swelling (volume + a slowly-opening filter) into the boom, on
+    // which it resolves. Calm, not annoying; the crescendo IS the build.
+    const voices: { f: number; type: OscillatorType; g: number }[] = [
+      { f: tonic * 0.5, type: 'sine', g: 0.15 },        // warm body, an octave below
+      { f: tonic, type: 'triangle', g: 0.1 },           // the hum's note
+      { f: tonic * 1.005, type: 'triangle', g: 0.1 },   // detuned twin → gentle chorus shimmer
+    ]
+    for (const v of voices) {
+      const o = c.createOscillator()
+      const g = c.createGain()
+      const lp = c.createBiquadFilter()
+      o.type = v.type
+      o.frequency.setValueAtTime(v.f, aStart)           // stable — no pitch sweep
+      lp.type = 'lowpass'; lp.Q.value = 0.6
+      lp.frequency.setValueAtTime(650, aStart)
+      lp.frequency.exponentialRampToValueAtTime(1500, popTime)   // opens gently as it builds (warm)
+      g.gain.setValueAtTime(rVol(v.g * 0.7), aStart)    // clearly present from the first instant
+      g.gain.linearRampToValueAtTime(rVol(v.g * 1.3), popTime)   // steady swell = the build
+      g.gain.exponentialRampToValueAtTime(0.001, popTime + 0.06) // hands off to the boom
+      o.connect(lp); lp.connect(g); g.connect(master)
+      o.start(aStart); o.stop(popTime + 0.07)
+    }
 
-  // Deep bass thud
-  const thud = c.createOscillator()
-  const thudGain = c.createGain()
-  thud.type = 'sine'
-  thud.frequency.setValueAtTime(60, popTime)
-  thud.frequency.exponentialRampToValueAtTime(20, popTime + 0.3)
-  thudGain.gain.setValueAtTime(rVol(1.7), popTime)
-  thudGain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.3)
-  thud.connect(thudGain)
-  thudGain.connect(master)
-  thud.start(popTime)
-  thud.stop(popTime + 0.3)
+    // Fuse CRACKLE bed — one procedurally-generated crackle: irregular pops with short tails (like
+    // a burning fuse), DENSER toward the boom so it reads as "the fuse is burning down, about to
+    // pop." Warm (low-passed, opens as it intensifies) with a gentle in-key resonant tilt, swelling
+    // subtly under the hum. Single buffer/source = cheap and sounds organic, not mechanical.
+    const cspan = Math.max(0.1, popTime - aStart)
+    const crBuf = c.createBuffer(1, Math.floor(c.sampleRate * cspan), c.sampleRate)
+    const cd = crBuf.getChannelData(0)
+    let popv = 0
+    for (let i = 0; i < cd.length; i++) {
+      const prog = i / cd.length
+      const density = 0.0018 + prog * prog * 0.004       // audible from the start → busier near the boom
+      if (Math.random() < density) popv = (Math.random() * 2 - 1) * (0.4 + Math.random() * 0.6)
+      cd[i] = popv
+      popv *= 0.9986                                      // short tail per pop = crackle, not clicks
+    }
+    const cr = c.createBufferSource()
+    cr.buffer = crBuf
+    const clp = c.createBiquadFilter()
+    clp.type = 'lowpass'
+    clp.frequency.setValueAtTime(900, aStart)
+    clp.frequency.exponentialRampToValueAtTime(2200, popTime)   // opens as it intensifies (stays warm)
+    // Two resonant peaks tuned to scale tones (root + a chord tone) give the noise a MUSICAL,
+    // in-key colour — it rings faintly at notes from the song — while the noise underneath keeps
+    // it a crackle, not a bell. Stronger Q/gain than before so the pitch tilt is actually audible.
+    const cpk = c.createBiquadFilter()
+    cpk.type = 'peaking'
+    cpk.frequency.value = degreeToFreq(currentMusic, baseDeg, 1)
+    cpk.Q.value = 1.6
+    cpk.gain.value = 11
+    const cpk2 = c.createBiquadFilter()
+    cpk2.type = 'peaking'
+    cpk2.frequency.value = degreeToFreq(currentMusic, baseDeg + 2, 1)  // a chord tone above
+    cpk2.Q.value = 1.6
+    cpk2.gain.value = 9
+    const cg = c.createGain()
+    cg.gain.setValueAtTime(rVol(0.07), aStart)
+    cg.gain.linearRampToValueAtTime(rVol(0.18), popTime)        // subtle swell into the boom
+    cg.gain.exponentialRampToValueAtTime(0.001, popTime + 0.05)
+    cr.connect(clp); clp.connect(cpk); cpk.connect(cpk2); cpk2.connect(cg); cg.connect(master)
+    cr.start(aStart); cr.stop(popTime + 0.06)
+  }
 
-  // Second bass layer
-  const thud2 = c.createOscillator()
-  const thud2Gain = c.createGain()
-  thud2.type = 'triangle'
-  thud2.frequency.setValueAtTime(45, popTime)
-  thud2.frequency.exponentialRampToValueAtTime(15, popTime + 0.25)
-  thud2Gain.gain.setValueAtTime(rVol(1.5), popTime)
-  thud2Gain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.25)
-  thud2.connect(thud2Gain)
-  thud2Gain.connect(master)
-  thud2.start(popTime)
-  thud2.stop(popTime + 0.25)
+  // Boom — energy lives in the AUDIBLE low-mids (100-200Hz) that any speaker reproduces, so you
+  // actually HEAR it, with only a modest deep-sub layer for chest depth.
 
-  // Low rumble noise burst
-  const boomBuf = c.createBuffer(1, Math.floor(c.sampleRate * 0.2), c.sampleRate)
+  // Low-mid body — the clean low fundamental (the "felt" weight).
+  const body = c.createOscillator()
+  const bodyGain = c.createGain()
+  body.type = 'sine'
+  body.frequency.setValueAtTime(boomTonic * 1.45, popTime)
+  body.frequency.exponentialRampToValueAtTime(boomTonic, popTime + 0.24)
+  bodyGain.gain.setValueAtTime(rVol(2.6), popTime)
+  bodyGain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.24)
+  body.connect(bodyGain); bodyGain.connect(master)
+  body.start(popTime); body.stop(popTime + 0.24)
+
+  // GROWL — a sawtooth on the SAME low note through a moderate lowpass. Its rich harmonic stack
+  // (200/300/400…Hz) is what your ear actually HEARS as bass on small speakers — without it the
+  // pure-sine body reads as a muffled thud. This is what turns the boom into a real bass note.
+  const growl = c.createOscillator()
+  const growlGain = c.createGain()
+  const growlLp = c.createBiquadFilter()
+  growl.type = 'sawtooth'
+  growl.frequency.setValueAtTime(boomTonic * 1.45, popTime)
+  growl.frequency.exponentialRampToValueAtTime(boomTonic, popTime + 0.22)
+  growlLp.type = 'lowpass'
+  growlLp.frequency.setValueAtTime(900, popTime)            // lets several harmonics through = audible growl
+  growlLp.frequency.exponentialRampToValueAtTime(420, popTime + 0.22)
+  growlGain.gain.setValueAtTime(rVol(1.5), popTime)
+  growlGain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.22)
+  growl.connect(growlLp); growlLp.connect(growlGain); growlGain.connect(master)
+  growl.start(popTime); growl.stop(popTime + 0.23)
+
+  // Sub — chest depth an octave below the note, modest so it doesn't pump the compressor.
+  const sub = c.createOscillator()
+  const subGain = c.createGain()
+  sub.type = 'sine'
+  sub.frequency.setValueAtTime(boomTonic * 0.85, popTime)
+  sub.frequency.exponentialRampToValueAtTime(boomTonic * 0.5, popTime + 0.18)
+  subGain.gain.setValueAtTime(rVol(1.45), popTime)
+  subGain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.18)
+  sub.connect(subGain); subGain.connect(master)
+  sub.start(popTime); sub.stop(popTime + 0.18)
+
+  // Mid crack — bright attack (tuned up from the note) that makes the boom SPEAK on small speakers.
+  const crack = c.createOscillator()
+  const crackGain = c.createGain()
+  crack.type = 'triangle'
+  crack.frequency.setValueAtTime(boomTonic * 2.6, popTime)
+  crack.frequency.exponentialRampToValueAtTime(boomTonic * 0.85, popTime + 0.12)
+  crackGain.gain.setValueAtTime(rVol(1.8), popTime)
+  crackGain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.12)
+  crack.connect(crackGain); crackGain.connect(master)
+  crack.start(popTime); crack.stop(popTime + 0.12)
+
+  // Short noise transient — grit + presence, low-passed but with enough mid to be heard.
+  const boomBuf = c.createBuffer(1, Math.floor(c.sampleRate * 0.1), c.sampleRate)
   const boomData = boomBuf.getChannelData(0)
-  for (let i = 0; i < boomData.length; i++) boomData[i] = (Math.random() * 2 - 1) * 0.85
+  for (let i = 0; i < boomData.length; i++) boomData[i] = (Math.random() * 2 - 1) * 0.7
   const boomNoise = c.createBufferSource()
   boomNoise.buffer = boomBuf
   const boomFilter = c.createBiquadFilter()
   boomFilter.type = 'lowpass'
-  boomFilter.frequency.setValueAtTime(800, popTime)
-  boomFilter.frequency.exponentialRampToValueAtTime(200, popTime + 0.15)
+  boomFilter.frequency.setValueAtTime(1300, popTime)
+  boomFilter.frequency.exponentialRampToValueAtTime(320, popTime + 0.1)
   const boomGain = c.createGain()
-  boomGain.gain.setValueAtTime(rVol(1.7), popTime)
-  boomGain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.2)
-  boomNoise.connect(boomFilter)
-  boomFilter.connect(boomGain)
-  boomGain.connect(master)
-  boomNoise.start(popTime)
-  boomNoise.stop(popTime + 0.2)
+  boomGain.gain.setValueAtTime(rVol(1.0), popTime)
+  boomGain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.1)
+  boomNoise.connect(boomFilter); boomFilter.connect(boomGain); boomGain.connect(master)
+  boomNoise.start(popTime); boomNoise.stop(popTime + 0.1)
 }
 
 let fuseBurnNodes: { gain: GainNode; sources: AudioBufferSourceNode[] } | null = null

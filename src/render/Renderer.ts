@@ -1450,15 +1450,19 @@ interface TetherViz {
   topology: TetherTopology
   width: number
   r: number; g: number; b: number
-  timer: number
-  prearmTime: number   // mirrors sim — entity is dormant until timer >= prearmTime
+  bornTime: number     // shared tetherClock value at spawn; elapsed = tetherClock - bornTime
+  prearmTime: number   // mirrors sim — entity is dormant until elapsed >= prearmTime
 }
 const tetherVizList: TetherViz[] = []
 const TETHER_VIZ_DUR = 0.20
+// Shared sim-time clock, pushed from GameManager each update. The viz telegraph reads THIS
+// (not render dt), so it stays locked to the sim tether strike regardless of framerate.
+let tetherClock = 0
+export function setTetherClock(t: number): void { tetherClock = t }
 
-export function addTetherViz(xs: number[], ys: number[], topology: TetherTopology, width: number, r: number, g: number, b: number, prearmTime: number = 0): void {
+export function addTetherViz(xs: number[], ys: number[], topology: TetherTopology, width: number, r: number, g: number, b: number, prearmTime: number = 0, bornTime: number = tetherClock): void {
   // Copy the arrays so subsequent mutations on the sim-side don't affect the viz
-  tetherVizList.push({ xs: xs.slice(), ys: ys.slice(), topology, width, r, g, b, timer: 0, prearmTime })
+  tetherVizList.push({ xs: xs.slice(), ys: ys.slice(), topology, width, r, g, b, bornTime, prearmTime })
 }
 
 // Same pair enumeration as the sim (kept in sync — if you change one, change both).
@@ -2602,20 +2606,20 @@ function updateAndDrawLightningBursts(dt: number): void {
 // Tether beams — multi-layered glow + bright core + peak white-gold flash + tangential
 // cutting-shard particles racing along each beam, matching the ring-blade vocabulary used
 // at ring peak. Lifetime is short (TETHER_VIZ_DUR) — flash, then fade.
-function updateAndDrawTethers(dt: number): void {
+function updateAndDrawTethers(_dt: number): void {
   if (tetherVizList.length === 0) return
   const simActive = getPhase() === 'playing' || getPhase() === 'designer'
   for (let i = tetherVizList.length - 1; i >= 0; i--) {
     const t = tetherVizList[i]!
-    if (simActive) t.timer += dt
+    const elapsed = tetherClock - t.bornTime   // shared sim clock — locked to the sim strike, no framerate drift
     // Pre-arm phase — draw a PULSING WARNING (red dashed lines) at the tether's landing
     // positions so the player keeps reading "the geometry is coming" instead of seeing the
     // flight preview vanish and nothing for half a second. Alpha + thickness build over the
     // prearm, with a beat-rate sine pulse for the danger feel.
-    if (t.timer < t.prearmTime) {
+    if (elapsed < t.prearmTime) {
       if (t.prearmTime > 0.001) {
-        const u = t.timer / t.prearmTime              // 0 → 1 over prearm
-        const pulse = 0.7 + 0.3 * Math.sin(t.timer * 18)   // ~3 Hz pulse for urgency
+        const u = elapsed / t.prearmTime              // 0 → 1 over prearm
+        const pulse = 0.7 + 0.3 * Math.sin(elapsed * 18)   // ~3 Hz pulse for urgency
         const alpha = (0.40 + 0.55 * u) * pulse
         const n = t.xs.length
         let hubWx = 0, hubWy = 0
@@ -2649,7 +2653,7 @@ function updateAndDrawTethers(dt: number): void {
       }
       continue
     }
-    const effective = t.timer - t.prearmTime
+    const effective = elapsed - t.prearmTime
     if (effective >= TETHER_VIZ_DUR) {
       tetherVizList[i] = tetherVizList[tetherVizList.length - 1]!
       tetherVizList.pop()
@@ -2727,7 +2731,7 @@ function updateAndDrawTethers(dt: number): void {
     // it across ~30-50% of the beam regardless of size. Spawn position is biased toward the
     // middle so even outward-racing shards have room. As a final safety the lifetime is
     // capped at distToEnd/speed so a shard never visually overshoots an endpoint.
-    if (simActive && effective < dt * 1.5) {
+    if (simActive && effective < _dt * 1.5) {
       for (const [a, b] of tetherVizPairs(t.topology, n)) {
         const ax = t.xs[a]!, ay = t.ys[a]!
         const bx = b === n ? hubWx : t.xs[b]!
@@ -5289,8 +5293,6 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   ctx.clip()
   perfEnd('clip')
 
-  perfStart('volatile'); updateAndDrawVolatileEffects(lastDt); perfEnd('volatile')
-
   perfStart('e_occlusion')
   // Pre-compute blocked arcs for all enemies with active rings
   const blockedArcsCache = new Map<Enemy, BlockedArc[]>()
@@ -5703,6 +5705,10 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   // Tether beams — bright damaging lines snapped between salvo siblings at the detonation
   // beat. Drawn AFTER detonations so beams overlay the expanding rings.
   perfStart('tethers'); updateAndDrawTethers(lastDt); perfEnd('tethers')
+
+  // Volatile / explode-mode blast — drawn AFTER player + enemies + bullets so the red blast
+  // radius + flash stack OVER everything (it was under the entities before and got hidden).
+  perfStart('volatile'); updateAndDrawVolatileEffects(lastDt); perfEnd('volatile')
 
   // Enemy rings + revenge rings — drawn on top of player so attacks overlay
   perfStart('e_rings_overlay')

@@ -175,12 +175,13 @@ function processVolatileExplosions(player: ReturnType<typeof getPlayer>, enemies
     exp.timer += dt
     if (!exp.soundPlayed) {
       exp.soundPlayed = true
-      playVolatileExplosion()
+      playVolatileExplosion(exp.buildup)   // pass the real buildup so the roll + boom land on the burst
     }
     if (exp.timer >= exp.buildup && getActiveChallenge()?.name === 'Beginner Challenge') {
       showToast('BOOM!', { y: 0.14, duration: 1.0, size: 56, id: 'boom', color: [255, 120, 30], style: 'combo' })
     }
     if (exp.timer >= exp.buildup) {
+      probe('boom')   // the explosion burst — the boom sound is aligned to this moment
       if (!boomBoomPowFired) {
         const now = challengeElapsed
         explosionTimes.push(now)
@@ -542,7 +543,8 @@ interface TetherEntity {
   width: number                  // beam thickness (used for hit detection padding)
   damage: number
   colorR: number; colorG: number; colorB: number
-  timer: number                  // counts up from 0; the entity is invisible + inert until timer >= prearmTime, then visual + hit window run
+  bornTime: number               // tetherClock value at spawn; elapsed = tetherClock - bornTime (shared clock, no drift)
+  struckProbed: boolean          // one-shot guard for the TimingProbe at materialization
   prearmTime: number             // seconds to wait after spawn before the tether materializes — makes damage land exactly TETHER_RING_LEAD seconds before ring peak
   playerHit: boolean             // one-shot guard so a single beam window can't tick damage twice
   consume: boolean               // owner has consume? — eat orbs touching beams, heal owner
@@ -576,6 +578,10 @@ const TETHER_SOUND_EXTRA = 0.005
 //   • detonation/cluster tethers were ~66ms LATE → strike them earlier (−0.066)
 const TETHER_PREARM_HOP = RING_FIRE_LEAD_SEC + 0.055
 const TETHER_PREARM_DETON = RING_FIRE_LEAD_SEC - 0.066
+// Staccato hop tethers fire this much BEFORE the hop lands (predicting the snap positions) so the
+// red telegraph appears a touch earlier = fairer. The strike stays on its beat (prearm is extended
+// by the exact time-to-boundary, so strike time is unchanged).
+const TETHER_TELEGRAPH_LEAD = 0.045
 
 // Pending salvo registry — bullets register their detonation point under salvoId at their
 // salvoIndex (stable position). When the last sibling lands (registered == expected) we
@@ -1010,7 +1016,7 @@ function updateEnemyBullets(dt: number): void {
           range: b.ringRadius,
           r: b.colorR, g: b.colorG, b: b.colorB,
           timer: 0,
-          buildup: BEAT_SEC + Math.max(0, RING_FIRE_LEAD_SEC - overshoot),
+          buildup: BEAT_SEC + Math.max(0, RING_FIRE_LEAD_SEC - overshoot) - 0.05,  // −50ms: boom measured ~51ms late vs felt beat
           soundPlayed: false,
         })
         // Destruction burst — the dart shatters (flash + hot ember scatter) at the shatter point
@@ -1055,7 +1061,8 @@ function updateEnemyBullets(dt: number): void {
             width: pending.width,
             damage: pending.damage,
             colorR: pending.colorR, colorG: pending.colorG, colorB: pending.colorB,
-            timer: 0,
+            bornTime: tetherClock,
+            struckProbed: false,
             prearmTime,
             playerHit: false,
             consume: pending.consume,
@@ -1066,7 +1073,7 @@ function updateEnemyBullets(dt: number): void {
             soundFired: false,
             probeTag: 'deton',
           })
-          Renderer.addTetherViz(pending.xs, pending.ys, pending.topology, pending.width, pending.colorR, pending.colorG, pending.colorB, prearmTime)
+          Renderer.addTetherViz(pending.xs, pending.ys, pending.topology, pending.width, pending.colorR, pending.colorG, pending.colorB, prearmTime, tetherClock)
           pendingSalvos.delete(b.salvoId)
         }
       }
@@ -1127,25 +1134,40 @@ function fireStaccatoHopTethers(): void {
     // position (not the bunched origin), so the web starts there.
     const div = b0.staccatoDivision
     const ph = b0.staccatoPhase
-    const hopsDone = Math.floor((curBeat - STACCATO_LEAD - ph) * div) - Math.floor((b0.staccatoFireBeat - STACCATO_LEAD - ph) * div)
-    if (hopsDone < 1) continue
-    if (staccatoTetherFiredBeat.get(salvoId) === hopsDone) continue
-    staccatoTetherFiredBeat.set(salvoId, hopsDone)
+    const g = (curBeat - STACCATO_LEAD - ph) * div
+    const completed = Math.floor(g) - Math.floor((b0.staccatoFireBeat - STACCATO_LEAD - ph) * div)
+    // Fire TETHER_TELEGRAPH_LEAD before the next hop lands (telegraph early), or at completion as
+    // a fallback if a slow frame skipped that window. `leadTime` = seconds until the hop boundary,
+    // baked into prearm so the strike lands on the SAME beat regardless of how early we fired.
+    const toNextBeats = (Math.floor(g) + 1 - g) / div
+    let hopK: number
+    let leadTime: number
+    if (toNextBeats * BEAT_SEC <= TETHER_TELEGRAPH_LEAD) {
+      hopK = completed + 1                 // the hop about to land
+      leadTime = toNextBeats * BEAT_SEC
+    } else {
+      hopK = completed                     // the hop just landed (fallback / normal)
+      leadTime = 0
+    }
+    if (hopK < 1) continue
+    if (staccatoTetherFiredBeat.get(salvoId) === hopK) continue
+    staccatoTetherFiredBeat.set(salvoId, hopK)
     const rs0 = b0.layerIndex === 0 ? b0.ownerEnemy.rings[b0.ringIndex] : b0.ownerEnemy.rings[b0.ringIndex]?.childLayers[b0.layerIndex - 1]
     if (!rs0) continue
-    const xs = arr.map(b => b.x)
-    const ys = arr.map(b => b.y)
+    // Predict each bullet's position AT hop hopK (progress = hopK / staccatoHops) so the early
+    // telegraph sits where the bullets are about to snap, not where they currently are.
+    const xs = arr.map(b => b.x + (hopK / b.staccatoHops - b.staccatoReleased) * b.vx * b.lifetime)
+    const ys = arr.map(b => b.y + (hopK / b.staccatoHops - b.staccatoReleased) * b.vy * b.lifetime)
+    const hopPrearm = TETHER_PREARM_HOP + leadTime   // +leadTime keeps the strike on its beat
     tetherEntities.push({
       xs, ys, topology: rs0.tetherMode, width: rs0.tetherWidth, damage: b0.damage,
       colorR: b0.colorR, colorG: b0.colorG, colorB: b0.colorB,
-      // prearmTime = TETHER_PREARM_HOP so the STRIKE lands on the FELT beat (staccato-hop tethers
-      // measured ~55ms early). The red-dashed telegraph fills the lead-in, then the beam snaps.
-      timer: 0, prearmTime: TETHER_PREARM_HOP, playerHit: false,
+      bornTime: tetherClock, struckProbed: false, prearmTime: hopPrearm, playerHit: false,
       consume: b0.ownerEnemy.consume, enemyOwner: b0.ownerEnemy,
       consumeFired: false, tetherSound: rs0.tetherSound, patternName: rs0.patternName,
       soundFired: false, probeTag: 'hop',
     })
-    Renderer.addTetherViz(xs, ys, rs0.tetherMode, rs0.tetherWidth, b0.colorR, b0.colorG, b0.colorB, TETHER_PREARM_HOP)
+    Renderer.addTetherViz(xs, ys, rs0.tetherMode, rs0.tetherWidth, b0.colorR, b0.colorG, b0.colorB, hopPrearm, tetherClock)
   }
   // Keep the dedupe map bounded to live salvos
   if (staccatoTetherFiredBeat.size > groups.size) {
@@ -1251,20 +1273,20 @@ function updateTethers(dt: number): void {
   const player = getPlayer()
   for (let i = tetherEntities.length - 1; i >= 0; i--) {
     const t = tetherEntities[i]!
-    t.timer += dt
+    const elapsed = tetherClock - t.bornTime   // shared clock — locked to the viz telegraph
     // Pre-arm gate — tether is dormant until prearmTime elapses. Bullets have landed and
     // rings are already expanding by the time we reach this point, but no damage/visual yet.
     // Strike sound — fired SOUND_AUDIO_LATENCY before materialization so the heard tick lands with
     // the visual (same audio-latency lead the other beat sounds use). Checked BEFORE the prearm gate.
-    if (!t.soundFired && t.timer >= t.prearmTime - (SOUND_AUDIO_LATENCY + TETHER_SOUND_EXTRA)) {
+    if (!t.soundFired && elapsed >= t.prearmTime - (SOUND_AUDIO_LATENCY + TETHER_SOUND_EXTRA)) {
       t.soundFired = true
       if (t.tetherSound) playEnemyBeatTick(t.patternName, t.tetherSound)
     }
-    if (t.timer >= t.prearmTime && t.timer - dt < t.prearmTime) probe('tether-' + t.probeTag)  // one-shot on materialization, per path
-    if (t.timer < t.prearmTime) continue
+    if (!t.struckProbed && elapsed >= t.prearmTime) { t.struckProbed = true; probe('tether-' + t.probeTag) }  // one-shot
+    if (elapsed < t.prearmTime) continue
     // Effective tether time = how long we've been MATERIALIZED. Hit windows + retire timing
     // are all measured from materialization, not raw spawn.
-    const effective = t.timer - t.prearmTime
+    const effective = elapsed - t.prearmTime
     // Player hit check — applies once per tether during the early bright window. Treat each
     // beam segment as a fat line of width tetherWidth; player hits if perpendicular distance
     // to any segment <= (hitRadius + width/2). Ghost-dash invuln mirrors the ring damage gate.
@@ -1974,6 +1996,11 @@ let boomToastFired = false
 let shieldRechargeCount = 0
 let shieldBreakCount = 0
 let challengeElapsed = 0
+// Monotonic sim-time clock for tether timing. Advances ONLY in update() (so it pauses with the
+// game), every frame regardless of phase. Both the sim tether strike AND the viz telegraph read
+// THIS single clock, so they can't drift apart at low/variable framerate (the old desync: the
+// sim ran on the fixed-timestep accumulator while the viz counted real render dt).
+let tetherClock = 0
 let aliveToastFired = false
 let finishHimFired = false
 let lastMoveTime = 0
@@ -2504,6 +2531,8 @@ function updateDesigner(dt: number): void {
   // WITHOUT this the designer's per-frame sim cost (bullets/tethers/enemies/collision) was
   // completely unmeasured — only R_TOTAL (render) showed up. Mirrors U_TOTAL for gameplay.
   perfStart('D_TOTAL')
+  tetherClock += dt                      // designer has its own update path; advance the shared
+  Renderer.setTetherClock(tetherClock)   // tether clock here too or tether telegraphs freeze
   tickAudioHealth()
   advanceGlobalTime(dt)
   advancePatternClock(dt)
@@ -2965,6 +2994,8 @@ export function update(dt: number): void {
 
   // Challenge elapsed timer
   challengeElapsed += dt
+  tetherClock += dt
+  Renderer.setTetherClock(tetherClock)   // hand the viz the same clock so the red telegraph can't drift
 
   if (beatDashBeatdownCD > 0) beatDashBeatdownCD -= dt
   tickLeaveToastCD(dt)
