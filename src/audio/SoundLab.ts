@@ -4,11 +4,12 @@
 // live. Self-contained DOM overlay toggled with the 'L' debug key. No prod path.
 
 import { playAttackNote, setScaleLock, isScaleLock, setQuantize, isQuantize, timbreNames, type Register } from './MusicalSFX.ts'
-import { ensureAudioContext, getCurrentMusic, getAudioTime } from './AudioEngine.ts'
+import { ensureAudioContext, getCurrentMusic, getAudioTime, getActiveVoiceCount } from './AudioEngine.ts'
 
 let panel: HTMLDivElement | null = null
 let statusEl: HTMLDivElement | null = null
 let visible = false
+let liveTimer: number | null = null
 
 const REGISTERS: Register[] = ['bass', 'mid', 'high']
 
@@ -24,8 +25,12 @@ function refresh(): void {
   if (!statusEl) return
   const m = getCurrentMusic()
   const key = m ? `${m.root} ${m.mode} · ${m.bpm}bpm` : '(no music yet)'
+  const v = getActiveVoiceCount()
+  // green < soft(48), amber soft→hard, red at hard(72) — matches the budget thresholds.
+  const vColor = v >= 72 ? '#FF5050' : v >= 48 ? '#FFC850' : '#7CFFB0'
   statusEl.innerHTML =
-    `<b style="color:#FF9CFC;">SOUND LAB</b> &nbsp; key: <b>${key}</b><br>` +
+    `<b style="color:#FF9CFC;">SOUND LAB</b> &nbsp; key: <b>${key}</b>` +
+    ` &nbsp; voices: <b style="color:${vColor}">${v}</b><span style="color:#666;">/48/72</span><br>` +
     `scaleLock: <b style="color:${isScaleLock() ? '#7CFFB0' : '#FF8080'}">${isScaleLock() ? 'ON (musical)' : 'OFF (legacy)'}</b>` +
     ` &nbsp; quantize: <b style="color:${isQuantize() ? '#7CFFB0' : '#888'}">${isQuantize() ? 'ON' : 'off'}</b>`
 }
@@ -87,6 +92,20 @@ function build(): void {
       })
     }
   }))
+  phrases.appendChild(btn('stress ×120 (budget)', () => {
+    // Fire well past the caps in a tight burst — watch the voices readout pin and the budget
+    // refuse low-priority voices instead of clipping/mudding.
+    const t0 = getAudioTime()
+    const names = timbreNames()
+    for (let i = 0; i < 120; i++) {
+      playAttackNote({
+        timbre: names[i % names.length]!,
+        register: REGISTERS[i % 3]!,
+        degree: i % 7,
+        when: t0 + i * 0.005,
+      })
+    }
+  }))
   panel.appendChild(phrases)
 
   // Timbres (each plays at mid, degree 0 — hear its texture)
@@ -113,5 +132,12 @@ export function toggleSoundLab(): void {
   if (!panel) build()
   visible = !visible
   panel!.style.display = visible ? 'block' : 'none'
-  if (visible) refresh()
+  if (visible) {
+    refresh()
+    // Live-update the voice readout (~10Hz) so the budget is visible during stress tests.
+    if (liveTimer === null) liveTimer = window.setInterval(refresh, 100)
+  } else if (liveTimer !== null) {
+    window.clearInterval(liveTimer)
+    liveTimer = null
+  }
 }

@@ -78,6 +78,25 @@ let activeVoices = 0
 const DEDUPE_WINDOW = 0.04        // s — identical pitch within this window collapses to one note
 const lastByPitch = new Map<number, number>()
 
+// Attack-activity meter — rises on each attack note, decays exponentially. Lets the music duck its
+// melody when combat is busy (so the attacks lead). Read via getAttackActivity() (0..1).
+let attackEnergy = 0
+let energyClock = 0
+const ENERGY_TAU = 0.7           // decay time constant (s)
+function bumpAttackEnergy(): void {
+  if (!ctx) return
+  const now = ctx.currentTime
+  if (energyClock > 0) attackEnergy *= Math.exp(-(now - energyClock) / ENERGY_TAU)
+  energyClock = now
+  attackEnergy = Math.min(1.5, attackEnergy + 0.25)
+}
+/** 0..1 combat-melody activity — high while attacks are firing, decays when they stop. */
+export function getAttackActivity(): number {
+  if (!ctx || energyClock <= 0) return 0
+  const e = attackEnergy * Math.exp(-(ctx.currentTime - energyClock) / ENERGY_TAU)
+  return Math.min(1, e)
+}
+
 export function initMusicalSFX(audioCtx: AudioContext, busDest: AudioNode): void {
   ctx = audioCtx
   dest = busDest
@@ -134,6 +153,7 @@ export function playAttackNote(opts: NoteOpts): void {
   // Voice cap — drop notes past the cap rather than letting a swarm turn to mud.
   if (activeVoices >= MAX_VOICES) return
 
+  bumpAttackEnergy()   // feed the activity meter so the music melody ducks while combat is busy
   playVoice(freq, t, register, vel, when)
 }
 

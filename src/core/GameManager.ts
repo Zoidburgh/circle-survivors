@@ -1008,7 +1008,7 @@ function updateEnemyBullets(dt: number): void {
         // Lead the explosion's center forward along the heading, scaled by the bullet's own speed
         // (faster bullets lead more) — same basis as the ring/push, just a bit longer since the
         // explosion's telegraph/blast is slower to read.
-        const EXPLODE_LEAD = 0.165
+        const EXPLODE_LEAD = 0.18
         const exX = b.x + b.vx * EXPLODE_LEAD
         const exY = b.y + b.vy * EXPLODE_LEAD
         pendingExplosions.push({

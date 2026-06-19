@@ -5,6 +5,7 @@ import { getSpawnPanelClick } from './render/Renderer.ts'
 import * as Audio from './audio/AudioEngine.ts'
 import * as SoundLab from './audio/SoundLab.ts'
 import * as TimingProbe from './audio/TimingProbe.ts'
+import * as MusicMenu from './audio/MusicMenu.ts'
 import { createEnemy } from './entities/Enemy.ts'
 import { ENEMY_TYPES } from './entities/EnemyTypes.ts'
 import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameState, getRunFinalTime, enterDesigner, exitDesigner, getDesignerReturnPhase, setDesignerPrevArenaShape, getDesignerPrevArenaShape, setInDesignerTestPlay, isInDesignerTestPlay, getCamera, getPausedReturnPhase, setPausedReturnPhase } from './core/GameState.ts'
@@ -86,6 +87,7 @@ initHitDetection()
 initDesigner()
 if (__DEV__) SoundLab.initSoundLab()
 if (__DEV__) TimingProbe.initTimingProbe()
+MusicMenu.initMusicMenu()
 loadScores()
 setLeaderboardUrl('https://beatback-leaderboard.pohling777.workers.dev')
 
@@ -517,6 +519,15 @@ canvas.addEventListener('pointerdown', e => {
   const p = screenToCanvas(e.clientX, e.clientY)
   if (e.pointerType === 'touch') Input.notifyTouchInput()
   dismissAddToHomeMessage()
+  // Music-note button (top-left) — toggles the track dropdown. Caught BEFORE dash so the click
+  // doesn't also trigger a dash (LMB = dash).
+  if (e.button === 0 && (getPhase() === 'playing' || getPhase() === 'designer') && Renderer.getMusicButtonClick(p.x, p.y)) {
+    MusicMenu.toggleMusicMenu()
+    Input.suppressLeftClick()
+    return
+  }
+  // Clicking anywhere else closes an open dropdown (then the click falls through to gameplay).
+  if (MusicMenu.isMusicMenuOpen()) MusicMenu.closeMusicMenu()
   // Designer wall drag: starts on pointer-down (not click) since walls are click-drag-release.
   // If the wall tool starts a drag here, suppress dash so the click doesn't double up.
   if (getPhase() === 'designer' && e.button === 0 && challengeCanvasMouseDown?.(p.x, p.y, e.shiftKey)) {

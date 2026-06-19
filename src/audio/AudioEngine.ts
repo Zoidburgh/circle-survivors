@@ -1,5 +1,5 @@
 import { initSynth, playKick, playBass, playChord, playPluck } from './MusicSynth.ts'
-import { initBeatLoop, startBeatLoop, loadPreset, getCurrentPresetName, setGenerative } from './BeatLoop.ts'
+import { initBeatLoop, startBeatLoop, loadPreset, getCurrentPresetName, setGenerative, setBeatLoopScale } from './BeatLoop.ts'
 import { BEAT_PRESETS } from './BeatPresets.ts'
 import { initDrone, startDrone } from './MusicDrone.ts'
 import { generateWaveMusic, pickMelodyNote, pickChordNotes, degreeToFreq } from './MusicScale.ts'
@@ -28,8 +28,28 @@ function eVol(waveType: 'sine' | 'triangle' | 'square' | 'sawtooth' | 'multi'): 
 let ctx: AudioContext | null = null
 let master: GainNode
 let compressor: DynamicsCompressorNode
+let limiter: DynamicsCompressorNode
 let reverbInput: GainNode
 let reverbWet: GainNode
+
+// ── Global voice budget ──────────────────────────────────────────────────────
+// Web Audio has no built-in polyphony cap. Without one, a dense fight (swarm attacks, stacked
+// explosions, the legacy non-scaleLock enemy path) spawns unbounded oscillators → CPU spikes and a
+// mud of voices you can't read. We COUNT every voice by wrapping the context's node constructors
+// (see ensureContext) and let high-density emitters refuse new low-priority voices near the ceiling.
+// This is the CPU/mud half of the safety net; the brickwall limiter below is the amplitude half.
+let activeVoices = 0
+const HARD_VOICE_CAP = 72   // absolute ceiling — even high-priority sounds drop past this
+const SOFT_VOICE_CAP = 48   // past this, only high-priority (player-relevant) voices are admitted
+/** Current count of live oscillator/buffer voices (incl. the few continuous music voices). */
+export function getActiveVoiceCount(): number { return activeVoices }
+/** May a new sound spawn now? Low-priority (ambient/enemy chorus) yields first; high-priority
+ *  (player-relevant: hits, explosions, dashes) holds out to the hard ceiling. */
+function admitVoice(priority: 'high' | 'low'): boolean {
+  if (activeVoices >= HARD_VOICE_CAP) return false
+  if (priority === 'low' && activeVoices >= SOFT_VOICE_CAP) return false
+  return true
+}
 
 const lastTickByType = new Map<string, number>()
 const TICK_MIN_INTERVAL = AUDIO_THROTTLE_INTERVAL
@@ -71,13 +91,44 @@ function ensureContext(): AudioContext {
     // This is the default, but pinning it guards against a browser picking a larger buffer.
     // Critical for reaction sounds (player hit) that must land on the exact off-beat frame.
     ctx = new AudioContext({ latencyHint: 'interactive' })
+
+    // Count every oscillator/buffer voice globally for the voice budget. We use
+    // addEventListener('ended') (NOT node.onended) so a caller's own onended handler still fires.
+    // Continuous music voices (drone/pad/bass/LFOs) never "end" and so sit as a small baseline —
+    // the caps below have ample headroom for that.
+    const origOsc = ctx.createOscillator.bind(ctx)
+    ctx.createOscillator = function (): OscillatorNode {
+      const node = origOsc()
+      activeVoices++
+      node.addEventListener('ended', () => { activeVoices = Math.max(0, activeVoices - 1) })
+      return node
+    }
+    const origBuf = ctx.createBufferSource.bind(ctx)
+    ctx.createBufferSource = function (): AudioBufferSourceNode {
+      const node = origBuf()
+      activeVoices++
+      node.addEventListener('ended', () => { activeVoices = Math.max(0, activeVoices - 1) })
+      return node
+    }
+
     compressor = ctx.createDynamicsCompressor()
     compressor.threshold.value = -12
     compressor.knee.value = 6
     compressor.ratio.value = 8
     compressor.attack.value = 0.003
     compressor.release.value = 0.1
-    compressor.connect(ctx.destination)
+
+    // Brickwall limiter — the FINAL node, so dense scenes can't clip past 0dBFS. Web Audio has no
+    // true look-ahead limiter, but a hard-knee, high-ratio, 1ms-attack compressor pins peaks just
+    // under 0. Glue compressor (musical gain reduction) → limiter (safety ceiling) → destination.
+    limiter = ctx.createDynamicsCompressor()
+    limiter.threshold.value = -1.5
+    limiter.knee.value = 0
+    limiter.ratio.value = 20
+    limiter.attack.value = 0.001
+    limiter.release.value = 0.05
+    compressor.connect(limiter)
+    limiter.connect(ctx.destination)
 
     master = ctx.createGain()
     const saved = localStorage.getItem('beatback_volume')
@@ -100,6 +151,7 @@ function ensureContext(): AudioContext {
     // Start with wave 1 music
     currentMusic = generateWaveMusic(1)
     setMusicalSFXMusic(currentMusic)
+    setBeatLoopScale(currentMusic.melodyNotes)   // tracks follow the wave's key/mode (not fixed C minor)
     startDrone(currentMusic.droneRoot, currentMusic.droneFifth)
     loadPreset(BEAT_PRESETS[0]!)
     startBeatLoop()
@@ -148,14 +200,22 @@ export function getCurrentMusic(): WaveMusic | null {
   return currentMusic
 }
 
+let currentBeatIndex = 0
 export function switchBeat(index: number): void {
   ensureContext()
   const preset = BEAT_PRESETS[index]
   if (preset) {
+    currentBeatIndex = index
     loadPreset(preset)
     setGenerative(preset.name === 'Generative')
   }
 }
+
+/** Advance to the next beat preset (wraps). Used by the music-note HUD button. */
+export function cycleBeat(): void {
+  switchBeat((currentBeatIndex + 1) % BEAT_PRESETS.length)
+}
+export function getBeatIndex(): number { return currentBeatIndex }
 
 export function getBeatName(): string {
   return getCurrentPresetName()
@@ -163,6 +223,10 @@ export function getBeatName(): string {
 
 export function getBeatCount(): number {
   return BEAT_PRESETS.length
+}
+
+export function getBeatNames(): string[] {
+  return BEAT_PRESETS.map(p => p.name)
 }
 
 /** Get audio context time — single source of truth for all timing */
@@ -175,6 +239,7 @@ export function setWaveMusic(waveNum: number): void {
   ensureContext()
   currentMusic = generateWaveMusic(waveNum)
   setMusicalSFXMusic(currentMusic)
+  setBeatLoopScale(currentMusic.melodyNotes)   // keep the tracks in the same key as everything else
 }
 
 // ── Player sounds ──
@@ -347,6 +412,9 @@ export function playPlayerHit(): void {
 export function playVolatileExplosion(buildupSec = 1.0): void {
   ensureContext()
   const c = ctx!
+  // ~12 voices per explosion — high priority (you must hear a detonation), but still bail at the
+  // hard ceiling so a pile of simultaneous blasts can't blow the budget.
+  if (!admitVoice('high')) return
   const t = c.currentTime
   // Boom lands ON the visual burst: the sound is triggered at the buildup START, the burst is
   // `buildupSec` later (−~one frame the trigger already consumed). Everything keys off popTime.
@@ -1362,6 +1430,97 @@ export function playDashShotFire(): void {
   nGain.connect(master)
   noise.start(t)
   noise.stop(t + dur)
+}
+
+// Dash sweep — a satisfying in-key "DING" that LAYERS on top of the normal attack/hit sound (a
+// tonal bell, so it doesn't mask the hit the way a noise swish did), plus a low thump so the sweep
+// still feels DAMAGING. Tuned to the wave's root + fifth. Throttled so a beat's ring peaks don't stack.
+let lastDashSweepTime = 0
+export function playDashSweep(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  if (t - lastDashSweepTime < 0.08) return
+  lastDashSweepTime = t
+  const m = currentMusic
+  const root = (m ? m.melodyNotes[0]! : 262) * 2    // octave-up root (~C5)
+  const fifth = (m ? m.melodyNotes[3]! : 392) * 2   // pentatonic fifth, octave up (~G5)
+  // Bell ding — root + fifth + a faint octave shimmer, through reverb. Louder + longer ring-out than
+  // before so the strike feels DRAMATIC, not just a tick.
+  const bell: [number, number, number][] = [[root, 0.3, 0.55], [fifth, 0.18, 0.48], [root * 2, 0.1, 0.32]]
+  for (const [freq, vol, dur] of bell) {
+    const o = c.createOscillator()
+    const g = c.createGain()
+    o.type = 'sine'
+    o.frequency.value = freq
+    g.gain.setValueAtTime(0.0005, t)
+    g.gain.linearRampToValueAtTime(rVol(vol), t + 0.004)   // quick attack = a clean "ting"
+    g.gain.exponentialRampToValueAtTime(0.0005, t + dur)   // bell ring-out
+    o.connect(g); g.connect(reverbInput)
+    o.start(t); o.stop(t + dur + 0.02)
+  }
+  // Punchy low thump — dry impact body so the sweep lands as DAMAGE, not just a chime.
+  const th = c.createOscillator()
+  const thg = c.createGain()
+  th.type = 'sine'
+  th.frequency.setValueAtTime(220, t)
+  th.frequency.exponentialRampToValueAtTime(55, t + 0.14)
+  thg.gain.setValueAtTime(rVol(0.72), t)
+  thg.gain.exponentialRampToValueAtTime(0.001, t + 0.16)
+  th.connect(thg); thg.connect(master)
+  th.start(t); th.stop(t + 0.17)
+  // Cinematic SUB — a sustained low boom under the thump for dramatic, chest-felt weight.
+  const sub = c.createOscillator()
+  const subg = c.createGain()
+  sub.type = 'sine'
+  sub.frequency.setValueAtTime(62, t)
+  sub.frequency.exponentialRampToValueAtTime(38, t + 0.4)
+  subg.gain.setValueAtTime(0.0008, t)
+  subg.gain.linearRampToValueAtTime(rVol(0.55), t + 0.02)
+  subg.gain.exponentialRampToValueAtTime(0.001, t + 0.42)
+  sub.connect(subg); subg.connect(master)
+  sub.start(t); sub.stop(t + 0.44)
+  // Downward "vwoom" sweep — a sawtooth gliding down through a closing lowpass = dramatic impact tail.
+  const sw = c.createOscillator()
+  const swf = c.createBiquadFilter()
+  const swg = c.createGain()
+  sw.type = 'sawtooth'
+  sw.frequency.setValueAtTime(480, t)
+  sw.frequency.exponentialRampToValueAtTime(65, t + 0.26)
+  swf.type = 'lowpass'
+  swf.frequency.setValueAtTime(1400, t)
+  swf.frequency.exponentialRampToValueAtTime(320, t + 0.26)
+  swg.gain.setValueAtTime(0.0008, t)
+  swg.gain.linearRampToValueAtTime(rVol(0.32), t + 0.01)
+  swg.gain.exponentialRampToValueAtTime(0.001, t + 0.28)
+  sw.connect(swf); swf.connect(swg); swg.connect(master)
+  sw.start(t); sw.stop(t + 0.3)
+  // Metallic clang — an INHARMONIC overtone (not a clean octave) gives the bell a hard, aggressive
+  // edge so the ding reads as a strike, not a soft chime.
+  const cl = c.createOscillator()
+  const clg = c.createGain()
+  cl.type = 'triangle'
+  cl.frequency.value = root * 2.76
+  clg.gain.setValueAtTime(0.0005, t)
+  clg.gain.linearRampToValueAtTime(rVol(0.13), t + 0.003)
+  clg.gain.exponentialRampToValueAtTime(0.0005, t + 0.12)
+  cl.connect(clg); clg.connect(master)
+  cl.start(t); cl.stop(t + 0.14)
+  // Noise crack — short low-passed burst at the attack = the impact transient (the "hit").
+  const nlen = Math.floor(c.sampleRate * 0.045)
+  const nbuf = c.createBuffer(1, nlen, c.sampleRate)
+  const nd = nbuf.getChannelData(0)
+  for (let i = 0; i < nlen; i++) nd[i] = Math.random() * 2 - 1
+  const ns = c.createBufferSource()
+  ns.buffer = nbuf
+  const nlp = c.createBiquadFilter()
+  nlp.type = 'lowpass'
+  nlp.frequency.value = 1900
+  const ng = c.createGain()
+  ng.gain.setValueAtTime(rVol(0.42), t)
+  ng.gain.exponentialRampToValueAtTime(0.001, t + 0.045)
+  ns.connect(nlp); nlp.connect(ng); ng.connect(master)
+  ns.start(t); ns.stop(t + 0.05)
 }
 
 // Quick "boingngng" — cartoony spring sound for when an entity gets launched by a wall
@@ -2900,6 +3059,9 @@ function addHarmonyNote(sound: string, freqMult: number, volMult: number, delay:
 export function playEnemyBeatTick(enemyType: string, sound?: string, harmony = 1): void {
   ensureContext()
   const c = ctx!
+  // Enemy chorus is the densest emitter — yield first when the voice budget is tight so player-
+  // relevant sounds (hits, explosions, dash) keep their headroom.
+  if (!admitVoice('low')) return
   // Musical path — route through the scale-quantized SFX layer so attacks land in-key.
   // The `sound` string still picks the timbre + register; pitch comes from the scale. NO
   // per-type throttle here: a salvo's members must all sound (they walk into an arpeggio);

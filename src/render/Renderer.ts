@@ -5389,11 +5389,16 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   {
     // Check main ring + all extra rings for peak
     let anyPeak = false
+    // Use the SAME peak-capture window as the attack ring (p_ring, below: `< lastDt * 2`) — NOT a
+    // fixed 0.03s. A fixed window vs. a frame-scaled one freezes the smear and the ring at different
+    // points along the dash when the framerate dips, so the red AOE drifts off the ring. Matching the
+    // window means both snapshot the exact same frame → the ring stays flush at the front of the smear.
+    const peakWindow = lastDt * 2
     const mainPast = player.attackTimer - ATTACK_EXPAND_TIME
-    if (mainPast >= 0 && mainPast < 0.03) anyPeak = true
+    if (mainPast >= 0 && mainPast < peakWindow) anyPeak = true
     for (let i = 0; i < player.extraRingCount; i++) {
       const extraPast = player.extraRingTimers[i]! - ATTACK_EXPAND_TIME
-      if (extraPast >= 0 && extraPast < 0.03) anyPeak = true
+      if (extraPast >= 0 && extraPast < peakWindow) anyPeak = true
     }
 
     if (player.dashTimer >= 0 && anyPeak) {
@@ -5403,7 +5408,10 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       dashSweepPath = player.dashPath.slice(capStart).map(p => ({ x: p.x, y: p.y }))
       dashSweepPath.push({ x: player.x, y: player.y })
     } else {
-      dashSweepIntensity *= 0.88
+      // Frame-rate-INDEPENDENT fade: 0.88 per 1/60s of real time, not per rendered frame. A raw
+      // per-frame `*= 0.88` decays half as fast at 30fps as at 60fps, so the smear lingers much
+      // longer on any framerate dip. Anchoring to lastDt keeps the real-time fade identical at any fps.
+      dashSweepIntensity *= Math.pow(0.8, lastDt * 60)   // fade speed (0.8 @ 60fps)
       if (dashSweepIntensity < 0.01) dashSweepIntensity = 0
 
       // Disintegration particles as the sweep fades
@@ -5439,13 +5447,13 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
         // Bright gold-white fill that fades along the trail
         ctx.beginPath()
         ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 200, 60, ${0.45 * fade * (0.3 + posT * 0.7)})`
+        ctx.strokeStyle = `rgba(255, 210, 80, ${0.62 * fade * (0.3 + posT * 0.7)})`
         ctx.lineWidth = grace * 2
         ctx.stroke()
         // Inner bright core
         ctx.beginPath()
         ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 255, 200, ${0.25 * fade * (0.3 + posT * 0.7)})`
+        ctx.strokeStyle = `rgba(255, 255, 210, ${0.36 * fade * (0.3 + posT * 0.7)})`
         ctx.lineWidth = grace
         ctx.stroke()
       }
@@ -5458,7 +5466,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
           ctx.moveTo(sx + edgeR, sy)
           ctx.arc(sx, sy, edgeR, 0, Math.PI * 2)
         }
-        ctx.strokeStyle = `rgba(255, 215, 64, ${0.8 * fade})`
+        ctx.strokeStyle = `rgba(255, 225, 90, ${1.0 * fade})`
         ctx.lineWidth = 2
         ctx.stroke()
       }
@@ -5470,18 +5478,18 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
         // Red filled band across the sweep zone
         ctx.beginPath()
         ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 40, 40, ${0.35 * fade})`
+        ctx.strokeStyle = `rgba(255, 28, 28, ${0.5 * fade})`
         ctx.lineWidth = grace * 1.6
         ctx.stroke()
         // Bright red edges
         ctx.beginPath()
         ctx.arc(sx, sy, dashSweepRadius + grace, 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 60, 60, ${0.6 * fade})`
+        ctx.strokeStyle = `rgba(255, 50, 50, ${0.85 * fade})`
         ctx.lineWidth = 2
         ctx.stroke()
         ctx.beginPath()
         ctx.arc(sx, sy, Math.max(0, dashSweepRadius - grace), 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 60, 60, ${0.6 * fade})`
+        ctx.strokeStyle = `rgba(255, 50, 50, ${0.85 * fade})`
         ctx.lineWidth = 2
         ctx.stroke()
       }
@@ -5493,7 +5501,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
         ctx.moveTo(sx + dashSweepRadius, sy)
         ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
       }
-      ctx.strokeStyle = `rgba(255, 255, 255, ${0.5 * fade})`
+      ctx.strokeStyle = `rgba(255, 255, 255, ${0.72 * fade})`
       ctx.lineWidth = 2
       ctx.stroke()
     }
@@ -5765,6 +5773,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfStart('beatdash_confirm'); updateAndDrawBeatDashConfirm(lastDt); perfEnd('beatdash_confirm')
 
   perfStart('hud'); drawHUD(player, enemies, fps); perfEnd('hud')
+  if (getPhase() === 'playing' || getPhase() === 'designer') drawMusicButton()
   perfEnd('R_TOTAL')
   perfFlush()
 
@@ -6728,29 +6737,29 @@ function drawPlayer(player: Player): void {
     const sparkCount = Math.min(28, 8 + Math.round(gained * 5))
     for (let i = 0; i < sparkCount; i++) {
       const a = (i / sparkCount) * Math.PI * 2 + Math.random() * 0.4
-      const spd = 140 + Math.random() * 220
+      const spd = 55 + Math.random() * 90            // SLOW = floaty (vs the fast, sharp red hit spray)
       const dist = player.hitRadius * (0.3 + Math.random() * 0.5)
       // Parent-attached to the player so the burst RIDES WITH the body — its own outward
       // velocity still plays out, but the whole spray translates with the player each frame
       // (even through a beat-dash teleport) instead of being stranded in world space.
       spawnParticleAttached(
         player.x + Math.cos(a) * dist, player.y + Math.sin(a) * dist,
-        Math.cos(a) * spd, Math.sin(a) * spd - 30,   // slight upward bias = "uplifting" read
+        Math.cos(a) * spd, Math.sin(a) * spd - 55,   // strong upward drift = gentle, benevolent rise
         255, 235, 170,                                // bright warm gold body
-        0.45 + Math.random() * 0.38, 2.2 + Math.random() * 2.8,
+        0.75 + Math.random() * 0.55, 3.6 + Math.random() * 3.2,   // long-lived + big = round, floaty glow
         255, 200, 90,                                 // gold tint target → gold glow halo blooms in
         player)
     }
-    // White-hot twinkle highlights — a few tiny bright sparks from the center
+    // White-hot twinkle highlights — a few soft bright motes drifting up from the center
     const hotCount = Math.min(6, 2 + Math.round(gained))
     for (let i = 0; i < hotCount; i++) {
       const a = Math.random() * Math.PI * 2
-      const spd = 115 + Math.random() * 180
+      const spd = 65 + Math.random() * 100
       spawnParticleAttached(
         player.x, player.y,
-        Math.cos(a) * spd, Math.sin(a) * spd - 25,
+        Math.cos(a) * spd, Math.sin(a) * spd - 45,
         255, 250, 225,
-        0.3 + Math.random() * 0.25, 1.7 + Math.random() * 1.9,
+        0.55 + Math.random() * 0.35, 2.4 + Math.random() * 2.2,
         255, 225, 150,
         player)
     }
@@ -12729,6 +12738,30 @@ export function getSpawnPanelClick(mx: number, my: number): number {
     }
   }
   return -1
+}
+
+// Music-note HUD button (top-left) — click cycles the background track. Drawn over the HUD.
+let musicBtnRect = { x: 14, y: 14, w: 30, h: 30 }
+function drawMusicButton(): void {
+  const { x, y, w, h } = musicBtnRect
+  const pulse = 0.6 + 0.4 * globalBeatPulse   // gentle beat-synced glow so it feels musical
+  ctx.save()
+  ctx.fillStyle = 'rgba(13,10,26,0.5)'
+  ctx.beginPath(); ctx.rect(x, y, w, h); ctx.fill()
+  ctx.strokeStyle = `rgba(79,195,247,${0.3 + 0.25 * pulse})`
+  ctx.lineWidth = 1
+  ctx.stroke()
+  ctx.fillStyle = `rgba(180,225,255,${0.7 + 0.25 * pulse})`
+  ctx.font = '18px sans-serif'
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.fillText('♫', x + w / 2, y + h / 2 + 1)   // ♫
+  ctx.restore()
+}
+/** True if (mx,my) is on the music-note HUD button. */
+export function getMusicButtonClick(mx: number, my: number): boolean {
+  const { x, y, w, h } = musicBtnRect
+  return mx >= x && mx <= x + w && my >= y && my <= y + h
 }
 
 let spawnPanelVisible = false

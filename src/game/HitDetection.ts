@@ -8,7 +8,7 @@ import { getRingExpansion, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { distance } from '../utils/math.ts'
 import { HIT_GRACE, CHILL_MAX_STACKS, BEAT_SEC } from '../utils/constants.ts'
 import { incrementRunBeat } from '../core/GameState.ts'
-import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playCollect, playNodeLock, playNodeComplete } from '../audio/AudioEngine.ts'
+import { playMiss, playHit, playEnemyBeatTick, playPlayerHit, playKill, playCollect, playNodeLock, playNodeComplete, playDashSweep } from '../audio/AudioEngine.ts'
 import { getBlockedArcs, isTargetBlocked } from './RingOcclusion.ts'
 import { getGameTimeMs } from '../render/Renderer.ts'
 import { spawnOrb, collectOrb, ORB_HP_HEAL } from '../entities/XPOrb.ts'
@@ -36,6 +36,11 @@ export function initHitDetection(): void {
       }
     }
     const isDashing = player.dashTimer >= 0
+    // Dramatic sweep SFX only on a COMMITTED dash — require the trail to be ≥ half the dash's length.
+    // The dash uses a sine speed ramp, so half the distance is covered exactly at the midpoint
+    // (progress 0.5 ⇒ dashTimer ≤ dashDuration/2). A tap-dash that catches the beat at its start
+    // is too short to earn the big sound. Visual sweep is left ungated.
+    if (isDashing && player.dashTimer <= player.dashDuration * 0.5) playDashSweep()
     // During dash, use full ring radius to match visual sweep band
     const ringRadius = isDashing
       ? getEffectiveRadius(player)

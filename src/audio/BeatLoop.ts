@@ -2,6 +2,7 @@
 // Schedules notes ahead for precise timing
 
 import type { BeatPreset } from './BeatPresets.ts'
+import { getAttackActivity } from './MusicalSFX.ts'
 
 let ctx: AudioContext
 let dest: AudioNode
@@ -27,12 +28,27 @@ let melodyPattern: Pattern  = [0,0,1,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]
 let bassNotes = [0, 0, 0, 3, 3, 3, 5, 5, 0, 0, 0, 3, 3, 3, 5, 7]
 let melodyNotes = [7, 5, 3, 5, 7, 10, 7, 5, 3, 0, 3, 5, 7, 5, 3, 0]
 
-// C minor pentatonic
-const SCALE = [130.81, 155.56, 174.61, 196.00, 233.08]
+// The music scale (5 pentatonic frequencies). DEFAULT is C minor pentatonic; setBeatLoopScale()
+// overwrites it with the current WAVE's scale (from generateWaveMusic) so the tracks sit in the
+// SAME key/mode as the drone + the enemy attack SFX — instead of being locked to C minor.
+let scaleFreqs = [130.81, 155.56, 174.61, 196.00, 233.08]
 
 function noteFreq(degree: number, octave = 0): number {
-  const note = SCALE[((degree % SCALE.length) + SCALE.length) % SCALE.length]!
+  const note = scaleFreqs[((degree % scaleFreqs.length) + scaleFreqs.length) % scaleFreqs.length]!
   return note * Math.pow(2, octave)
+}
+
+/** Point the music at the current wave's scale. `freqs` is the wave's 5-note pentatonic (octave 4
+ *  from generateWaveMusic.melodyNotes); we drop it an octave to match this engine's register.
+ *  Retunes the live pad so a wave/key change is heard immediately. */
+export function setBeatLoopScale(freqs: number[]): void {
+  if (freqs.length < 5) return
+  scaleFreqs = freqs.slice(0, 5).map(f => f * 0.5)
+  if (padOsc1 && padOsc2 && ctx) {
+    const root = noteFreq(0, 1)
+    padOsc1.frequency.setValueAtTime(root, ctx.currentTime)
+    padOsc2.frequency.setValueAtTime(root * 1.003, ctx.currentTime)
+  }
 }
 
 // ── Pad state — continuous, not per-step ──
@@ -370,21 +386,30 @@ function scheduleBass(time: number, noteIndex: number): void {
   bassFilter.frequency.exponentialRampToValueAtTime(300, time + 0.15)
 }
 
+// Melody duck (0..1) — the enemy attacks are the LEAD now, so the music's melody is demoted to a
+// supporting voice. Phase B will drive this down dynamically when combat is busy; for now it's 1.
+let melodyDuck = 1
+export function setMelodyDuck(level: number): void { melodyDuck = Math.max(0, Math.min(1, level)) }
+
 function scheduleMelody(time: number, noteIndex: number): void {
   const osc = ctx.createOscillator()
   const gain = ctx.createGain()
   const filter = ctx.createBiquadFilter()
-  osc.type = 'square'
+  osc.type = 'triangle'                    // warm + round, not a bright square lead that competes
   const freq = noteFreq(noteIndex, 1)
   osc.frequency.value = freq
 
   filter.type = 'lowpass'
-  filter.frequency.setValueAtTime(2000, time)
-  filter.frequency.exponentialRampToValueAtTime(600, time + 0.3)
+  filter.frequency.setValueAtTime(1200, time)   // darker = background color, not a hook
+  filter.frequency.exponentialRampToValueAtTime(450, time + 0.3)
   filter.Q.value = 1
 
-  gain.gain.setValueAtTime(0.1, time)
-  gain.gain.setValueAtTime(0.1, time + 0.08)
+  // Demoted level, ducked further by live combat activity: when the enemy attacks are firing they
+  // OWN the melody and the music's recedes; when combat is calm it returns so the track isn't empty.
+  const duck = 1 - getAttackActivity() * 0.85
+  const g = Math.max(0.0005, 0.045 * melodyDuck * duck)
+  gain.gain.setValueAtTime(g, time)
+  gain.gain.setValueAtTime(g, time + 0.08)
   gain.gain.exponentialRampToValueAtTime(0.001, time + 0.2)
 
   osc.connect(filter); filter.connect(gain); gain.connect(dest)
