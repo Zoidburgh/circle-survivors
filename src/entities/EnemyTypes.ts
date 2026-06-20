@@ -22,6 +22,7 @@ export interface ClusterLayer {
   volleyWindow?: number
   pushMode?: boolean
   explodeMode?: boolean        // detonate with the volatile explosion (anim + sound), filled blast disc damage
+  healMode?: boolean           // explode variant: NOURISH instead of damage — heals player + enemies in range by 1 (gold VFX)
   staccato?: boolean
   staccatoHalfBeat?: boolean   // hop on every HALF beat (eighth notes) instead of every whole beat
   staccatoOffbeat?: boolean    // shift the hop grid half a beat — bullets stop on the OFF-beats (the &s), not the downbeats
@@ -93,6 +94,10 @@ export interface RingConfig {
   // a FILLED blast disc (hit if within ringRadius) rather than a ring edge. ringRadius = blast
   // radius, exactly like push uses it for its shove radius.
   explodeMode?: boolean
+  // Heal mode — explode variant that NOURISHES instead of harming. Same telegraph + blast disc
+  // geometry + on-beat timing as explode, but it HEALS the player AND any enemies in range by 1 HP
+  // (capped at maxHp) and is recolored gold with a soft chime. Only meaningful when explodeMode is on.
+  healMode?: boolean
   // Staccato — the bullet doesn't glide; it FREEZES between beats and snaps forward on each
   // global beat, dividing its flight into beat-aligned hops that still land on the detonation
   // beat. Movement-only (detonation/push/tether unchanged). Hops lock to the global grid so
@@ -135,6 +140,7 @@ export interface EnemyType {
   blinkBeats?: number               // beats between blinks (default: 4)
   volatile?: boolean                // explodes on death, damages nearby enemies + player
   volatileRange?: number            // explosion radius (default: 150)
+  volatileHeal?: boolean            // volatile variant: death blast NOURISHES instead — heals player + enemies in range by 1 (gold VFX)
   revenge?: boolean                 // fires rings on next beat after being hit
   revengeRings?: number             // how many rings fire (default: 4)
   revengeRadius?: number            // ring attack radius (default: 120)

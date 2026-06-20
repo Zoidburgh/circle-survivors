@@ -19,7 +19,7 @@ import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } 
 import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat, getLoopPosition, getAbsoluteBeats } from '../audio/PatternClock.ts'
 import { getBeatZeroTime } from '../audio/BeatLoop.ts'
-import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playBeatDash, playFuseStart, playRecallStart, playChillZonePlace, playIceShardBurst, playWallSpringFire, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth, playBoing, playShockPush, playDashShotFire, startDashShotCrackle, stopDashShotCrackle, playEnemyBeatTick } from '../audio/AudioEngine.ts'
+import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playHealExplosion, playBeatDash, playFuseStart, playRecallStart, playChillZonePlace, playIceShardBurst, playWallSpringFire, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth, playBoing, playShockPush, playDashShotFire, startDashShotCrackle, stopDashShotCrackle, playEnemyBeatTick } from '../audio/AudioEngine.ts'
 import { resetProTip, showToast } from '../render/Renderer.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
 import { getScoresForChallenge, fetchOnlineScores } from '../game/HighScores.ts'
@@ -47,6 +47,7 @@ interface PendingExplosion {
   timer: number  // time since queued (for buildup visual)
   buildup: number  // seconds the telegraph expands before bursting (default BEAT_SEC; longer for on-beat bullet explosions)
   soundPlayed: boolean
+  heal: boolean    // NOURISH variant — heals player + enemies in range by 1 instead of damaging (gold VFX + chime)
 }
 const pendingExplosions: PendingExplosion[] = []
 
@@ -175,14 +176,36 @@ function processVolatileExplosions(player: ReturnType<typeof getPlayer>, enemies
     exp.timer += dt
     if (!exp.soundPlayed) {
       exp.soundPlayed = true
-      playVolatileExplosion(exp.buildup)   // pass the real buildup so the roll + boom land on the burst
+      // Heal blasts get a soft NOURISH chime instead of the boom; both share the buildup timing
+      // so the resolve still lands on the burst.
+      if (exp.heal) {
+        // Will this blast actually heal anyone? (a target in range AND below max HP). Predicted now
+        // from current positions so the bloom can land on the beat; if nobody needs healing the
+        // chime stays tame instead of blaring for a no-op. Player or any live enemy counts.
+        let willHeal = false
+        const pdx = player.x - exp.x, pdy = player.y - exp.y
+        const pr = exp.range + player.hitRadius
+        if (player.hp < player.maxHp && pdx * pdx + pdy * pdy <= pr * pr) willHeal = true
+        if (!willHeal) {
+          for (const e of enemies) {
+            if (!e.alive || e.dying || e.summon || e.hp >= e.maxHp) continue
+            const dx = e.x - exp.x, dy = e.y - exp.y
+            const hr = exp.range + e.radius
+            if (dx * dx + dy * dy <= hr * hr) { willHeal = true; break }
+          }
+        }
+        playHealExplosion(exp.buildup, willHeal)
+      } else {
+        playVolatileExplosion(exp.buildup)
+      }
     }
     if (exp.timer >= exp.buildup && getActiveChallenge()?.name === 'Beginner Challenge') {
       showToast('BOOM!', { y: 0.14, duration: 1.0, size: 56, id: 'boom', color: [255, 120, 30], style: 'combo' })
     }
     if (exp.timer >= exp.buildup) {
       probe('boom')   // the explosion burst — the boom sound is aligned to this moment
-      if (!boomBoomPowFired) {
+      // BOOM BOOM POW combo is a DAMAGE streak — heal blasts don't count toward it.
+      if (!boomBoomPowFired && !exp.heal) {
         const now = challengeElapsed
         explosionTimes.push(now)
         while (explosionTimes.length > 0 && explosionTimes[0]! < now - 3) explosionTimes.shift()
@@ -191,6 +214,11 @@ function processVolatileExplosions(player: ReturnType<typeof getPlayer>, enemies
           showToast('BOOM BOOM POW!', { y: 0.14, duration: 1.5, size: 46, id: 'boom_pow', color: [255, 120, 30], style: 'combo' })
         }
       }
+      // GOLD GVFX colors — heal blasts read gold regardless of the source enemy's color, so the
+      // "nourish" meaning is unmistakable. The warm gold matches the player's heal halo palette.
+      const vfxR = exp.heal ? 255 : exp.r
+      const vfxG = exp.heal ? 215 : exp.g
+      const vfxB = exp.heal ? 110 : exp.b
       for (const enemy of enemies) {
         if (!enemy.alive || enemy.dying || enemy.summon) continue
         const dx = enemy.x - exp.x
@@ -204,20 +232,27 @@ function processVolatileExplosions(player: ReturnType<typeof getPlayer>, enemies
           destInRange = gdx * gdx + gdy * gdy <= hitRange * hitRange
         }
         if (inRange || destInRange) {
-          const wasDying = enemy.dying
-          damageEnemy(enemy, 1)
-          if (!isRunTimerActive() && !isRunComplete()) {
-            startRunTimer()
-          }
-          if (enemy.revenge) {
-            emit('enemy:revenge', enemy)
-          }
-          if (enemy.totemSpawn) {
-            emit('totem:spawn', enemy)
-          }
-          if (enemy.dying && !wasDying) {
-            spawnDrops(enemy, 1, spawnOrb)
-            explosionKillTimes.push(challengeElapsed)
+          if (exp.heal) {
+            // NOURISH — top the enemy up by 1 (no drops/revenge/totem; those are damage reactions).
+            // The gold halo + sparkle fire automatically in drawEnemy off the HP increase (same as
+            // the player), so no explicit VFX call is needed here.
+            enemy.hp = Math.min(enemy.hp + 1, enemy.maxHp)
+          } else {
+            const wasDying = enemy.dying
+            damageEnemy(enemy, 1)
+            if (!isRunTimerActive() && !isRunComplete()) {
+              startRunTimer()
+            }
+            if (enemy.revenge) {
+              emit('enemy:revenge', enemy)
+            }
+            if (enemy.totemSpawn) {
+              emit('totem:spawn', enemy)
+            }
+            if (enemy.dying && !wasDying) {
+              spawnDrops(enemy, 1, spawnOrb)
+              explosionKillTimes.push(challengeElapsed)
+            }
           }
         }
       }
@@ -225,10 +260,17 @@ function processVolatileExplosions(player: ReturnType<typeof getPlayer>, enemies
       const pdy = player.y - exp.y
       const playerHitRange = exp.range + player.hitRadius
       if (pdx * pdx + pdy * pdy <= playerHitRange * playerHitRange) {
-        if (hurtPlayer(player, 1)) playPlayerHit()
+        if (exp.heal) {
+          // The player's gold heal halo + sparkle burst fire automatically off the HP increase
+          // (Renderer detects it), so just bump HP — no explicit VFX call needed here.
+          player.hp = Math.min(player.hp + 1, player.maxHp)
+        } else if (hurtPlayer(player, 1)) {
+          playPlayerHit()
+        }
       }
-      addVolatileExplosion(exp.x, exp.y, exp.range, exp.r, exp.g, exp.b)
-      Renderer.spawnVolatileParticles(exp.x, exp.y, exp.range, exp.r, exp.g, exp.b)
+      addVolatileExplosion(exp.x, exp.y, exp.range, vfxR, vfxG, vfxB, exp.heal)
+      if (exp.heal) Renderer.spawnHealExplosionParticles(exp.x, exp.y, exp.range)
+      else Renderer.spawnVolatileParticles(exp.x, exp.y, exp.range, vfxR, vfxG, vfxB)
       pendingExplosions[i] = pendingExplosions[pendingExplosions.length - 1]!
       pendingExplosions.pop()
     }
@@ -251,6 +293,7 @@ on('enemy:killed', (enemy: Enemy) => {
     timer: 0,
     buildup: BEAT_SEC,
     soundPlayed: false,
+    heal: enemy.volatileHeal,
   })
   // DASH YOU FOOL — player within 200px when explosion starts, 1 min CD
   const player = getPlayer()
@@ -873,7 +916,7 @@ function spawnSalvo(enemy: Enemy, ringIndex: number, layerIndex: number, originX
       salvoId,
       salvoIndex: i,
     })
-    Renderer.addEnemyBulletViz(originX, originY, vx, vy, rs.bulletLifetime, rs.ring.radius, cr, cg, cb, trackingRate, launchDelay, anchorToEnemy ? enemy : null, offX, offY, isSurround, surroundTargetX, surroundTargetY, salvoId, i, rs.tetherMode, rs.tetherWidth, rs.pushMode, rs.staccato, rs.staccatoDivision, rs.staccatoPhase, layerIndex > 0, rs.explodeMode)
+    Renderer.addEnemyBulletViz(originX, originY, vx, vy, rs.bulletLifetime, rs.ring.radius, cr, cg, cb, trackingRate, launchDelay, anchorToEnemy ? enemy : null, offX, offY, isSurround, surroundTargetX, surroundTargetY, salvoId, i, rs.tetherMode, rs.tetherWidth, rs.pushMode, rs.staccato, rs.staccatoDivision, rs.staccatoPhase, layerIndex > 0, rs.explodeMode, rs.healMode)
   }
   // Layer rotation only advances on a FRESH parent fire (no override). Cluster child salvos
   // inherit their rotation directly from the parent bullet's bornRotation + step, so they
@@ -1018,10 +1061,11 @@ function updateEnemyBullets(dt: number): void {
           timer: 0,
           buildup: BEAT_SEC + Math.max(0, RING_FIRE_LEAD_SEC - overshoot) - 0.05,  // −50ms: boom measured ~51ms late vs felt beat
           soundPlayed: false,
+          heal: detRs?.healMode ?? false,
         })
         // Destruction burst — the dart shatters (flash + hot ember scatter) at the shatter point
         // as the telegraph begins expanding, so the transition reads as a violent ignition.
-        Renderer.spawnExplodeBulletDestruction(exX, exY)
+        Renderer.spawnExplodeBulletDestruction(exX, exY, detRs?.healMode ?? false)
       } else {
         // Normal detonation — expanding damage ring, hit check applied at peak.
         enemyDetonations.push({

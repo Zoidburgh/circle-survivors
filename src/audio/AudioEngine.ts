@@ -571,6 +571,87 @@ export function playVolatileExplosion(buildupSec = 1.0): void {
   boomNoise.start(popTime); boomNoise.stop(popTime + 0.1)
 }
 
+// Heal-mode explosion — the NOURISH counterpart to playVolatileExplosion. Same buildup→resolve
+// timing (so it lands on the visual burst), but instead of a boom it blooms into a soft, bright
+// in-key MAJOR chord — a bell/harp "halo" that resolves up rather than detonating down. Routed
+// partly through reverb for an airy shimmer. Reads unmistakably as benevolent.
+// `full` = the blast will actually heal someone (player or an enemy below max HP). When false the
+// BLOOM is kept tame so a no-op heal blast (everyone already topped up) doesn't blare; when true the
+// resolve rings out at its normal level. The glitter buildup is the same either way (just gentle).
+export function playHealExplosion(buildupSec = 1.0, full = false): void {
+  ensureContext()
+  const c = ctx!
+  if (!admitVoice('high')) return
+  const t = c.currentTime
+  const popTime = t + Math.max(0.12, buildupSec - 0.02)
+  const baseDeg = explodeWalkStep++ % 5
+  const bloom = full ? 1 : 0.42   // bloom loudness multiplier — tamed unless it actually heals
+
+  // Buildup — GLITTER/FAIRY-DUST: a sprinkle of tiny high in-key bell twinkles scattered across the
+  // window, gently getting denser toward the bloom. Each is a soft, short, high sine ping through
+  // reverb — discrete sparkles (magical) rather than a continuous tone (which read as a siren).
+  if (currentMusic) {
+    const aStart = t + 0.02
+    const span = Math.max(0.12, popTime - aStart)
+    const twinkles = Math.min(14, Math.max(5, Math.round(span * 12)))
+    for (let i = 0; i < twinkles; i++) {
+      // Bias placement toward the end so the glitter accelerates into the heal (denser late).
+      const frac = Math.pow(Math.random(), 0.6)
+      const tt = aStart + frac * span
+      // High, airy in-key notes (octaves 2–3) — pentatonic-ish via scale degrees = always pretty.
+      const deg = (baseDeg + [0, 2, 4, 7, 9][Math.floor(Math.random() * 5)]!) % 7
+      const oct = 2 + (Math.random() < 0.45 ? 1 : 0)
+      const f = degreeToFreq(currentMusic, deg, oct)
+      const o = c.createOscillator()
+      const g = c.createGain()
+      o.type = 'sine'
+      o.frequency.setValueAtTime(f, tt)
+      // Soft, very quiet pings that grow a touch louder as the glitter densifies near the bloom.
+      const lvl = rVol(0.014 + 0.026 * frac)   // tamed a touch from before
+      const dur = 0.1 + Math.random() * 0.14
+      g.gain.setValueAtTime(0.0001, tt)
+      g.gain.linearRampToValueAtTime(lvl, tt + 0.006)          // tiny attack = a "ting"
+      g.gain.exponentialRampToValueAtTime(0.001, tt + dur)     // quick sparkle decay
+      o.connect(g); g.connect(reverbInput)                     // reverb only = airy, distant glitter
+      o.start(tt); o.stop(tt + dur + 0.02)
+    }
+  }
+
+  // The BLOOM — a SOFT warm major chord (root + third + fifth + octave) on gentle sine bells. Toned
+  // way down from the original so the resolve is a quiet, pretty chime, not a punchy hit. Slow-ish
+  // attack + floaty tail, all through plenty of reverb for a distant, magical halo.
+  const degrees = [0, 2, 4, 7]   // in-key major triad + octave
+  degrees.forEach((deg, idx) => {
+    const f = currentMusic ? degreeToFreq(currentMusic, deg, 1) : 440 * Math.pow(2, idx / 4)
+    const o = c.createOscillator()
+    const g = c.createGain()
+    o.type = 'sine'
+    o.frequency.setValueAtTime(f, popTime)
+    const peak = rVol((idx === 0 ? 0.22 : 0.13) * bloom)       // tamed unless the blast actually heals
+    g.gain.setValueAtTime(0.0001, popTime)
+    g.gain.linearRampToValueAtTime(peak, popTime + 0.03)       // gentler attack — no snap
+    g.gain.exponentialRampToValueAtTime(0.001, popTime + 0.5 + idx * 0.05)
+    o.connect(g); g.connect(master)
+    // Generous reverb send on every tone so the chime sits back as an airy halo, not in your face.
+    const rs = c.createGain(); rs.gain.value = rVol((idx === 0 ? 0.14 : 0.2) * bloom); g.connect(rs); rs.connect(reverbInput)
+    o.start(popTime); o.stop(popTime + 0.65 + idx * 0.05)
+  })
+
+  // Sparkle — a single high bell on the resolve, very soft, tying the glitter into the bloom.
+  {
+    const f = currentMusic ? degreeToFreq(currentMusic, baseDeg, 3) : 1760
+    const o = c.createOscillator()
+    const g = c.createGain()
+    o.type = 'sine'
+    o.frequency.setValueAtTime(f, popTime)
+    g.gain.setValueAtTime(0.0001, popTime)
+    g.gain.linearRampToValueAtTime(rVol(0.07 * bloom), popTime + 0.01)  // softer + tamed unless healing
+    g.gain.exponentialRampToValueAtTime(0.001, popTime + 0.3)
+    o.connect(g); g.connect(reverbInput)
+    o.start(popTime); o.stop(popTime + 0.35)
+  }
+}
+
 let fuseBurnNodes: { gain: GainNode; sources: AudioBufferSourceNode[] } | null = null
 
 export function startShieldFuseBurn(duration: number): void {

@@ -473,6 +473,10 @@ function renderLayerCardHTML(layerIdx: number, layer: ClusterLayer | undefined):
         <input class="ed-cl-explode" type="checkbox" ${l.explodeMode ? 'checked' : ''}>
         <span style="color:#FF9F6E;font:10px monospace;">Explode</span>
       </label>
+      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:2px;" title="Heal — makes Explode NOURISH instead of harm: the gold blast heals the player AND enemies in range by 1 HP. Requires Explode.">
+        <input class="ed-cl-heal" type="checkbox" ${l.healMode ? 'checked' : ''}>
+        <span style="color:#FFD27D;font:10px monospace;">Heal (nourish)</span>
+      </label>
       <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;">
         <input class="ed-cl-staccato" type="checkbox" ${l.staccato ? 'checked' : ''}>
         <span style="color:#7DBFFF;font:10px monospace;">Staccato</span>
@@ -526,6 +530,7 @@ function readLayerCard(card: Element): ClusterLayer {
   result.volleyWindow = parseFloat((card.querySelector('.ed-cl-volwin') as HTMLInputElement)?.value) || 0.25
   result.pushMode = (card.querySelector('.ed-cl-push') as HTMLInputElement)?.checked ?? false
   result.explodeMode = (card.querySelector('.ed-cl-explode') as HTMLInputElement)?.checked ?? false
+  result.healMode = (card.querySelector('.ed-cl-heal') as HTMLInputElement)?.checked ?? false
   result.staccato = (card.querySelector('.ed-cl-staccato') as HTMLInputElement)?.checked ?? false
   result.staccatoHalfBeat = (card.querySelector('.ed-cl-staccato-half') as HTMLInputElement)?.checked ?? false
   result.staccatoOffbeat = (card.querySelector('.ed-cl-staccato-off') as HTMLInputElement)?.checked ?? false
@@ -1907,6 +1912,10 @@ function addEnemyForm(existing?: DesignedEnemy): void {
         <div id="ed-volatile-range-wrap-${id}" style="margin-top:4px;display:${existing?.volatile ? 'block' : 'none'};">
           <span style="color:#FF6D00;font:10px monospace;">Blast: <span id="ed-volatile-range-val-${id}">${existing?.volatileRange ?? 150}</span></span>
           <input id="ed-volatile-range-${id}" type="range" min="80" max="800" step="10" value="${existing?.volatileRange ?? 150}" style="width:100%;">
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:2px;" title="Heal — makes the death blast NOURISH instead of harm: gold explosion that heals the player AND enemies in range by 1 HP.">
+            <input id="ed-volatile-heal-${id}" type="checkbox" ${existing?.volatileHeal ? 'checked' : ''}>
+            <span style="color:#FFD27D;font:10px monospace;">Heal (nourish instead of damage)</span>
+          </label>
         </div>
         <div id="ed-revenge-wrap-${id}" style="margin-top:4px;display:${existing?.revenge ? 'block' : 'none'};">
           <div style="display:flex;gap:6px;">
@@ -2118,6 +2127,10 @@ function addEnemyForm(existing?: DesignedEnemy): void {
           <input class="ed-rranged-explode" type="checkbox" ${rc?.explodeMode ? 'checked' : ''}>
           <span style="color:#FF9F6E;font:10px monospace;">Explode (volatile-style blast, fills radius)</span>
         </label>
+        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;" title="Heal mode — turns Explode into a NOURISH blast: gold telegraph + chime, and instead of damage it HEALS the player AND any enemies within the blast radius by 1 HP. Requires Explode.">
+          <input class="ed-rranged-heal" type="checkbox" ${rc?.healMode ? 'checked' : ''}>
+          <span style="color:#FFD27D;font:10px monospace;">Heal (nourish instead of damage)</span>
+        </label>
         <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;" title="Staccato — bullets FREEZE between beats and snap forward on each beat, dividing the flight into beat-aligned hops that still land on the detonation beat. Movement only (detonation/push/tether unchanged). Hops lock to the global beat so volley/cluster siblings stay in unison. Dodge in the frozen gaps.">
           <input class="ed-rranged-staccato" type="checkbox" ${rc?.staccato ? 'checked' : ''}>
           <span style="color:#7DBFFF;font:10px monospace;">Staccato (freeze + snap on each beat)</span>
@@ -2318,6 +2331,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
             volleyWindow: parseFloat((ringDiv.querySelector('.ed-rranged-volwin') as HTMLInputElement)?.value) || 0.25,
             pushMode: (ringDiv.querySelector('.ed-rranged-push') as HTMLInputElement)?.checked ?? false,
             explodeMode: (ringDiv.querySelector('.ed-rranged-explode') as HTMLInputElement)?.checked ?? false,
+            healMode: (ringDiv.querySelector('.ed-rranged-heal') as HTMLInputElement)?.checked ?? false,
             staccato: (ringDiv.querySelector('.ed-rranged-staccato') as HTMLInputElement)?.checked ?? false,
             staccatoHalfBeat: (ringDiv.querySelector('.ed-rranged-staccato-half') as HTMLInputElement)?.checked ?? false,
             staccatoOffbeat: (ringDiv.querySelector('.ed-rranged-staccato-off') as HTMLInputElement)?.checked ?? false,
@@ -2397,6 +2411,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       const volleyWindow = parseFloat((rd.querySelector('.ed-rranged-volwin') as HTMLInputElement)?.value) || 0.25
       const pushMode = (rd.querySelector('.ed-rranged-push') as HTMLInputElement)?.checked ?? false
       const explodeMode = (rd.querySelector('.ed-rranged-explode') as HTMLInputElement)?.checked ?? false
+      const healMode = (rd.querySelector('.ed-rranged-heal') as HTMLInputElement)?.checked ?? false
       const staccato = (rd.querySelector('.ed-rranged-staccato') as HTMLInputElement)?.checked ?? false
       const staccatoHalfBeat = (rd.querySelector('.ed-rranged-staccato-half') as HTMLInputElement)?.checked ?? false
       const staccatoOffbeat = (rd.querySelector('.ed-rranged-staccato-off') as HTMLInputElement)?.checked ?? false
@@ -2407,7 +2422,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       const layerCards = rd.querySelectorAll('.ed-rranged-layers > .ed-rranged-layer')
       const clusterLayers: ClusterLayer[] = []
       layerCards.forEach(card => clusterLayers.push(readLayerCard(card)))
-      result.push({ ringRadius, sound, beats, edgeMode, edgePoints, edgeActive, edgeSwitchBeats, rangedMode, rangedPattern, bulletCount, bulletSpeed, bulletLifetime, rotationStep, surroundRadius, spreadAngle, rotationMode, tracking, trackingStrength, volleyMode, volleyWindow, clusterLayers, pushMode, explodeMode, staccato, staccatoHalfBeat, staccatoOffbeat, tetherMode, tetherWidth, tetherSound })
+      result.push({ ringRadius, sound, beats, edgeMode, edgePoints, edgeActive, edgeSwitchBeats, rangedMode, rangedPattern, bulletCount, bulletSpeed, bulletLifetime, rotationStep, surroundRadius, spreadAngle, rotationMode, tracking, trackingStrength, volleyMode, volleyWindow, clusterLayers, pushMode, explodeMode, healMode, staccato, staccatoHalfBeat, staccatoOffbeat, tetherMode, tetherWidth, tetherSound })
     })
     return result
   }
@@ -2746,6 +2761,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const blinkBeats = parseInt((div.querySelector(`#ed-blink-beats-${id}`) as HTMLInputElement).value) || 4
     const volatile_ = (div.querySelector(`#ed-volatile-${id}`) as HTMLInputElement).checked
     const volatileRange = parseInt((div.querySelector(`#ed-volatile-range-${id}`) as HTMLInputElement).value) || 150
+    const volatileHeal = (div.querySelector(`#ed-volatile-heal-${id}`) as HTMLInputElement)?.checked ?? false
     const revenge = (div.querySelector(`#ed-revenge-${id}`) as HTMLInputElement).checked
     const revengeRings = parseInt((div.querySelector(`#ed-revenge-rings-${id}`) as HTMLInputElement).value) || 4
     const revengeRadius = parseInt((div.querySelector(`#ed-revenge-radius-${id}`) as HTMLInputElement).value) || 120
@@ -2795,7 +2811,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
     const finalHp = isShrine && shrinePhases.length > 0 ? shrinePhases.length : hp
-    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, revenge, revengeRings, revengeRadius, pusher, pusherBeats, pusherPhase, pusherStrength, dodge, dodgeCharges, dodgeChargeTime, dodgeDistance, dodgeSpeed, shield, shieldRechargeTime, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
+    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, volatileHeal, revenge, revengeRings, revengeRadius, pusher, pusherBeats, pusherPhase, pusherStrength, dodge, dodgeCharges, dodgeChargeTime, dodgeDistance, dodgeSpeed, shield, shieldRechargeTime, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
   }
 
 

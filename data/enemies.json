@@ -1339,9 +1339,21 @@
       "blinkBeats": 4,
       "volatile": true,
       "volatileRange": 370,
+      "volatileHeal": true,
       "revenge": false,
       "revengeRings": 4,
       "revengeRadius": 120,
+      "pusher": false,
+      "pusherBeats": 2,
+      "pusherPhase": 0,
+      "pusherStrength": 600,
+      "dodge": false,
+      "dodgeCharges": 2,
+      "dodgeChargeTime": 1.5,
+      "dodgeDistance": 100,
+      "dodgeSpeed": 1,
+      "shield": false,
+      "shieldRechargeTime": 4,
       "movePattern": "bounce",
       "totemSpawn": "",
       "dropType": "hp",
@@ -1353,8 +1365,13 @@
       "summonPhases": [],
       "isShrine": false,
       "shrineSpawnEnemy": "",
-      "shrineXpCount": 3,
-      "shrineHpCount": 0
+      "shrineXpCount": 0,
+      "shrineHpCount": 0,
+      "shrinePhases": [
+        {
+          "xpOrbs": 3
+        }
+      ]
     },
     {
       "name": "shrine1",
@@ -2139,6 +2156,7 @@
               "volleyWindow": 0.25,
               "pushMode": false,
               "explodeMode": false,
+              "healMode": false,
               "staccato": false,
               "staccatoHalfBeat": false,
               "staccatoOffbeat": false,
@@ -2149,6 +2167,7 @@
           ],
           "pushMode": false,
           "explodeMode": true,
+          "healMode": true,
           "staccato": false,
           "staccatoHalfBeat": false,
           "staccatoOffbeat": false,
@@ -2165,6 +2184,7 @@
       "blinkBeats": 4,
       "volatile": false,
       "volatileRange": 150,
+      "volatileHeal": false,
       "revenge": false,
       "revengeRings": 4,
       "revengeRadius": 120,

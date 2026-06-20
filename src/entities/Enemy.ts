@@ -58,6 +58,7 @@ export interface RingState {
   volleyWindow: number     // seconds — total stagger duration across the salvo
   pushMode: boolean        // detonation = Reverb-style shock push (no damage ring)
   explodeMode: boolean     // detonation = volatile explosion (anim + sound), filled blast disc damage
+  healMode: boolean        // explode variant: NOURISH instead of damage — heals player + enemies in range (gold VFX)
   staccato: boolean        // bullets freeze between beats and snap forward on each beat
   staccatoDivision: number // hops per beat: 1 = whole beat, 2 = half beat (eighth notes)
   staccatoPhase: number    // hop-grid phase shift in beats: 0 = on-beat, 0.5 = off-beat (&s)
@@ -88,7 +89,12 @@ export interface Enemy {
   typeName: string
   color: string
   hitFlash: number
+  healFlash: number     // >0 = recently healed; drives the gold heal halo + sparkle (mirror of player heal pulse)
+  healAmount: number    // HP gained on the triggering heal — scales the halo intensity
+  healSeenHp: number    // last HP the renderer observed (−1 sentinel); detects increases to fire the pulse
   deathTimer: number
+  deathX: number        // position captured at the kill instant — death anim/body are pinned here so a
+  deathY: number        // post-death position snap can't desync the dissolve from the volatile blast
   dying: boolean
   spawnTimer: number
   baseRadius: number
@@ -135,6 +141,7 @@ export interface Enemy {
   blinkBeats: number    // beats between blinks
   volatile: boolean     // explodes on death
   volatileRange: number // explosion radius
+  volatileHeal: boolean // volatile death blast NOURISHES instead — heals player + enemies in range (gold VFX)
   revenge: boolean      // fires rings after being hit
   revengeRings: number  // how many
   revengeRadius: number // ring radius
@@ -251,6 +258,7 @@ function buildChildLayerState(parent: RingState, layer: ClusterLayer): RingState
   if (layer.volleyWindow !== undefined) cloned.volleyWindow = layer.volleyWindow
   if (layer.pushMode !== undefined) cloned.pushMode = layer.pushMode
   if (layer.explodeMode !== undefined) cloned.explodeMode = layer.explodeMode
+  if (layer.healMode !== undefined) cloned.healMode = layer.healMode
   if (layer.staccato !== undefined) cloned.staccato = layer.staccato
   if (layer.staccatoHalfBeat !== undefined) cloned.staccatoDivision = layer.staccatoHalfBeat ? 2 : 1
   if (layer.staccatoOffbeat !== undefined) cloned.staccatoPhase = layer.staccatoOffbeat ? 0.5 : 0
@@ -307,6 +315,7 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
       volleyWindow: rc.volleyWindow ?? 0.25,
       pushMode: rc.pushMode ?? false,
       explodeMode: rc.explodeMode ?? false,
+      healMode: rc.healMode ?? false,
       staccato: rc.staccato ?? false,
       staccatoDivision: rc.staccatoHalfBeat ? 2 : 1,
       staccatoPhase: rc.staccatoOffbeat ? 0.5 : 0,
@@ -359,7 +368,12 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     typeName: type.name,
     color: type.color,
     hitFlash: 0,
+    healFlash: 0,
+    healAmount: 0,
+    healSeenHp: -1,   // sentinel: first draw just records HP, never fires a spurious pulse
     deathTimer: -1,
+    deathX: 0,
+    deathY: 0,
     dying: false,
     spawnTimer: 0,
     baseRadius: type.radius,
@@ -399,6 +413,7 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     blinkBeats: type.blinkBeats ?? 4,
     volatile: type.volatile ?? false,
     volatileRange: type.volatileRange ?? 150,
+    volatileHeal: type.volatileHeal ?? false,
     revenge: type.revenge ?? false,
     revengeRings: type.revengeRings ?? 4,
     revengeRadius: type.revengeRadius ?? 120,
@@ -1274,6 +1289,8 @@ export function damageEnemy(enemy: Enemy, amount: number): void {
   if (enemy.hp <= 0) {
     enemy.dying = true
     enemy.deathTimer = 0
+    enemy.deathX = enemy.x   // pin the death spot NOW (before any post-death position snap)
+    enemy.deathY = enemy.y
     if (enemy.shield && enemy.shieldRechargeTimer > 0) stopEnemyShieldFuseBurn()
     emit('enemy:killed', enemy)
   }
@@ -1281,6 +1298,11 @@ export function damageEnemy(enemy: Enemy, amount: number): void {
 
 export function updateDeath(enemy: Enemy, dt: number): void {
   if (!enemy.dying) return
+  // Pin the dying enemy to its captured death spot — some pass shoves it ~one radius right after
+  // death (worse for big/fast bouncers), which would slide the death dissolve away from the volatile
+  // blast. Holding the position keeps body, particles, and explosion all on the true death point.
+  enemy.x = enemy.deathX
+  enemy.y = enemy.deathY
   enemy.deathTimer += dt
   if (enemy.deathTimer >= DEATH_DURATION) {
     enemy.alive = false
