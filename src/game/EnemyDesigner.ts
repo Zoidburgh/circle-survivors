@@ -473,9 +473,9 @@ function renderLayerCardHTML(layerIdx: number, layer: ClusterLayer | undefined):
         <input class="ed-cl-explode" type="checkbox" ${l.explodeMode ? 'checked' : ''}>
         <span style="color:#FF9F6E;font:10px monospace;">Explode</span>
       </label>
-      <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:2px;" title="Heal — makes Explode NOURISH instead of harm: the gold blast heals the player AND enemies in range by 1 HP. Requires Explode.">
+      <label class="ed-cl-heal-wrap" style="display:${l.explodeMode ? 'flex' : 'none'};align-items:center;gap:4px;cursor:pointer;margin-top:2px;margin-left:14px;" title="Heal — makes Explode NOURISH instead of harm: the gold blast heals the player AND enemies in range by 1 HP. Requires Explode.">
         <input class="ed-cl-heal" type="checkbox" ${l.healMode ? 'checked' : ''}>
-        <span style="color:#FFD27D;font:10px monospace;">Heal (nourish)</span>
+        <span style="color:#FFD27D;font:10px monospace;">↳ Heal (nourish)</span>
       </label>
       <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;">
         <input class="ed-cl-staccato" type="checkbox" ${l.staccato ? 'checked' : ''}>
@@ -2127,9 +2127,9 @@ function addEnemyForm(existing?: DesignedEnemy): void {
           <input class="ed-rranged-explode" type="checkbox" ${rc?.explodeMode ? 'checked' : ''}>
           <span style="color:#FF9F6E;font:10px monospace;">Explode (volatile-style blast, fills radius)</span>
         </label>
-        <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;" title="Heal mode — turns Explode into a NOURISH blast: gold telegraph + chime, and instead of damage it HEALS the player AND any enemies within the blast radius by 1 HP. Requires Explode.">
+        <label class="ed-rranged-heal-wrap" style="display:${rc?.explodeMode ? 'flex' : 'none'};align-items:center;gap:4px;cursor:pointer;margin-top:4px;margin-left:14px;" title="Heal mode — turns Explode into a NOURISH blast: gold telegraph + chime, and instead of damage it HEALS the player AND any enemies within the blast radius by 1 HP. Requires Explode.">
           <input class="ed-rranged-heal" type="checkbox" ${rc?.healMode ? 'checked' : ''}>
-          <span style="color:#FFD27D;font:10px monospace;">Heal (nourish instead of damage)</span>
+          <span style="color:#FFD27D;font:10px monospace;">↳ Heal (nourish instead of damage)</span>
         </label>
         <label style="display:flex;align-items:center;gap:4px;cursor:pointer;margin-top:4px;" title="Staccato — bullets FREEZE between beats and snap forward on each beat, dividing the flight into beat-aligned hops that still land on the detonation beat. Movement only (detonation/push/tether unchanged). Hops lock to the global beat so volley/cluster siblings stay in unison. Dodge in the frozen gaps.">
           <input class="ed-rranged-staccato" type="checkbox" ${rc?.staccato ? 'checked' : ''}>
@@ -2243,6 +2243,15 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       rangedVolOpts.style.display = rangedVolCheck.checked ? 'flex' : 'none'
     })
 
+    // Heal is a sub-option of Explode — only reveal it when Explode is on (and clear it when off).
+    const rangedExplodeCheck = ringDiv.querySelector('.ed-rranged-explode') as HTMLInputElement
+    const rangedHealWrap = ringDiv.querySelector('.ed-rranged-heal-wrap') as HTMLLabelElement
+    const rangedHealCheck = ringDiv.querySelector('.ed-rranged-heal') as HTMLInputElement
+    rangedExplodeCheck.addEventListener('change', () => {
+      rangedHealWrap.style.display = rangedExplodeCheck.checked ? 'flex' : 'none'
+      if (!rangedExplodeCheck.checked) rangedHealCheck.checked = false
+    })
+
     // ── Cluster layers — stack of per-generation override cards ──
     const layersContainer = ringDiv.querySelector('.ed-rranged-layers') as HTMLDivElement
     const addLayerBtn = ringDiv.querySelector('.ed-rranged-addlayer') as HTMLButtonElement
@@ -2287,6 +2296,14 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       const volOpts = card.querySelector('.ed-cl-vol-opts') as HTMLDivElement
       volCheck.addEventListener('change', () => {
         volOpts.style.display = volCheck.checked ? 'flex' : 'none'
+      })
+      // Heal is a sub-option of Explode — only reveal it when Explode is on (and clear it when off).
+      const explodeCheck = card.querySelector('.ed-cl-explode') as HTMLInputElement
+      const healWrap = card.querySelector('.ed-cl-heal-wrap') as HTMLLabelElement
+      const healCheck = card.querySelector('.ed-cl-heal') as HTMLInputElement
+      explodeCheck.addEventListener('change', () => {
+        healWrap.style.display = explodeCheck.checked ? 'flex' : 'none'
+        if (!explodeCheck.checked) healCheck.checked = false
       })
       ;(card.querySelector('.ed-cl-remove') as HTMLButtonElement).addEventListener('click', () => {
         card.remove()
