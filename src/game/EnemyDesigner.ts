@@ -759,6 +759,29 @@ export function initDesigner(): void {
             </div>
           </div>
         </div>
+        <div style="display:flex;gap:6px;align-items:center;margin-top:6px;padding-top:6px;border-top:1px dashed rgba(255,215,64,0.15);flex-wrap:wrap;">
+          <span style="color:#aaa;font:10px monospace;">Zone</span>
+          <select id="ed-wall-zone-type" style="padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <option value="none">None</option>
+            <option value="damage">Damage</option>
+            <option value="heal">Heal</option>
+          </select>
+          <div id="ed-wall-zone-params" style="display:none;gap:6px;align-items:center;flex-wrap:wrap;width:100%;">
+            <span style="color:#aaa;font:10px monospace;">Reach</span>
+            <input id="ed-wall-zone-range" type="number" min="10" max="600" step="10" value="120" style="width:60px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span style="color:#aaa;font:10px monospace;">px from edge</span>
+            <span style="color:#aaa;font:10px monospace;margin-left:8px;">Fires every</span>
+            <input id="ed-wall-zone-beats" type="number" min="0.25" max="32" step="0.25" value="2" style="width:55px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span style="color:#aaa;font:10px monospace;">beat(s)</span>
+            <span style="color:#aaa;font:10px monospace;margin-left:8px;">Offset</span>
+            <input id="ed-wall-zone-phase" type="number" min="0" max="32" step="0.25" value="0" style="width:55px;padding:3px 5px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+            <span style="color:#aaa;font:10px monospace;">beats</span>
+            <div style="color:#666;font:9px monospace;width:100%;line-height:1.4;">
+              <b>Reach</b> = how far the band hits OUT from the wall edge. <b style="color:#FF6D00;">Damage</b> hurts / <b style="color:#FFD27D;">Heal</b> nourishes (player AND enemies in range) by 1 on each pulse.<br>
+              The band charges outward toward the edge over the cycle and hits on the fire beat. <b>Fires every N beats</b>, <b>Offset</b> shifts when (0.5 = off-beat).
+            </div>
+          </div>
+        </div>
       </div>
       <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;padding:5px;background:rgba(180,140,255,0.05);border:1px solid rgba(180,140,255,0.18);border-radius:3px;flex-wrap:wrap;">
         <span style="color:#aaa;font:10px monospace;">Prefab</span>
@@ -1320,6 +1343,11 @@ export function initDesigner(): void {
   const springBeatsInput = panel.querySelector('#ed-wall-spring-beats') as HTMLInputElement
   const springPhaseInput = panel.querySelector('#ed-wall-spring-phase') as HTMLInputElement
   const springStrengthInput = panel.querySelector('#ed-wall-spring-strength') as HTMLInputElement
+  const zoneTypeSel = panel.querySelector('#ed-wall-zone-type') as HTMLSelectElement
+  const zoneParams = panel.querySelector('#ed-wall-zone-params') as HTMLDivElement
+  const zoneRangeInput = panel.querySelector('#ed-wall-zone-range') as HTMLInputElement
+  const zoneBeatsInput = panel.querySelector('#ed-wall-zone-beats') as HTMLInputElement
+  const zonePhaseInput = panel.querySelector('#ed-wall-zone-phase') as HTMLInputElement
   // Re-read & repopulate the panel from current selection state. Called whenever selection
   // changes, motion changes, or initial setup.
   function refreshWallProps(): void {
@@ -1381,6 +1409,17 @@ export function initDesigner(): void {
       springBeatsInput.value = String(spring.beatsPerCycle)
       springPhaseInput.value = String(spring.phase)
       springStrengthInput.value = String(spring.strength)
+    }
+    const zone = ChallengeBuilder.getSelectedWallZone()
+    if (!zone) {
+      zoneTypeSel.value = 'none'
+      zoneParams.style.display = 'none'
+    } else {
+      zoneTypeSel.value = zone.mode
+      zoneParams.style.display = 'flex'
+      zoneRangeInput.value = String(zone.range)
+      zoneBeatsInput.value = String(zone.beatsPerCycle)
+      zonePhaseInput.value = String(zone.phase)
     }
   }
   motionTypeSel.addEventListener('change', () => {
@@ -1482,6 +1521,32 @@ export function initDesigner(): void {
   springBeatsInput.addEventListener('input', pushSpringChange)
   springPhaseInput.addEventListener('input', pushSpringChange)
   springStrengthInput.addEventListener('input', pushSpringChange)
+  zoneTypeSel.addEventListener('change', () => {
+    if (zoneTypeSel.value === 'none') {
+      ChallengeBuilder.setSelectedWallZone(undefined)
+    } else {
+      ChallengeBuilder.setSelectedWallZone({
+        mode: zoneTypeSel.value as 'damage' | 'heal',
+        range: parseFloat(zoneRangeInput.value) || 120,
+        beatsPerCycle: parseFloat(zoneBeatsInput.value) || 2,
+        phase: parseFloat(zonePhaseInput.value) || 0,
+      })
+    }
+    refreshWallProps()
+  })
+  function pushZoneChange(): void {
+    if (zoneTypeSel.value !== 'damage' && zoneTypeSel.value !== 'heal') return
+    const rng = parseFloat(zoneRangeInput.value)
+    const bpc = parseFloat(zoneBeatsInput.value)
+    const ph = parseFloat(zonePhaseInput.value)
+    if (!Number.isFinite(rng) || rng <= 0) return
+    if (!Number.isFinite(bpc) || bpc <= 0) return
+    if (!Number.isFinite(ph) || ph < 0) return
+    ChallengeBuilder.setSelectedWallZone({ mode: zoneTypeSel.value as 'damage' | 'heal', range: rng, beatsPerCycle: bpc, phase: ph })
+  }
+  zoneRangeInput.addEventListener('input', pushZoneChange)
+  zoneBeatsInput.addEventListener('input', pushZoneChange)
+  zonePhaseInput.addEventListener('input', pushZoneChange)
   // Refresh panel ONLY when the selection actually changes. The previous "refresh every 100ms"
   // approach overwrote inputs while the user was typing (e.g. typing "0.5" — the "0" got
   // pushed to wall, refresh tick wrote it back as "0", killing the in-progress value).

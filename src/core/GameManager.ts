@@ -1,8 +1,8 @@
 import * as Input from '../game/InputManager.ts'
 import * as Renderer from '../render/Renderer.ts'
-import { updatePlayer, hurtPlayer, resetDashCDToast, RECALL_DURATION } from '../entities/Player.ts'
+import { updatePlayer, hurtPlayer, healPlayer, resetDashCDToast, RECALL_DURATION } from '../entities/Player.ts'
 import type { Player } from '../entities/Player.ts'
-import { createEnemy, updateEnemy, updateDeath, damageEnemy, spawnDrops, tickLeaveToastCD, resetLeaveToastCD } from '../entities/Enemy.ts'
+import { createEnemy, updateEnemy, updateDeath, damageEnemy, healEnemy, spawnDrops, tickLeaveToastCD, resetLeaveToastCD } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { advanceGlobalTime } from './RhythmClock.ts'
 import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
@@ -10,7 +10,7 @@ import { advancePatternClock } from '../audio/PatternClock.ts'
 import { getPlayer, getEnemies, getGrid, getCamera, getPhase, setPhase, getXpForNextLevel, startRunTimer, advanceRunTimer, isRunTimerActive, isRunComplete, completeRun, getRunTimer, isInDesignerTestPlay } from './GameState.ts'
 import { updateOrbs, cleanupOrbs, getOrbs, spawnOrb, collectOrb, resetOrbs } from '../entities/XPOrb.ts'
 import type { XPOrb } from '../entities/XPOrb.ts'
-import { updateCamera, clampToArena, getArenaShape, setArenaShape, findClearSpawnPos, resolveWallCollision, updateWalls, consumeSpringFires, computeWallArc, getWalls } from '../game/Arena.ts'
+import { updateCamera, clampToArena, getArenaShape, setArenaShape, findClearSpawnPos, resolveWallCollision, updateWalls, consumeSpringFires, consumeZoneFires, computeWallArc, getWalls } from '../game/Arena.ts'
 import type { Wall } from '../game/Arena.ts'
 import { PLAYER_RADIUS, MAGNET_RANGE, MAGNET_STRENGTH, BEAT_SEC, HEAVY_YIELD, DASH_SHOT_SPEED, DASH_SHOT_RADIUS_MULT } from '../utils/constants.ts'
 import { staccatoProgress, STACCATO_LEAD } from '../utils/math.ts'
@@ -234,9 +234,9 @@ function processVolatileExplosions(player: ReturnType<typeof getPlayer>, enemies
         if (inRange || destInRange) {
           if (exp.heal) {
             // NOURISH — top the enemy up by 1 (no drops/revenge/totem; those are damage reactions).
-            // The gold halo + sparkle fire automatically in drawEnemy off the HP increase (same as
-            // the player), so no explicit VFX call is needed here.
-            enemy.hp = Math.min(enemy.hp + 1, enemy.maxHp)
+            // healEnemy records the event so the gold halo + sparkle fire in drawEnemy even if the
+            // enemy is also hit this frame (event-driven, doesn't cancel on net HP).
+            healEnemy(enemy, 1)
           } else {
             const wasDying = enemy.dying
             damageEnemy(enemy, 1)
@@ -261,9 +261,7 @@ function processVolatileExplosions(player: ReturnType<typeof getPlayer>, enemies
       const playerHitRange = exp.range + player.hitRadius
       if (pdx * pdx + pdy * pdy <= playerHitRange * playerHitRange) {
         if (exp.heal) {
-          // The player's gold heal halo + sparkle burst fire automatically off the HP increase
-          // (Renderer detects it), so just bump HP — no explicit VFX call needed here.
-          player.hp = Math.min(player.hp + 1, player.maxHp)
+          healPlayer(player, 1)   // event-driven gold pulse (stacks with a same-frame hit)
         } else if (hurtPlayer(player, 1)) {
           playPlayerHit()
         }
@@ -1257,9 +1255,7 @@ function updateEnemyDetonations(dt: number): void {
           const oDist = Math.sqrt(odx * odx + ody * ody)
           if (Math.abs(oDist - d.ringRadius) < orb.radius + 2) {
             collectOrb(orb, 'enemy')
-            if (owner.alive && !owner.dying && owner.hp < owner.maxHp) {
-              owner.hp = Math.min(owner.hp + 1, owner.maxHp)
-            }
+            healEnemy(owner, 1)
             const isHP = orb.orbType === 'hp'
             Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 140 : 255, isHP ? 140 : 200, owner.x, owner.y)
           }
@@ -1386,9 +1382,7 @@ function updateTethers(dt: number): void {
         }
         if (hit) {
           collectOrb(orb, 'enemy')
-          if (owner.alive && !owner.dying && owner.hp < owner.maxHp) {
-            owner.hp = Math.min(owner.hp + 1, owner.maxHp)
-          }
+          healEnemy(owner, 1)
           const isHP = orb.orbType === 'hp'
           Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 140 : 255, isHP ? 140 : 200, owner.x, owner.y)
         }
@@ -1690,7 +1684,7 @@ function applyBeatDashImpact(x: number, y: number, radius: number, damage: numbe
       if (odx * odx + ody * ody <= (radius + orb.radius) * (radius + orb.radius)) {
         collectOrb(orb)
         if (orb.orbType === 'hp') {
-          player.hp = Math.min(player.hp + 1, player.maxHp)
+          healPlayer(player, 1)
         } else {
           player.xp += orb.value * player.modifiers.xpMult
         }
@@ -2356,6 +2350,94 @@ function processSpringFires(): void {
   }
 }
 
+// ── Wall damage/heal zones — beat-locked band pulses (mirrors the spring's fire+grace shape) ──
+const ZONE_GRACE_BEATS = 0.18
+const zoneHitThisFire = new WeakMap<Wall, Set<unknown>>()
+
+// Apply one zone pulse's effect to everything inside the wall's band (capsule grown by range).
+// Same closest-point distance test as the spring trigger, but the reach is the full zone range
+// and the effect is HP, not a launch. Each entity is hit at most once per fire (grace re-checks).
+function tryHitZone(
+  w: Wall,
+  player: ReturnType<typeof getPlayer>,
+  enemies: ReturnType<typeof getEnemies>,
+): void {
+  if (!w.zone) return
+  const hit = zoneHitThisFire.get(w)
+  if (!hit) return
+  const heal = w.zone.mode === 'heal'
+  const range = w.zone.range
+  const playerR = PLAYER_RADIUS * player.modifiers.sizeMult
+  // Player
+  {
+    const cp = closestPointOnWall(w, player.x, player.y)
+    const dx = player.x - cp.x, dy = player.y - cp.y
+    const reach = w.radius + range + playerR
+    if (dx * dx + dy * dy < reach * reach) {
+      if (!hit.has(player)) {
+        hit.add(player)
+        if (heal) healPlayer(player, 1)   // event-driven gold pulse (stacks with same-frame hit)
+        else if (hurtPlayer(player, 1)) playPlayerHit()
+      }
+    } else hit.delete(player)
+  }
+  for (const e of enemies) {
+    if (!e.alive || e.dying || e.summon) continue
+    const cp = closestPointOnWall(w, e.x, e.y)
+    const dx = e.x - cp.x, dy = e.y - cp.y
+    const reach = w.radius + range + e.radius
+    if (dx * dx + dy * dy < reach * reach) {
+      if (!hit.has(e)) {
+        hit.add(e)
+        if (heal) {
+          healEnemy(e, 1)   // event-driven gold sparkle (stacks with a same-frame hit)
+        } else {
+          const wasDying = e.dying
+          damageEnemy(e, 1)
+          if (e.revenge) emit('enemy:revenge', e)
+          if (e.totemSpawn) emit('totem:spawn', e)
+          if (e.dying && !wasDying) spawnDrops(e, 1, spawnOrb)
+        }
+      }
+    } else hit.delete(e)
+  }
+}
+
+function processZoneFires(): void {
+  const fires = consumeZoneFires()
+  const player0 = getPlayer()
+  const enemies0 = getEnemies()
+  // Pass 1 — fresh fires: reset the per-fire hit set + spawn the burst for every fire, THEN apply
+  // effects HEALS-FIRST so a same-beat heal grants its overheal buffer before the damage lands (the
+  // hit gets soaked → net 0, deterministically, regardless of wall placement order).
+  if (fires.length > 0) {
+    for (const fire of fires) {
+      const w = fire.wall
+      if (!w.zone) continue
+      zoneHitThisFire.set(w, new Set())
+      // Inline flash/edge/ripple (drawWalls) + this rich debris burst, the latter parent-attached
+      // to the wall's live center+rotation so the whole explosion rides a moving/turning wall.
+      Renderer.spawnWallZoneBurst(w, w.zone.mode === 'heal')
+    }
+    for (const fire of fires) if (fire.wall.zone?.mode === 'heal') tryHitZone(fire.wall, player0, enemies0)
+    for (const fire of fires) if (fire.wall.zone?.mode === 'damage') tryHitZone(fire.wall, player0, enemies0)
+  }
+  // Pass 2 — grace window: re-check the band for a short spell so an entity that slips in a frame
+  // after the beat still takes the pulse once (mirrors the spring grace). Heals before damage here too.
+  const beatPos = getAbsoluteBeats()
+  const wallsLive = getWalls()
+  const graceTick = (w: Wall): void => {
+    if (!w.zone || w.zoneLastFireBeat == null) return
+    if (!zoneHitThisFire.has(w)) return
+    const bsf = beatPos - w.zoneLastFireBeat
+    if (bsf <= 0) return
+    if (bsf > ZONE_GRACE_BEATS) { zoneHitThisFire.delete(w); return }
+    tryHitZone(w, player0, enemies0)
+  }
+  for (const w of wallsLive) if (w.zone?.mode === 'heal') graceTick(w)
+  for (const w of wallsLive) if (w.zone?.mode === 'damage') graceTick(w)
+}
+
 // Pusher enemies — kinematically shove nearby entities on-beat. Mirrors the wall spring
 // firing logic exactly (beat-aligned to the music's downbeat via BEAT_AUDIO_OFFSET, grace
 // window via WeakMap-pushed-set, audio pre-scheduled 0.5 beats ahead). Pushes are pure
@@ -2587,6 +2669,7 @@ function updateDesigner(dt: number): void {
   if (!Renderer.isDesignerZoomedOut()) {
     updateWalls(getAbsoluteBeats())
     processSpringFires()
+    processZoneFires()
     processPusherEnemies()
   }
   Input.flush()
@@ -2994,6 +3077,7 @@ export function update(dt: number): void {
   // the song loop length — e.g. a 12-beats/rev rotation in an 8-beat song would reset every 8.
   updateWalls(getAbsoluteBeats())
   processSpringFires()
+  processZoneFires()
   processPusherEnemies()
   updatePreviewEnemy(dt)
   updateRitualNodes(dt)
@@ -3451,9 +3535,7 @@ export function update(dt: number): void {
             const oDist = Math.sqrt(odx * odx + ody * ody)
             if (Math.abs(oDist - pr.radius) < orb.radius + 2) {
               collectOrb(orb, 'enemy')
-              if (pr.enemy.alive && !pr.enemy.dying && pr.enemy.hp < pr.enemy.maxHp) {
-                pr.enemy.hp = Math.min(pr.enemy.hp + 1, pr.enemy.maxHp)
-              }
+              healEnemy(pr.enemy, 1)
               const isHP = orb.orbType === 'hp'
               if (isHP) hpEatenThisRing++
               Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 140 : 255, isHP ? 140 : 200, pr.enemy.x, pr.enemy.y)

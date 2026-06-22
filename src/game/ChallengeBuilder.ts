@@ -4,7 +4,7 @@ import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
 import type { EnemyType } from '../entities/EnemyTypes.ts'
 import { getCamera, getPhase, getPlayer } from '../core/GameState.ts'
 import { setArenaShape, clampToArena, setWalls, ARENA_CX, ARENA_CY, getWallSnapPoints, SNAP_POINT_5_THRESHOLD } from '../game/Arena.ts'
-import type { ArenaShape, Camera, Wall, WallMotion, WallTranslation, WallFade, WallSpring } from '../game/Arena.ts'
+import type { ArenaShape, Camera, Wall, WallMotion, WallTranslation, WallFade, WallSpring, WallZone } from '../game/Arena.ts'
 import { getDesignerZoomFactor } from '../render/Renderer.ts'
 import defaultData from '../../data/enemies.json'
 
@@ -531,6 +531,19 @@ export function getSelectedWallSpring(): WallSpring | undefined {
   return placingWalls[selectedWallIdx]?.spring
 }
 
+export function setSelectedWallZone(zone: WallZone | undefined): void {
+  if (selectedWallIdx < 0 || selectedWallIdx >= placingWalls.length) return
+  const w = placingWalls[selectedWallIdx]!
+  if (zone) w.zone = { ...zone }
+  else delete w.zone
+  syncWallsToArena()
+}
+
+export function getSelectedWallZone(): WallZone | undefined {
+  if (selectedWallIdx < 0 || selectedWallIdx >= placingWalls.length) return undefined
+  return placingWalls[selectedWallIdx]?.zone
+}
+
 /** Delete the currently selected wall (used by Delete key). Returns true if deleted. */
 export function deleteSelectedWall(): boolean {
   if (selectedWallIdx < 0 || selectedWallIdx >= placingWalls.length) return false
@@ -832,6 +845,7 @@ export function saveSelectedGroupAsPrefab(name: string): boolean {
     ...(w.translation ? { translation: { ...w.translation } } : {}),
     ...(w.fade ? { fade: { ...w.fade } } : {}),
     ...(w.spring ? { spring: { ...w.spring } } : {}),
+    ...(w.zone ? { zone: { ...w.zone } } : {}),
     ...(w.noClip ? { noClip: true } : {}),
   }))
   const trimmed = name.trim()
@@ -937,6 +951,7 @@ export function dropPrefabAt(screenX: number, screenY: number): boolean {
       ...(rotatedTrans ? { translation: rotatedTrans } : {}),
       ...(w.fade ? { fade: { ...w.fade } } : {}),
       ...(w.spring ? { spring: { ...w.spring } } : {}),
+      ...(w.zone ? { zone: { ...w.zone } } : {}),
       ...(w.noClip ? { noClip: true } : {}),
     })
   }

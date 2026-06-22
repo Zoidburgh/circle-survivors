@@ -91,7 +91,9 @@ export interface Enemy {
   hitFlash: number
   healFlash: number     // >0 = recently healed; drives the gold heal halo + sparkle (mirror of player heal pulse)
   healAmount: number    // HP gained on the triggering heal — scales the halo intensity
-  healSeenHp: number    // last HP the renderer observed (−1 sentinel); detects increases to fire the pulse
+  pendingHeal: number   // HP gained this frame — renderer fires the gold pulse from this EVENT, not a
+                        // net-HP diff, so a same-frame hit+heal shows BOTH (red flash + gold) instead
+                        // of cancelling. Reset to 0 by the renderer after each frame.
   deathTimer: number
   deathX: number        // position captured at the kill instant — death anim/body are pinned here so a
   deathY: number        // post-death position snap can't desync the dissolve from the volatile blast
@@ -370,7 +372,7 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     hitFlash: 0,
     healFlash: 0,
     healAmount: 0,
-    healSeenHp: -1,   // sentinel: first draw just records HP, never fires a spurious pulse
+    pendingHeal: 0,
     deathTimer: -1,
     deathX: 0,
     deathY: 0,
@@ -1294,6 +1296,17 @@ export function damageEnemy(enemy: Enemy, amount: number): void {
     if (enemy.shield && enemy.shieldRechargeTimer > 0) stopEnemyShieldFuseBurn()
     emit('enemy:killed', enemy)
   }
+}
+
+// Heal an enemy by `amount` (clamped to maxHp), recording the gain so the renderer fires the gold
+// heal pulse from the EVENT (not a net-HP diff) — so it shows even when a same-frame hit cancels it.
+export function healEnemy(enemy: Enemy, amount: number): number {
+  if (amount <= 0 || enemy.hp >= enemy.maxHp || !enemy.alive || enemy.dying) return 0
+  const before = enemy.hp
+  enemy.hp = Math.min(enemy.hp + amount, enemy.maxHp)
+  const gained = enemy.hp - before
+  enemy.pendingHeal += gained
+  return gained
 }
 
 export function updateDeath(enemy: Enemy, dt: number): void {

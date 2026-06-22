@@ -1,8 +1,8 @@
 import { on, emit } from '../core/EventBus.ts'
 import { probe } from '../audio/TimingProbe.ts'
 import { getPlayer, getGrid, getEnemies } from '../core/GameState.ts'
-import { getEffectiveRadius, hurtPlayer } from '../entities/Player.ts'
-import { damageEnemy, getRingOrigins, spawnDrops } from '../entities/Enemy.ts'
+import { getEffectiveRadius, hurtPlayer, healPlayer } from '../entities/Player.ts'
+import { damageEnemy, healEnemy, getRingOrigins, spawnDrops } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { getRingExpansion, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { distance } from '../utils/math.ts'
@@ -146,7 +146,7 @@ export function initHitDetection(): void {
       const xpMult = player.modifiers.xpMult * (multiCollect ? 2 : 1)
       for (const orb of collectedOrbs) {
         if (orb.orbType === 'hp') {
-          player.hp = Math.min(player.hp + ORB_HP_HEAL * orb.value, player.maxHp)
+          healPlayer(player, ORB_HP_HEAL * orb.value)
         } else {
           player.xp += orb.value * xpMult
         }
@@ -299,10 +299,7 @@ export function initHitDetection(): void {
         const oDist = distance(origin, { x: orb.x, y: orb.y })
         if (Math.abs(oDist - ringRadius) < orb.radius + HIT_GRACE) {
           collectOrb(orb, 'enemy')
-          // Heal enemy
-          if (enemy.hp < enemy.maxHp) {
-            enemy.hp = Math.min(enemy.hp + 1, enemy.maxHp)
-          }
+          healEnemy(enemy, 1)   // event-driven gold sparkle (stacks with a same-frame hit)
           // Absorb stream from orb to enemy
           const isHP = orb.orbType === 'hp'
           const absR = isHP ? 255 : 150

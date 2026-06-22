@@ -1983,7 +1983,6 @@
       "sound": "rim",
       "beats": [
         0,
-        2,
         4
       ],
       "rings": [
@@ -1992,7 +1991,6 @@
           "sound": "rim",
           "beats": [
             0,
-            2,
             4
           ],
           "edgeMode": false,
@@ -2028,6 +2026,7 @@
               "volleyWindow": 0.25,
               "pushMode": true,
               "explodeMode": false,
+              "healMode": false,
               "staccato": true,
               "staccatoHalfBeat": false,
               "staccatoOffbeat": false,
@@ -2040,6 +2039,7 @@
           ],
           "pushMode": false,
           "explodeMode": false,
+          "healMode": false,
           "staccato": true,
           "staccatoHalfBeat": false,
           "staccatoOffbeat": true,
@@ -2056,6 +2056,7 @@
       "blinkBeats": 4,
       "volatile": false,
       "volatileRange": 150,
+      "volatileHeal": false,
       "revenge": false,
       "revengeRings": 4,
       "revengeRadius": 120,
@@ -2100,28 +2101,20 @@
       "role": "ping",
       "sound": "ping",
       "beats": [
-        0.5,
-        1.5,
-        2.5,
-        3.5,
-        4.5,
-        5.5,
-        6.5,
-        7.5
+        0,
+        2,
+        4,
+        6
       ],
       "rings": [
         {
           "ringRadius": 120,
           "sound": "ping",
           "beats": [
-            0.5,
-            1.5,
-            2.5,
-            3.5,
-            4.5,
-            5.5,
-            6.5,
-            7.5
+            0,
+            2,
+            4,
+            6
           ],
           "edgeMode": true,
           "edgePoints": 3,
@@ -2167,7 +2160,7 @@
           ],
           "pushMode": false,
           "explodeMode": true,
-          "healMode": false,
+          "healMode": true,
           "staccato": false,
           "staccatoHalfBeat": false,
           "staccatoOffbeat": false,

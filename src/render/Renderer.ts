@@ -87,7 +87,7 @@ export function toggleDesignerZoomOut(): void {
 }
 
 // ── Particle system ──
-interface ParticleParent { x: number; y: number }
+interface ParticleParent { x: number; y: number; rot?: number }
 interface Particle {
   x: number; y: number
   vx: number; vy: number
@@ -113,6 +113,7 @@ interface Particle {
   parent: ParticleParent | null
   lastParentX: number
   lastParentY: number
+  lastParentRot: number   // last seen parent rotation (rad); offset+velocity rotate by its per-frame delta
   // tintLate — when true, the tint color shift happens in the LAST ~30% of life instead of
   // mid-life. Used for blood drops so they keep their hot starting color most of their flight
   // and only cool down right before dissolving.
@@ -132,7 +133,7 @@ const MAX_PARTICLES = PARTICLE_CAP
 function makeBlankParticle(): Particle {
   return { x: 0, y: 0, vx: 0, vy: 0, r: 0, g: 0, b: 0, life: 0, lifetime: 1, size: 1, spinRate: 0,
     tintR: -1, tintG: 0, tintB: 0, orbitCx: 0, orbitCy: 0, orbitR: -1,
-    parent: null, lastParentX: 0, lastParentY: 0, tintLate: false, belowEnemies: false }
+    parent: null, lastParentX: 0, lastParentY: 0, lastParentRot: 0, tintLate: false, belowEnemies: false }
 }
 const particles: Particle[] = Array.from({ length: MAX_PARTICLES }, makeBlankParticle)
 let particleCount = 0   // # of live particles, packed at the front of `particles`
@@ -969,6 +970,77 @@ export function spawnHealExplosionParticles(cx: number, cy: number, range: numbe
   }
 }
 
+// Wall ZONE burst — the damage/heal "explosion" debris on the fire beat. Rich volatile-style
+// scatter (red sparks for damage, white-gold sparkles for heal) PARENT-ATTACHED to the wall's live
+// center AND rotation, so the whole spray rigidly rides a turning / translating wall (each particle
+// still flies outward relative to the wall). Tiled along the spine so a long wall fully detonates.
+export function spawnWallZoneBurst(w: Wall, heal: boolean): void {
+  const range = w.zone?.range ?? 0
+  if (range <= 1) return
+  const dxw = w.bx - w.ax, dyw = w.by - w.ay
+  const len = Math.sqrt(dxw * dxw + dyw * dyw)
+  const pillar = len < 0.5
+  const arc = computeWallArc(w)
+  const blastR = w.radius + range
+  // Anchor tracks the wall every frame: center (translation) + chord angle (rotation). For a pillar
+  // the chord is zero-length → rot ≈ 0 (no spin), so its radial debris just translates — correct.
+  const anchor: ParticleParent = {
+    get x() { return (w.ax + w.bx) / 2 },
+    get y() { return (w.ay + w.by) / 2 },
+    get rot() { return Math.atan2(w.by - w.ay, w.bx - w.ax) },
+  }
+  const centers: { x: number; y: number }[] = []
+  if (arc) {
+    const n = Math.max(1, Math.min(6, Math.round((arc.r * Math.abs(arc.aB - arc.aA)) / (blastR * 0.9))))
+    for (let i = 0; i < n; i++) {
+      const a = arc.aA + (arc.aB - arc.aA) * (n === 1 ? 0.5 : i / (n - 1))
+      centers.push({ x: arc.cx + Math.cos(a) * arc.r, y: arc.cy + Math.sin(a) * arc.r })
+    }
+  } else if (pillar) {
+    centers.push({ x: w.ax, y: w.ay })
+  } else {
+    const n = Math.max(1, Math.min(6, Math.round(len / (blastR * 0.9)) + 1))
+    for (let i = 0; i < n; i++) {
+      const t = n === 1 ? 0.5 : i / (n - 1)
+      centers.push({ x: w.ax + dxw * t, y: w.ay + dyw * t })
+    }
+  }
+  for (const c of centers) {
+    const count = Math.min(heal ? 32 : 44, Math.round(Math.sqrt(blastR) * (heal ? 2.6 : 3.2)))
+    for (let i = 0; i < count; i++) {
+      const a = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
+      const dist = blastR * (0.12 + Math.random() * 0.82)
+      const px = c.x + Math.cos(a) * dist, py = c.y + Math.sin(a) * dist
+      const outA = Math.atan2(py - c.y, px - c.x)
+      // Speed sized to carry the particle the REMAINING distance to the reach edge (with friction
+      // baked in) and no further — so the cloud fills the band right up to the hitbox and stops
+      // flush with it instead of spraying past. A little spread (0.7–1.1×) keeps it organic.
+      const remaining = Math.max(0, blastR - dist)
+      const life = (heal ? 0.22 : 0.18) + Math.random() * 0.12
+      const sp = Math.min(650, (remaining / 0.18) * (0.7 + Math.random() * 0.4))
+      if (heal) {
+        spawnParticleAttached(px, py, Math.cos(outA) * sp, Math.sin(outA) * sp,
+          255, 225 + Math.floor(Math.random() * 25), 160 + Math.floor(Math.random() * 40),
+          life, 5 + Math.random() * 4, 255, 205, 110, anchor)
+      } else {
+        const tint = Math.random()
+        spawnParticleAttached(px, py, Math.cos(outA) * sp, Math.sin(outA) * sp,
+          255, Math.floor(70 + tint * 120), Math.floor(20 + tint * 45),
+          life, 7 + Math.random() * 5, 255, 120, 30, anchor)
+      }
+    }
+    // White-hot core sparks for punch — also capped to land within the reach (white-gold for heal).
+    for (let i = 0; i < 5; i++) {
+      const a = Math.random() * Math.PI * 2
+      const sp = Math.min(620, (blastR * 0.85 / 0.18) * (0.5 + Math.random() * 0.4))
+      spawnParticleAttached(c.x, c.y, Math.cos(a) * sp, Math.sin(a) * sp,
+        255, heal ? 250 : 245, heal ? 225 : 220, 0.16 + Math.random() * 0.1, 3 + Math.random() * 2.5,
+        255, heal ? 225 : 170, heal ? 150 : 90, anchor)
+    }
+  }
+}
+
+
 // Destruction burst for an explode-mode bullet — the dart SHATTERS into its blast telegraph.
 // A bright flash + an outward scatter of hot embers at the detonation point, bridging the
 // dart's collapse to the expanding explosion-radius telegraph that follows. Warm/fiery palette
@@ -1418,7 +1490,7 @@ function spawnParticle(
   p.life = 0; p.lifetime = lifetime; p.size = size; p.spinRate = spinRate
   p.tintR = tintR; p.tintG = tintG; p.tintB = tintB
   p.orbitCx = orbitCx; p.orbitCy = orbitCy; p.orbitR = orbitR
-  p.parent = null; p.lastParentX = 0; p.lastParentY = 0; p.tintLate = false; p.belowEnemies = false
+  p.parent = null; p.lastParentX = 0; p.lastParentY = 0; p.lastParentRot = 0; p.tintLate = false; p.belowEnemies = false
 }
 
 // Spawn a parent-attached particle. Each frame the particle's position is shifted by the
@@ -1446,7 +1518,7 @@ function spawnParticleAttached(
   p.life = initialLife; p.lifetime = lifetime; p.size = size; p.spinRate = 0
   p.tintR = tintR; p.tintG = tintG; p.tintB = tintB
   p.orbitCx = 0; p.orbitCy = 0; p.orbitR = -1
-  p.parent = parent; p.lastParentX = parent.x; p.lastParentY = parent.y; p.tintLate = tintLate
+  p.parent = parent; p.lastParentX = parent.x; p.lastParentY = parent.y; p.lastParentRot = parent.rot ?? 0; p.tintLate = tintLate
   p.belowEnemies = belowEnemies
 }
 
@@ -2260,7 +2332,6 @@ const BRACKET_OFFS_BUF: { sx: number; sy: number }[] = [
 // gold heal halo stays visible long after the displayHp catch-up finishes. healPulseAmount
 // tracks the SIZE of the heal so the halo intensity scales — a 1 HP heal is subtle, a 5 HP
 // heal is the full bloom.
-let lastSeenPlayerHp = -1
 let healPulseRemain = 0
 let healPulseAmount = 0
 const HEAL_PULSE_DURATION = 0.55
@@ -3770,6 +3841,32 @@ function drawWalls(): void {
     return d.springFireT
   }
 
+  // Helper — stroke the OUTLINE of the wall's capsule expanded to half-thickness R (from the
+  // spine). Gives the zone band a crisp, defined edge (like a volatile explosion's core ring)
+  // rather than a soft fill boundary. Pillar = circle; straight = capsule outline (two cap arcs);
+  // arc = the two concentric edge arcs.
+  function strokeBandEdge(d: WallDraw, R: number, style: string, lw: number): void {
+    if (R < 1) return
+    ctx.strokeStyle = style
+    ctx.lineWidth = lw
+    if (d.pillar) {
+      ctx.beginPath(); ctx.arc(d.ax, d.ay, R, 0, Math.PI * 2); ctx.stroke(); return
+    }
+    if (d.arc) {
+      const a = d.arc
+      ctx.beginPath(); ctx.arc(a.cx, a.cy, a.r + R, a.aA, a.aB, !a.antiClockwise); ctx.stroke()
+      const inner = a.r - R
+      if (inner > 1) { ctx.beginPath(); ctx.arc(a.cx, a.cy, inner, a.aA, a.aB, !a.antiClockwise); ctx.stroke() }
+      return
+    }
+    const ang = Math.atan2(d.by - d.ay, d.bx - d.ax)
+    ctx.beginPath()
+    ctx.arc(d.bx, d.by, R, ang - Math.PI / 2, ang + Math.PI / 2)              // forward cap at B
+    ctx.arc(d.ax, d.ay, R, ang + Math.PI / 2, ang + Math.PI * 1.5)            // back cap at A (sides connect)
+    ctx.closePath()
+    ctx.stroke()
+  }
+
   // Helper — inner shockwave on spring fire. Clips drawing to the wall body interior so
   // the bright wave reads as energy radiating from inside the wall.
   //   pillar  : concentric ring expanding from the center outward to the rim
@@ -3862,6 +3959,66 @@ function drawWalls(): void {
     }
     ctx.restore()
   }
+  // Pass 0 — zone telegraph (damage/heal band), drawn UNDER everything so it reads as energy
+  // around the wall. Uses the volatile-explosion visual language in the wall's capsule-band shape:
+  //   • a faint FULL-REACH band always present  → SPACE (how far the wall hits)
+  //   • a brighter fill that CHARGES outward from the wall edge to the reach over the beat,
+  //     reaching the edge exactly on the fire beat                               → TIME (countdown)
+  //   • a bright BURST flash + white edge on the fire frame, decaying            → the hit moment
+  // Red = damage, gold = heal (matches the heal-explosion palette). strokeWallLayer strokes the
+  // round-capped wall path, so padding=2·dist grows the capsule outward by `dist` for any shape.
+  {
+    const prevComp = ctx.globalCompositeOperation
+    ctx.globalCompositeOperation = 'lighter'
+    for (const d of drawList) {
+      const w = d.w
+      if (!w.zone || w.zone.range <= 0) continue
+      const heal = w.zone.mode === 'heal'
+      const range = w.zone.range
+      const cycle = w.zone.beatsPerCycle
+      let charge = 0, fireT = 0
+      if (w.zoneLastFireBeat != null && cycle > 0) {
+        const bsf = beatPosForSpring - w.zoneLastFireBeat
+        // Charge ramps over a FIXED 1-beat lead before each fire — a consistent rhythmic tell no
+        // matter how long the cycle is (band sits idle the rest of the cycle, then winds up).
+        const beatsUntil = (w.zoneLastFireBeat + cycle) - beatPosForSpring
+        charge = beatsUntil >= 1 ? 0 : Math.max(0, Math.min(1, 1 - beatsUntil))
+        // Burst fades over the SAME duration as a real volatile explosion (0.21s), same (1−t)²
+        // curve — so the band's flash decays in lockstep with the blast, not faster.
+        const sec = bsf * BEAT_SEC
+        if (sec >= 0 && sec < 0.21) { const t = sec / 0.21; fireT = (1 - t) * (1 - t) }
+      }
+      if (w.zoneJustFired) w.zoneJustFired = false   // one-shot flag consumed (burst is beat-driven)
+      const baseR = d.w.radius * d.visScale           // wall body half-thickness in screen px
+      // Volatile-language color: damage reddens + darkens toward the fire beat; heal holds warm
+      // gold and brightens. Both intensify as the band charges.
+      const eg = heal ? 215 : 90, eb = heal ? 130 : 55
+      const cg = heal ? Math.floor(200 + 40 * charge) : Math.floor(110 - 55 * charge)
+      const cb = heal ? Math.floor(150 - 55 * charge) : Math.floor(60 - 30 * charge)
+      // (1) Faint full reach — persistent SPACE fill + a defined boundary edge (always visible).
+      strokeWallLayer(d, 2 * range, `rgba(255, ${eg}, ${eb}, 0.05)`)
+      strokeBandEdge(d, baseR + range, `rgba(255, ${eg}, ${eb}, 0.20)`, 1.5)
+      // (2) Charging fill + a BRIGHT defined edge ring that sweeps outward to the reach as the
+      // beat nears — the crisp "fill rises to the edge" read, like an explosion's expanding ring.
+      const fillDist = range * charge
+      if (fillDist > 1) {
+        strokeWallLayer(d, 2 * fillDist, `rgba(255, ${cg}, ${cb}, ${0.10 + 0.18 * charge})`)
+        strokeBandEdge(d, baseR + fillDist, `rgba(255, ${cg}, ${cb}, ${0.45 + 0.45 * charge})`, 2 + 1.5 * charge)
+      }
+      // (3) Burst — full-band flash + crisp white edge + an expanding shockwave ripple, all fading
+      // over the explosion duration. Drawn inline from the wall's LIVE coords, so it stays glued to
+      // a turning/translating wall (unlike a world-anchored volatile blast, which lags behind).
+      if (fireT > 0.01) {
+        // Bright fill across the FULL reach + a crisp edge exactly AT the hitbox boundary — flush
+        // with the damage reach, no overshoot past it.
+        strokeWallLayer(d, 2 * range, `rgba(255, ${heal ? 235 : 150}, ${heal ? 180 : 110}, ${0.5 * fireT})`)
+        strokeBandEdge(d, baseR + range, `rgba(255, ${heal ? 230 : 100}, ${heal ? 150 : 65}, ${0.55 * fireT})`, 4)
+        strokeBandEdge(d, baseR + range, `rgba(255, 255, 255, ${0.85 * fireT})`, 2)
+      }
+    }
+    ctx.globalCompositeOperation = prevComp
+  }
+
   // Pass 1 — outer halos. Brighter alpha for passive bloom feel, but padding stays tight
   // so the glow doesn't extend far past the rim. Spring-firing walls add a brighter gold
   // halo on top.
@@ -4729,12 +4886,26 @@ function updateParticles(dt: number): void {
     // with the entity. Read the delta from lastParentX/Y (stored per-particle) so we get the
     // true movement since the LAST particle update, independent of render/sim order.
     if (p.parent) {
-      const dx = p.parent.x - p.lastParentX
-      const dy = p.parent.y - p.lastParentY
-      p.x += dx
-      p.y += dy
-      p.lastParentX = p.parent.x
-      p.lastParentY = p.parent.y
+      const cx = p.parent.x, cy = p.parent.y
+      p.x += cx - p.lastParentX
+      p.y += cy - p.lastParentY
+      p.lastParentX = cx
+      p.lastParentY = cy
+      // Rotational attachment — rotate the particle's offset (and velocity) around the parent
+      // center by the parent's per-frame angle delta, so a spray rigidly follows a TURNING wall,
+      // not just a translating one. rot is undefined for point parents (player/enemy) → skipped.
+      const rot = p.parent.rot
+      if (rot !== undefined && rot !== p.lastParentRot) {
+        const dRot = rot - p.lastParentRot
+        const cs = Math.cos(dRot), sn = Math.sin(dRot)
+        const rx = p.x - cx, ry = p.y - cy
+        p.x = cx + rx * cs - ry * sn
+        p.y = cy + rx * sn + ry * cs
+        const vx = p.vx, vy = p.vy
+        p.vx = vx * cs - vy * sn
+        p.vy = vx * sn + vy * cs
+        p.lastParentRot = rot
+      }
     }
     p.x += p.vx * dt
     p.y += p.vy * dt
@@ -6868,10 +7039,11 @@ function drawPlayer(player: Player): void {
   let sx = player.x - camX
   let sy = player.y - camY
 
-  // Heal-pulse tracking — detect HP increase from last frame, trigger the gold halo timer,
-  // and capture the heal amount so intensity scales with how much was healed.
-  if (lastSeenPlayerHp >= 0 && player.hp > lastSeenPlayerHp) {
-    const gained = player.hp - lastSeenPlayerHp
+  // Heal-pulse tracking — fire from the EVENT (HP actually gained this frame), not a net-HP diff,
+  // so a heal still flashes gold even when a same-frame hit cancels it on the HP total.
+  if (player.pendingHeal > 0) {
+    const gained = player.pendingHeal
+    player.pendingHeal = 0
     healPulseAmount = Math.max(healPulseAmount, gained)   // stack: keep biggest if multiple in one tick
     healPulseRemain = HEAL_PULSE_DURATION
 
@@ -6910,10 +7082,12 @@ function drawPlayer(player: Player): void {
         player)
     }
   }
-  // Hurt-pulse tracking — mirror of the heal burst, in red, on HP DECREASE. Skips shield breaks
-  // (HP doesn't drop when shielded, and those have their own pink shards anyway).
-  if (lastSeenPlayerHp >= 0 && player.hp < lastSeenPlayerHp && player.shieldBreakFlash <= 0) {
-    const lost = lastSeenPlayerHp - player.hp
+  // Hurt-pulse tracking — mirror of the heal burst, in red, fired from the EVENT (HP actually lost
+  // this frame). pendingHurt is only set on real HP loss (not shield absorbs), so shield breaks are
+  // naturally skipped, and a same-frame heal+hit shows BOTH pulses instead of cancelling.
+  if (player.pendingHurt > 0) {
+    const lost = player.pendingHurt
+    player.pendingHurt = 0
     hurtPulseAmount = Math.max(hurtPulseAmount, lost)
     hurtPulseRemain = HURT_PULSE_DURATION
     // Red dot burst — radiates straight out (no upward lift; damage bursts, doesn't rise) and a
@@ -6928,7 +7102,7 @@ function drawPlayer(player: Player): void {
         player.x + Math.cos(a) * dist, player.y + Math.sin(a) * dist,
         Math.cos(a) * spd, Math.sin(a) * spd,
         255, 95, 75,                                  // hot red body
-        0.42 + Math.random() * 0.33, 2.6 + Math.random() * 3.0,
+        0.6 + Math.random() * 0.45, 2.6 + Math.random() * 3.0,
         255, 45, 35,                                  // deep-red tint target → red glow halo blooms in
         player)
     }
@@ -6941,12 +7115,11 @@ function drawPlayer(player: Player): void {
         player.x, player.y,
         Math.cos(a) * spd, Math.sin(a) * spd,
         255, 235, 215,
-        0.27 + Math.random() * 0.22, 1.9 + Math.random() * 2.0,
+        0.42 + Math.random() * 0.3, 1.9 + Math.random() * 2.0,
         255, 110, 80,
         player)
     }
   }
-  lastSeenPlayerHp = player.hp
   if (healPulseRemain > 0) {
     healPulseRemain -= lastDt
     if (healPulseRemain < 0) {
@@ -9006,8 +9179,9 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   // Heal pulse — the SAME gold effect the player gets, mirrored onto enemies. Auto-detects any HP
   // increase since last frame (heal-blast nourish, consume-orb heal, revenge-consume heal — every
   // source) and fires the gold halo timer + a floaty golden sparkle burst that lifts off the body.
-  if (enemy.healSeenHp >= 0 && enemy.hp > enemy.healSeenHp) {
-    const gained = enemy.hp - enemy.healSeenHp
+  if (enemy.pendingHeal > 0) {
+    const gained = enemy.pendingHeal
+    enemy.pendingHeal = 0
     enemy.healAmount = Math.max(enemy.healAmount, gained)
     enemy.healFlash = HEAL_PULSE_DURATION
     // Scale the whole burst to the enemy's size relative to the player, so a small enemy looks
@@ -9038,7 +9212,6 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         255, 225, 150, enemy, 0, false, true)
     }
   }
-  enemy.healSeenHp = enemy.hp
   if (enemy.healFlash > 0) {
     enemy.healFlash -= lastDt
     if (enemy.healFlash < 0) { enemy.healFlash = 0; enemy.healAmount = 0 }

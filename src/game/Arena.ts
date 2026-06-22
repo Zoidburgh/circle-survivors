@@ -376,6 +376,10 @@ export interface Wall {
   springLastFireBeat?: number          // absolute beat of most recent spring fire
   springJustFired?: boolean            // transient — set on fire frame, consumed by renderer for particle burst
   springScheduledAudioBeat?: number    // most recent beat we pre-scheduled audio for (avoid re-scheduling)
+  zone?: WallZone                      // optional rhythm-locked damage/heal pulse out from the wall edge
+  zoneLastFireBeat?: number            // absolute beat of most recent zone pulse (charge baseline)
+  zoneJustFired?: boolean              // transient — set on fire frame, consumed by renderer for the burst flash
+  zoneScheduledAudioBeat?: number      // most recent beat we pre-scheduled zone audio for
 }
 
 export interface WallMotion {
@@ -442,6 +446,17 @@ export interface WallSpring {
   beatsPerCycle: number   // fires every N beats; fractional supported (0.5 = every off-beat at 2-beat cycle)
   phase: number           // beat offset, 0..beatsPerCycle (e.g. 0.5 with cycle=1 fires on every off-beat)
   strength: number        // launch impulse in px/s (200=gentle, 800=strong, 1500=catapult)
+}
+
+/** Zone add-on — the wall pulses a damage (or heal) band out from its surface on a rhythm.
+ * The band is the wall's capsule grown outward by `range`; on each fire beat everything inside
+ * takes 1 damage (or heals 1). Same beat-cycle math as spring/motion (sync or offset via phase).
+ * Telegraph charges the band outward toward the edge over the cycle, bursting on the fire beat. */
+export interface WallZone {
+  mode: 'damage' | 'heal'  // damage = red band hurts; heal = gold band nourishes (player + enemies)
+  range: number            // how far the band reaches OUT from the wall edge, in px
+  beatsPerCycle: number    // pulses every N beats (fractional supported)
+  phase: number            // beat offset, 0..beatsPerCycle
 }
 
 /** Arc geometry for a bent wall — center, radius, endpoint angles, and direction.
@@ -568,6 +583,7 @@ export function setWalls(w: readonly Wall[]): void {
       ...(x.translation ? { translation: { ...x.translation } } : {}),
       ...(x.fade ? { fade: { ...x.fade } } : {}),
       ...(x.spring ? { spring: { ...x.spring } } : {}),
+      ...(x.zone ? { zone: { ...x.zone } } : {}),
       ...(x.noClip ? { noClip: true } : {}),
     }
     // Cache rest position so motion updates can rebuild live position from a known origin
@@ -734,6 +750,17 @@ export function consumeSpringFires(): SpringFire[] {
   if (pendingSpringFires.length === 0) return []
   const out = pendingSpringFires.slice()
   pendingSpringFires.length = 0
+  return out
+}
+
+// Zone pulses queued by updateWalls each frame, drained by GameManager to apply damage/heal to
+// entities inside the wall's band. Mirrors the spring-fire queue.
+export interface ZoneFire { wall: Wall; targetBeat: number }
+const pendingZoneFires: ZoneFire[] = []
+export function consumeZoneFires(): ZoneFire[] {
+  if (pendingZoneFires.length === 0) return []
+  const out = pendingZoneFires.slice()
+  pendingZoneFires.length = 0
   return out
 }
 
@@ -1005,6 +1032,30 @@ export function updateWalls(beatPos: number): void {
           pendingSpringFires.push({ wall: w, targetBeat: nextFire })
           w.springLastFireBeat = nextFire
           w.springJustFired = true   // renderer consumes this for the one-shot particle burst
+        }
+      }
+    }
+    // Zone pulse — identical beat-crossing detection to the spring, on the same audio offset so
+    // the damage/heal burst lands locked to the music. zoneLastFireBeat doubles as the renderer's
+    // charge baseline (band fills outward over the cycle since the last pulse).
+    if (w.zone) {
+      const beatsPerCycle = w.zone.beatsPerCycle
+      const phase = w.zone.phase ?? 0
+      if (beatsPerCycle > 0) {
+        const BEAT_AUDIO_OFFSET = 0.37
+        const effectivePhase = phase + BEAT_AUDIO_OFFSET
+        let nextFire: number
+        if (w.zoneLastFireBeat == null) {
+          nextFire = Math.ceil((beatPos - effectivePhase) / beatsPerCycle) * beatsPerCycle + effectivePhase
+          if (nextFire <= beatPos) nextFire += beatsPerCycle
+          w.zoneLastFireBeat = nextFire - beatsPerCycle
+        } else {
+          nextFire = w.zoneLastFireBeat + beatsPerCycle
+        }
+        if (beatPos >= nextFire) {
+          pendingZoneFires.push({ wall: w, targetBeat: nextFire })
+          w.zoneLastFireBeat = nextFire
+          w.zoneJustFired = true   // renderer consumes this for the one-shot burst flash
         }
       }
     }

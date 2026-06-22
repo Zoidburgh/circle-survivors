@@ -79,6 +79,13 @@ export interface Player {
   facingAngle: number
   attackTimer: number
   hitFlash: number
+  pendingHeal: number   // HP gained this frame (accumulated across sim ticks) — renderer fires the
+  pendingHurt: number   // gold heal pulse / red hurt pulse from these, so a same-frame heal+hit STACK
+                        // both visuals instead of cancelling on net HP (which is what they'd do if
+                        // the renderer diffed hp). Reset to 0 by the renderer after each frame.
+  overheal: number      // temporary extra HP from a heal that overflowed maxHp — soaks incoming damage
+  overhealTimer: number // for a brief window then decays. Lets a heal fully absorb a same-beat hit at
+                        // full HP (net 0) instead of being wasted.
   dashTimer: number
   dashDirX: number
   dashDirY: number
@@ -168,6 +175,10 @@ export function createPlayer(x: number, y: number): Player {
     facingAngle: 0,
     attackTimer: -1,
     hitFlash: 0,
+    pendingHeal: 0,
+    pendingHurt: 0,
+    overheal: 0,
+    overhealTimer: 0,
     dashTimer: -1,
     dashDirX: 0,
     dashDirY: 0,
@@ -277,6 +288,12 @@ export function getBodyRadius(player: Player): number {
 const DAMAGE_COOLDOWN = 0.1  // seconds of immunity after taking a hit
 
 /** Try to deal damage to the player. Returns true if a hit was registered. */
+// Overheal — temporary HP from a heal that overflowed max HP; soaks incoming damage for a short
+// window then decays. Small cap + short window so it mainly cancels same-beat heal/damage, not a
+// lasting shield.
+const OVERHEAL_MAX = 2
+const OVERHEAL_WINDOW = 0.1   // seconds
+
 export function hurtPlayer(player: Player, amount: number): boolean {
   if (player.damageCooldown > 0) return false
   // Echo Step recall traversal — player is mid-warp, completely invulnerable. Mirrors
@@ -295,9 +312,22 @@ export function hurtPlayer(player: Player, amount: number): boolean {
     return true
   }
 
+  // Overheal buffer — temporary points from a recent heal soak the hit FIRST (no HP loss). Brief
+  // flash so the soaked hit still reads, but no red burst. Fully soaked → done (net 0 damage).
+  if (player.overheal > 0) {
+    const absorbed = Math.min(player.overheal, amount)
+    player.overheal -= absorbed
+    amount -= absorbed
+    player.hitFlash = HIT_FLASH_DURATION
+    player.damageCooldown = DAMAGE_COOLDOWN
+    if (amount <= 0) return true
+  }
+
   // No shield — take HP damage
+  const before = player.hp
   player.hp -= amount
   if (player.hp <= 0) player.hp = 0
+  player.pendingHurt += before - player.hp   // event-driven hurt pulse (stacks with same-frame heal)
   player.hitFlash = HIT_FLASH_DURATION
   player.damageCooldown = DAMAGE_COOLDOWN
 
@@ -310,8 +340,32 @@ export function hurtPlayer(player: Player, amount: number): boolean {
   return true
 }
 
+// Heal the player by `amount` (clamped to maxHp) and record the actual gain so the renderer fires
+// the gold heal pulse from the EVENT — not a net-HP diff — so a heal lands its visual even when a
+// hit cancels it on the same frame. Returns HP actually gained.
+export function healPlayer(player: Player, amount: number): number {
+  if (amount <= 0) return 0
+  const before = player.hp
+  player.hp = Math.min(player.hp + amount, player.maxHp)
+  const gained = player.hp - before
+  // Any part of the heal that overflowed max HP becomes a brief temporary OVERHEAL buffer (capped)
+  // that soaks an incoming hit within a short window — so a heal at full HP isn't wasted: a same-beat
+  // damage gets absorbed (net 0) instead of landing.
+  const overflow = amount - gained
+  if (overflow > 0) {
+    player.overheal = Math.min(player.overheal + overflow, OVERHEAL_MAX)
+    player.overhealTimer = OVERHEAL_WINDOW
+  }
+  player.pendingHeal += amount   // gold pulse for the whole heal (real gain + overheal buffer)
+  return gained
+}
+
 export function updatePlayer(player: Player, dt: number): void {
   if (player.hitFlash > 0) player.hitFlash -= dt
+  if (player.overhealTimer > 0) {
+    player.overhealTimer -= dt
+    if (player.overhealTimer <= 0) { player.overhealTimer = 0; player.overheal = 0 }
+  }
   if (player.damageCooldown > 0) player.damageCooldown -= dt
   if (player.shieldBreakFlash > 0) player.shieldBreakFlash -= dt
 
