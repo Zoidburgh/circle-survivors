@@ -19,7 +19,7 @@ import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } 
 import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat, getLoopPosition, getAbsoluteBeats } from '../audio/PatternClock.ts'
 import { getBeatZeroTime } from '../audio/BeatLoop.ts'
-import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playHealExplosion, playBeatDash, playFuseStart, playRecallStart, playChillZonePlace, playIceShardBurst, playWallSpringFire, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth, playBoing, playShockPush, playDashShotFire, startDashShotCrackle, stopDashShotCrackle, playEnemyBeatTick } from '../audio/AudioEngine.ts'
+import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playHealExplosion, playWallHealPlayer, playWallHealEnemy, playBeatDash, playFuseStart, playRecallStart, playChillZonePlace, playIceShardBurst, playWallSpringFire, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth, playBoing, playShockPush, playDashShotFire, startDashShotCrackle, stopDashShotCrackle, playEnemyBeatTick } from '../audio/AudioEngine.ts'
 import { resetProTip, showToast } from '../render/Renderer.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
 import { getScoresForChallenge, fetchOnlineScores } from '../game/HighScores.ts'
@@ -1257,7 +1257,7 @@ function updateEnemyDetonations(dt: number): void {
             collectOrb(orb, 'enemy')
             healEnemy(owner, 1)
             const isHP = orb.orbType === 'hp'
-            Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 140 : 255, isHP ? 140 : 200, owner.x, owner.y)
+            Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 222 : 255, isHP ? 150 : 200, owner.x, owner.y, owner)
           }
         }
       }
@@ -1384,7 +1384,7 @@ function updateTethers(dt: number): void {
           collectOrb(orb, 'enemy')
           healEnemy(owner, 1)
           const isHP = orb.orbType === 'hp'
-          Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 140 : 255, isHP ? 140 : 200, owner.x, owner.y)
+          Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 222 : 255, isHP ? 150 : 200, owner.x, owner.y, owner)
         }
       }
     }
@@ -2361,10 +2361,13 @@ function tryHitZone(
   w: Wall,
   player: ReturnType<typeof getPlayer>,
   enemies: ReturnType<typeof getEnemies>,
-): void {
-  if (!w.zone) return
+): number {
+  // Returns a bitmask of what was actually HEALED this call (1 = player, 2 = an enemy) so the
+  // caller can play the right heal SFX once per pulse. No object alloc in the hot/grace path.
+  let healFlags = 0
+  if (!w.zone) return healFlags
   const hit = zoneHitThisFire.get(w)
-  if (!hit) return
+  if (!hit) return healFlags
   const heal = w.zone.mode === 'heal'
   const range = w.zone.range
   const playerR = PLAYER_RADIUS * player.modifiers.sizeMult
@@ -2376,7 +2379,7 @@ function tryHitZone(
     if (dx * dx + dy * dy < reach * reach) {
       if (!hit.has(player)) {
         hit.add(player)
-        if (heal) healPlayer(player, 1)   // event-driven gold pulse (stacks with same-frame hit)
+        if (heal) { if (healPlayer(player, 1) > 0) healFlags |= 1 }   // event-driven gold pulse
         else if (hurtPlayer(player, 1)) playPlayerHit()
       }
     } else hit.delete(player)
@@ -2390,7 +2393,7 @@ function tryHitZone(
       if (!hit.has(e)) {
         hit.add(e)
         if (heal) {
-          healEnemy(e, 1)   // event-driven gold sparkle (stacks with a same-frame hit)
+          if (healEnemy(e, 1) > 0) healFlags |= 2   // event-driven gold sparkle
         } else {
           const wasDying = e.dying
           damageEnemy(e, 1)
@@ -2401,6 +2404,7 @@ function tryHitZone(
       }
     } else hit.delete(e)
   }
+  return healFlags
 }
 
 function processZoneFires(): void {
@@ -2419,8 +2423,13 @@ function processZoneFires(): void {
       // to the wall's live center+rotation so the whole explosion rides a moving/turning wall.
       Renderer.spawnWallZoneBurst(w, w.zone.mode === 'heal')
     }
-    for (const fire of fires) if (fire.wall.zone?.mode === 'heal') tryHitZone(fire.wall, player0, enemies0)
+    let healFlags = 0
+    for (const fire of fires) if (fire.wall.zone?.mode === 'heal') healFlags |= tryHitZone(fire.wall, player0, enemies0)
     for (const fire of fires) if (fire.wall.zone?.mode === 'damage') tryHitZone(fire.wall, player0, enemies0)
+    // One heal SFX per beat per kind — bright chime if it healed the player, dull/ominous tone if it
+    // healed an enemy (bad for you). Only fires when a heal actually landed (not at full HP).
+    if (healFlags & 1) playWallHealPlayer()
+    if (healFlags & 2) playWallHealEnemy()
   }
   // Pass 2 — grace window: re-check the band for a short spell so an entity that slips in a frame
   // after the beat still takes the pulse once (mirrors the spring grace). Heals before damage here too.
@@ -2782,6 +2791,9 @@ function updateDesigner(dt: number): void {
     for (const other of nearby) {
       if (other === orb) continue
       const isEnemy = 'hp' in other
+      // Don't let a fresh drop be shoved off a DYING enemy's corpse (pinned at the death spot) — that
+      // slid the hearts out to the big corpse's edge in a lopsided curved line.
+      if (isEnemy && (other as Enemy).dying) continue
       const minDist = orb.radius + other.radius
       const dx = orb.x - other.x
       const dy = orb.y - other.y
@@ -3538,7 +3550,7 @@ export function update(dt: number): void {
               healEnemy(pr.enemy, 1)
               const isHP = orb.orbType === 'hp'
               if (isHP) hpEatenThisRing++
-              Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 140 : 255, isHP ? 140 : 200, pr.enemy.x, pr.enemy.y)
+              Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 222 : 255, isHP ? 150 : 200, pr.enemy.x, pr.enemy.y, pr.enemy)
               break  // one origin per orb
             }
           }
@@ -3762,6 +3774,9 @@ export function update(dt: number): void {
       for (const other of nearby) {
         if (other === orb) continue
         const isEnemy = 'hp' in other
+        // Don't let a fresh drop be shoved off a DYING enemy's corpse (its body is pinned at the
+        // death spot) — that scattered the hearts radially, biased rightward by the drop spiral.
+        if (isEnemy && (other as Enemy).dying) continue
         const minDist = orb.radius + other.radius
         const dx = orb.x - other.x
         const dy = orb.y - other.y

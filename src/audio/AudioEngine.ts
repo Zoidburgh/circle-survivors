@@ -585,7 +585,8 @@ export function playHealExplosion(buildupSec = 1.0, full = false): void {
   const t = c.currentTime
   const popTime = t + Math.max(0.12, buildupSec - 0.02)
   const baseDeg = explodeWalkStep++ % 5
-  const bloom = full ? 1 : 0.42   // bloom loudness multiplier — tamed unless it actually heals
+  const bloom = full ? 1 : 0.7    // bloom loudness — louder when it doesn't hit the player (the player-hit
+                                  // `full` case is already loud enough at 1.0)
 
   // Buildup — GLITTER/FAIRY-DUST: a sprinkle of tiny high in-key bell twinkles scattered across the
   // window, gently getting denser toward the bloom. Each is a soft, short, high sine ping through
@@ -606,8 +607,8 @@ export function playHealExplosion(buildupSec = 1.0, full = false): void {
       const g = c.createGain()
       o.type = 'sine'
       o.frequency.setValueAtTime(f, tt)
-      // Soft, very quiet pings that grow a touch louder as the glitter densifies near the bloom.
-      const lvl = rVol(0.014 + 0.026 * frac)   // tamed a touch from before
+      // Soft pings that grow louder (linearly) as the glitter densifies toward the bloom.
+      const lvl = rVol(0.014 + 0.026 * frac)
       const dur = 0.1 + Math.random() * 0.14
       g.gain.setValueAtTime(0.0001, tt)
       g.gain.linearRampToValueAtTime(lvl, tt + 0.006)          // tiny attack = a "ting"
@@ -650,6 +651,67 @@ export function playHealExplosion(buildupSec = 1.0, full = false): void {
     o.connect(g); g.connect(reverbInput)
     o.start(popTime); o.stop(popTime + 0.35)
   }
+}
+
+// Wall heal zone — PLAYER got healed. A bright, friendly two-note rising bell (root → fifth) with a
+// high sparkle, in-key, short. Reads clearly "good / you were nourished."
+export function playWallHealPlayer(): void {
+  ensureContext()
+  const c = ctx!
+  if (!admitVoice('low')) return
+  const t = c.currentTime
+  const notes = [
+    { f: currentMusic ? degreeToFreq(currentMusic, 0, 1) : 523, at: t,        g: 0.16 },
+    { f: currentMusic ? degreeToFreq(currentMusic, 4, 1) : 784, at: t + 0.055, g: 0.14 },
+  ]
+  for (const n of notes) {
+    const o = c.createOscillator(); const g = c.createGain()
+    o.type = 'sine'
+    o.frequency.setValueAtTime(n.f, n.at)
+    g.gain.setValueAtTime(0.0001, n.at)
+    g.gain.linearRampToValueAtTime(rVol(n.g), n.at + 0.012)
+    g.gain.exponentialRampToValueAtTime(0.001, n.at + 0.3)
+    o.connect(g); g.connect(master)
+    const rs = c.createGain(); rs.gain.value = rVol(0.12); g.connect(rs); rs.connect(reverbInput)
+    o.start(n.at); o.stop(n.at + 0.34)
+  }
+  // High sparkle on top
+  const s = c.createOscillator(); const sg = c.createGain()
+  s.type = 'sine'
+  s.frequency.setValueAtTime(currentMusic ? degreeToFreq(currentMusic, 0, 3) : 2093, t + 0.05)
+  sg.gain.setValueAtTime(0.0001, t + 0.05)
+  sg.gain.linearRampToValueAtTime(rVol(0.06), t + 0.062)
+  sg.gain.exponentialRampToValueAtTime(0.001, t + 0.26)
+  s.connect(sg); sg.connect(reverbInput)
+  s.start(t + 0.05); s.stop(t + 0.29)
+}
+
+// Wall heal zone — an ENEMY got healed (bad for the player). A dull, slightly ominous low tone that
+// sags downward, low-passed so it reads muted/heavy, with a faintly detuned twin for unease. Clearly
+// distinct from the bright player-heal chime.
+export function playWallHealEnemy(): void {
+  ensureContext()
+  const c = ctx!
+  if (!admitVoice('low')) return
+  const t = c.currentTime
+  const f0 = currentMusic ? degreeToFreq(currentMusic, 0, 0) : 196
+  const lp = c.createBiquadFilter()
+  lp.type = 'lowpass'; lp.frequency.value = 680
+  const g = c.createGain()
+  g.gain.setValueAtTime(0.0001, t)
+  g.gain.linearRampToValueAtTime(rVol(0.15), t + 0.02)
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.3)
+  lp.connect(g); g.connect(master)
+  const o = c.createOscillator()
+  o.type = 'triangle'
+  o.frequency.setValueAtTime(f0, t)
+  o.frequency.exponentialRampToValueAtTime(f0 * 0.84, t + 0.24)   // downward sag = "wrong"
+  o.connect(lp); o.start(t); o.stop(t + 0.32)
+  const o2 = c.createOscillator()
+  o2.type = 'triangle'
+  o2.frequency.setValueAtTime(f0 * 1.018, t)                      // slight detune → uneasy beating
+  o2.frequency.exponentialRampToValueAtTime(f0 * 0.855, t + 0.24)
+  o2.connect(lp); o2.start(t); o2.stop(t + 0.32)
 }
 
 let fuseBurnNodes: { gain: GainNode; sources: AudioBufferSourceNode[] } | null = null
@@ -2289,6 +2351,63 @@ export function playCollect(): void {
   osc2.start(t + 0.04)
   osc1.stop(t + 0.08)
   osc2.stop(t + 0.15)
+}
+
+// Speed-boost surge — plays the instant an overheal heart grants the boost (with the star burst).
+// Designed to LAYER over playCollect (a 700→1050Hz chime): a rising "launch" whoosh under it, an
+// airy noise swoosh for speed, and a sparkle ping above — together they read as "collect + surge"
+// without masking the collect chime.
+export function playSpeedBoost(count = 1): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  const baseDeg = explodeWalkStep++ % 5   // vary the phrase per pickup so repeats don't feel samey
+  const lvl = Math.max(0, Math.min(1, (count - 1) / 2))   // 0/0.5/1 at count 1/2/3 → bigger at 200%
+  // (1) Ascending in-key POWER-UP arpeggio that resolves UP — the satisfying "level up" hit. Each
+  // note brighter, the last one a sustained triangle bell with reverb = a clear, rewarding resolve.
+  // A 3-overheal (200%) grab adds an extra octave note on top so the phrase climbs higher.
+  const degs = lvl >= 1 ? [0, 2, 4, 7, 9] : [0, 2, 4, 7]
+  degs.forEach((deg, i) => {
+    const last = i === degs.length - 1
+    const f = currentMusic ? degreeToFreq(currentMusic, baseDeg + deg, 1) : 523 * Math.pow(2, i / 3.5)
+    const at = t + i * 0.05
+    const o = c.createOscillator(); const g = c.createGain()
+    o.type = last ? 'triangle' : 'sine'
+    o.frequency.setValueAtTime(f, at)
+    g.gain.setValueAtTime(0.0001, at)
+    g.gain.linearRampToValueAtTime(rVol((last ? 0.32 : 0.2) * (1 + lvl * 0.25)), at + 0.01)
+    g.gain.exponentialRampToValueAtTime(0.001, at + (last ? 0.5 : 0.14))
+    o.connect(g); g.connect(master)
+    const rs = c.createGain(); rs.gain.value = rVol(last ? 0.18 : 0.1); g.connect(rs); rs.connect(reverbInput)
+    o.start(at); o.stop(at + (last ? 0.54 : 0.16))
+  })
+  // (2) Glitter cascade — quick high in-key sparkles for the magical fairy shimmer (ties to the
+  // star burst), climbing as the arpeggio resolves. More sparkles at higher counts.
+  const glitterDegs = [0, 2, 4, 7, 9, 11]
+  const glitterN = 6 + Math.round(lvl * 4)   // 6 / 8 / 10
+  for (let i = 0; i < glitterN; i++) {
+    const at = t + 0.02 + i * 0.028
+    const deg = glitterDegs[i % glitterDegs.length]!
+    const f = currentMusic ? degreeToFreq(currentMusic, baseDeg + deg, 2 + Math.floor(i / glitterDegs.length)) : 1400 + i * 220
+    const o = c.createOscillator(); const g = c.createGain()
+    o.type = 'sine'; o.frequency.setValueAtTime(f, at)
+    g.gain.setValueAtTime(0.0001, at)
+    g.gain.linearRampToValueAtTime(rVol(0.1), at + 0.006)
+    g.gain.exponentialRampToValueAtTime(0.001, at + 0.18)
+    o.connect(g); g.connect(reverbInput)
+    o.start(at); o.stop(at + 0.2)
+  }
+  // (3) Launch whoosh underneath — the speed/surge texture, sweeping up.
+  const wo = c.createOscillator(); const wg = c.createGain(); const wlp = c.createBiquadFilter()
+  wo.type = 'triangle'
+  wo.frequency.setValueAtTime(rPitch(300), t)
+  wo.frequency.exponentialRampToValueAtTime(rPitch(1150), t + 0.2)
+  wlp.type = 'lowpass'; wlp.frequency.setValueAtTime(600, t); wlp.frequency.exponentialRampToValueAtTime(3000, t + 0.2)
+  wg.gain.setValueAtTime(0.0001, t)
+  wg.gain.linearRampToValueAtTime(rVol(0.14), t + 0.02)
+  wg.gain.exponentialRampToValueAtTime(0.001, t + 0.26)
+  wo.connect(wlp); wlp.connect(wg); wg.connect(master)
+  wo.start(t); wo.stop(t + 0.28)
 }
 
 // ── Attack windup — quiet rising tone that telegraphs incoming attack ──

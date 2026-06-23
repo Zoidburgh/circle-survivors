@@ -1,5 +1,5 @@
 import type { Player } from '../entities/Player.ts'
-import { getEffectiveRadius, getBodyRadius } from '../entities/Player.ts'
+import { getEffectiveRadius, getBodyRadius, SPEED_BOOST_DURATION } from '../entities/Player.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { getRingOrigins } from '../entities/Enemy.ts'
 import type { Ring } from '../entities/Ring.ts'
@@ -20,7 +20,7 @@ import type { BlockedArc } from '../game/RingOcclusion.ts'
 import { getEnemies, getRunTimer, isRunTimerActive, isRunComplete, getRunFinalTime, getPhase, getRunBeatCount } from '../core/GameState.ts'
 import { hasBonus } from '../game/UpgradeManager.ts'
 import { getOrbs } from '../entities/XPOrb.ts'
-import { getBeatName, getVolume, playDashReady, playIrisOpen, playUIHover, playUIClick } from '../audio/AudioEngine.ts'
+import { getBeatName, getVolume, playDashReady, playIrisOpen, playUIHover, playUIClick, playSpeedBoost } from '../audio/AudioEngine.ts'
 import { isTouchMode, getJoystickState } from '../game/InputManager.ts'
 import { BEAT_SEC } from '../utils/constants.ts'
 import {
@@ -763,6 +763,8 @@ function updateAndDrawLightningBolts(dt: number): void {
 interface AbsorbEffect {
   originX: number; originY: number
   targetX: number; targetY: number  // -1,-1 = track player
+  target: ParticleParent | null     // live entity to home in on (overrides targetX/Y) — e.g. a moving
+                                     // enemy consuming an orb, so the stream follows it as it moves
   r: number; g: number; b: number
   timer: number
   duration: number
@@ -770,9 +772,9 @@ interface AbsorbEffect {
 const absorbEffects: AbsorbEffect[] = []
 const MAX_ABSORBS = 15
 
-export function addAbsorbEffect(x: number, y: number, r: number, g: number, b: number, targetX = -1, targetY = -1): void {
+export function addAbsorbEffect(x: number, y: number, r: number, g: number, b: number, targetX = -1, targetY = -1, target: ParticleParent | null = null): void {
   if (absorbEffects.length >= MAX_ABSORBS) absorbEffects.shift()
-  absorbEffects.push({ originX: x, originY: y, targetX, targetY, r, g, b, timer: 0, duration: 0.4 })
+  absorbEffects.push({ originX: x, originY: y, targetX, targetY, target, r, g, b, timer: 0, duration: 0.4 })
 }
 
 function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
@@ -788,15 +790,37 @@ function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
 
     const sx1 = fx.originX - camX
     const sy1 = fx.originY - camY
-    const tx = fx.targetX < 0 ? player.x : fx.targetX
-    const ty = fx.targetY < 0 ? player.y : fx.targetY
+    const tx = fx.target ? fx.target.x : (fx.targetX < 0 ? player.x : fx.targetX)
+    const ty = fx.target ? fx.target.y : (fx.targetY < 0 ? player.y : fx.targetY)
     const sx2 = tx - camX
     const sy2 = ty - camY
     const ddx = sx2 - sx1, ddy = sy2 - sy1
 
-    // 5 orbs streaming from origin to player
-    const chainCount = 5
-    const spacing = 0.1
+    const dist = Math.sqrt(ddx * ddx + ddy * ddy)
+
+    // Connection beam — a soft ADDITIVE glow line along the whole origin→target path, so the
+    // collection reads clearly even across the arena (the chain orbs alone get sparse at distance).
+    // Brightest early, fades as the orbs arrive.
+    {
+      const beamA = (1 - t) * (1 - t)
+      const prevComp = ctx.globalCompositeOperation
+      ctx.globalCompositeOperation = 'lighter'
+      ctx.lineCap = 'round'
+      ctx.beginPath(); ctx.moveTo(sx1, sy1); ctx.lineTo(sx2, sy2)
+      ctx.strokeStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${beamA * 0.16})`
+      ctx.lineWidth = 11
+      ctx.stroke()
+      ctx.beginPath(); ctx.moveTo(sx1, sy1); ctx.lineTo(sx2, sy2)
+      ctx.strokeStyle = `rgba(${Math.min(255, fx.r + 60)}, ${Math.min(255, fx.g + 50)}, ${Math.min(255, fx.b + 50)}, ${beamA * 0.3})`
+      ctx.lineWidth = 3
+      ctx.stroke()
+      ctx.globalCompositeOperation = prevComp
+    }
+
+    // Chain orbs — count + spacing scale with distance so a long stream stays DENSE and continuous
+    // instead of a few dots strung far apart.
+    const chainCount = Math.max(6, Math.min(16, 5 + Math.round(dist / 85)))
+    const spacing = 0.5 / chainCount
     ctx.lineCap = 'round'
 
     for (let c = 0; c < chainCount; c++) {
@@ -816,12 +840,14 @@ function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
 
       const orbX = sx1 + ddx * orbEase + wnx * wave
       const orbY = sy1 + ddy * orbEase + wny * wave
-      const orbSize = (23 - c * 2.3) * Math.max(orbLife, 0.15)
+      // Size tapers from the leading orb back along the chain by FRACTION (so it stays sensible at
+      // any chainCount), front ~22px → tail ~7px.
+      const orbSize = (22 - 15 * (c / chainCount)) * Math.max(orbLife, 0.15)
 
-      // Glow — bumped from 0.14 → 0.28 so the collection chain pops more clearly
+      // Glow — bigger + brighter so the chain pops clearly even at distance
       ctx.beginPath()
-      ctx.arc(orbX, orbY, orbSize + 19, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.28})`
+      ctx.arc(orbX, orbY, orbSize + 22, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.32})`
       ctx.fill()
 
       // Core — bumped from 0.6 → 0.85
@@ -952,10 +978,10 @@ export function spawnHealExplosionParticles(cx: number, cy: number, range: numbe
     const tint = Math.random()
     spawnParticle(px, py,
       Math.cos(outAngle) * speed, Math.sin(outAngle) * speed - 55,   // upward lift = benevolent rise
-      255, 220 + Math.floor(tint * 30), 150 + Math.floor(tint * 50),  // warm gold body
+      255, 242 + Math.floor(tint * 13), 205 + Math.floor(tint * 40),  // white-gold body
       0.38 + Math.random() * 0.26, 5 + Math.random() * 5,
       (Math.random() < 0.5 ? 1 : -1) * (4 + Math.random() * 6),
-      255, 200, 90)                                        // gold glow tint → gold halo bloom
+      255, 232, 180)                                       // pale-gold glow tint → white-gold bloom
   }
   // White-gold twinkle highlights rising from the center — the bright "sparkle" core
   const hotCount = Math.min(14, Math.round(range / 12))
@@ -964,9 +990,9 @@ export function spawnHealExplosionParticles(cx: number, cy: number, range: numbe
     const speed = 90 + Math.random() * 160
     spawnParticle(cx, cy,
       Math.cos(angle) * speed, Math.sin(angle) * speed - 45,
-      255, 250, 225,
+      255, 252, 238,
       0.3 + Math.random() * 0.2, 3 + Math.random() * 2.5,
-      0, 255, 225, 150)
+      0, 255, 242, 205)
   }
 }
 
@@ -1006,36 +1032,50 @@ export function spawnWallZoneBurst(w: Wall, heal: boolean): void {
     }
   }
   for (const c of centers) {
-    const count = Math.min(heal ? 32 : 44, Math.round(Math.sqrt(blastR) * (heal ? 2.6 : 3.2)))
+    const count = Math.min(heal ? 64 : 44, Math.round(Math.sqrt(blastR) * (heal ? 4.6 : 3.2)))
     for (let i = 0; i < count; i++) {
       const a = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
-      const dist = blastR * (0.12 + Math.random() * 0.82)
+      // Heal spreads EVENLY across the band by area (sqrt) so it fills the field uniformly rather
+      // than clumping near the center; damage keeps its center-biased linear spread.
+      const dist = heal
+        ? blastR * Math.sqrt(0.05 + Math.random() * 0.95)
+        : blastR * (0.12 + Math.random() * 0.82)
       const px = c.x + Math.cos(a) * dist, py = c.y + Math.sin(a) * dist
       const outA = Math.atan2(py - c.y, px - c.x)
-      // Speed sized to carry the particle the REMAINING distance to the reach edge (with friction
-      // baked in) and no further — so the cloud fills the band right up to the hitbox and stops
-      // flush with it instead of spraying past. A little spread (0.7–1.1×) keeps it organic.
+      // Speed carries the particle the REMAINING distance to the reach edge so the cloud fills the
+      // band up to the hitbox. DAMAGE = fast, sharp spray; HEAL = slow, floaty drift with a gentle
+      // upward lift + long life + round size, so it blooms benevolently instead of stinging.
       const remaining = Math.max(0, blastR - dist)
-      const life = (heal ? 0.22 : 0.18) + Math.random() * 0.12
-      const sp = Math.min(650, (remaining / 0.18) * (0.7 + Math.random() * 0.4))
       if (heal) {
-        spawnParticleAttached(px, py, Math.cos(outA) * sp, Math.sin(outA) * sp,
-          255, 225 + Math.floor(Math.random() * 25), 160 + Math.floor(Math.random() * 40),
-          life, 5 + Math.random() * 4, 255, 205, 110, anchor)
+        // Heal already spawns spread EVENLY across the band (dist 0.1–0.95), so it doesn't need to
+        // rush outward — give it a SLOW gentle drift (with a hint of lift) and a similar-to-damage
+        // lifetime + rounder size. Soft because it's slow + spread, not because it lingers.
+        const life = 0.22 + Math.random() * 0.14
+        const sp = 25 + Math.random() * 55
+        spawnParticleAttached(px, py, Math.cos(outA) * sp, Math.sin(outA) * sp - (10 + Math.random() * 18),
+          255, 242 + Math.floor(Math.random() * 13), 205 + Math.floor(Math.random() * 40),
+          life, 6 + Math.random() * 4, 255, 232, 180, anchor)
       } else {
+        const life = 0.18 + Math.random() * 0.12
+        const sp = Math.min(650, (remaining / 0.18) * (0.7 + Math.random() * 0.4))   // fast = sharp
         const tint = Math.random()
         spawnParticleAttached(px, py, Math.cos(outA) * sp, Math.sin(outA) * sp,
           255, Math.floor(70 + tint * 120), Math.floor(20 + tint * 45),
           life, 7 + Math.random() * 5, 255, 120, 30, anchor)
       }
     }
-    // White-hot core sparks for punch — also capped to land within the reach (white-gold for heal).
+    // Core sparks — DAMAGE: fast white-hot punch. HEAL: a few soft white-gold motes drifting gently.
     for (let i = 0; i < 5; i++) {
       const a = Math.random() * Math.PI * 2
-      const sp = Math.min(620, (blastR * 0.85 / 0.18) * (0.5 + Math.random() * 0.4))
-      spawnParticleAttached(c.x, c.y, Math.cos(a) * sp, Math.sin(a) * sp,
-        255, heal ? 250 : 245, heal ? 225 : 220, 0.16 + Math.random() * 0.1, 3 + Math.random() * 2.5,
-        255, heal ? 225 : 170, heal ? 150 : 90, anchor)
+      if (heal) {
+        const sp = 30 + Math.random() * 50
+        spawnParticleAttached(c.x, c.y, Math.cos(a) * sp, Math.sin(a) * sp - (10 + Math.random() * 16),
+          255, 252, 238, 0.2 + Math.random() * 0.12, 3.5 + Math.random() * 2.5, 255, 242, 205, anchor)
+      } else {
+        const sp = Math.min(620, (blastR * 0.85 / 0.18) * (0.5 + Math.random() * 0.4))
+        spawnParticleAttached(c.x, c.y, Math.cos(a) * sp, Math.sin(a) * sp,
+          255, 245, 220, 0.16 + Math.random() * 0.1, 3 + Math.random() * 2.5, 255, 170, 90, anchor)
+      }
     }
   }
 }
@@ -1050,8 +1090,8 @@ export function spawnExplodeBulletDestruction(x: number, y: number, heal: boolea
   if (heal) {
     // Gold "bloom" shatter — the dart dissolves into warm gold motes that lift and twinkle, the
     // nourish counterpart to the fiery ignition. Gold glow tints make each mote bloom a gold halo.
-    spawnParticle(x, y, 0, 0, 255, 240, 200, 0.16, 32, 0, 255, 215, 130)   // bright gold core flash
-    spawnParticle(x, y, 0, 0, 255, 215, 130, 0.22, 22, 0, 255, 200, 90)    // warm gold outer flash
+    spawnParticle(x, y, 0, 0, 255, 250, 228, 0.16, 32, 0, 255, 238, 195)   // bright white-gold core flash
+    spawnParticle(x, y, 0, 0, 255, 240, 200, 0.22, 22, 0, 255, 232, 180)   // white-gold outer flash
     const n = 20
     for (let i = 0; i < n; i++) {
       const a = (i / n) * Math.PI * 2 + (Math.random() - 0.5) * 0.5
@@ -1059,10 +1099,10 @@ export function spawnExplodeBulletDestruction(x: number, y: number, heal: boolea
       const tint = Math.random()
       spawnParticle(x, y,
         Math.cos(a) * sp, Math.sin(a) * sp - 40,            // upward lift
-        255, 220 + Math.floor(tint * 30), 150 + Math.floor(tint * 50),
+        255, 242 + Math.floor(tint * 13), 205 + Math.floor(tint * 40),
         0.3 + Math.random() * 0.24, 4 + Math.random() * 4,
         (Math.random() < 0.5 ? 1 : -1) * (4 + Math.random() * 6),
-        255, 200, 90)
+        255, 232, 180)
     }
     return
   }
@@ -1104,8 +1144,8 @@ function updateAndDrawVolatileEffects(dt: number): void {
     if (p.heal) {
       const goldBlend = 0.7 + 0.3 * progress
       rr = 255
-      rg = Math.floor(200 + 40 * goldBlend)   // ~228 → 240
-      rb = Math.floor(90 + 60 * (1 - goldBlend))
+      rg = Math.floor(235 + 20 * goldBlend)   // white-gold: ~249 → 255
+      rb = Math.floor(185 + 45 * (1 - goldBlend))
     } else {
       // Start red, blend slightly toward enemy color mid-way, then back to red
       const redBase = 0.6  // 60% red from the start
@@ -1148,11 +1188,11 @@ function updateAndDrawVolatileEffects(dt: number): void {
           const outA = Math.atan2(py - p.y, px - p.x)
           const speed = 15 + Math.random() * 30
           if (p.heal) {
-            // Gold motes rising inside the telegraph — gold body + gold glow tint
+            // White-gold motes rising inside the telegraph — white-gold body + pale-gold glow tint
             spawnParticle(px, py,
               Math.cos(outA) * speed * 0.5, -20 - Math.random() * 40 + Math.sin(outA) * speed * 0.3,
-              255, 220 + Math.floor(Math.random() * 30), 150 + Math.floor(Math.random() * 40),
-              0.2 + progress * 0.2, 3 + Math.random() * 3, 0, 255, 200, 90)
+              255, 242 + Math.floor(Math.random() * 13), 205 + Math.floor(Math.random() * 35),
+              0.2 + progress * 0.2, 3 + Math.random() * 3, 0, 255, 232, 180)
           } else {
             const fr = Math.min(255, rr + Math.floor(Math.random() * 40))
             const fg = Math.floor(40 + Math.random() * 60 * (1 - progress))
@@ -1173,8 +1213,8 @@ function updateAndDrawVolatileEffects(dt: number): void {
             spawnParticle(
               p.x + Math.cos(a) * edgeDist, p.y + Math.sin(a) * edgeDist,
               Math.cos(a) * speed * inward, Math.sin(a) * speed * inward - 15,
-              255, 225 + Math.floor(Math.random() * 25), 160,
-              0.12 + Math.random() * 0.1, 2 + Math.random() * 2, 0, 255, 210, 110)
+              255, 245 + Math.floor(Math.random() * 10), 210,
+              0.12 + Math.random() * 0.1, 2 + Math.random() * 2, 0, 255, 235, 185)
           } else {
             spawnParticle(
               p.x + Math.cos(a) * edgeDist, p.y + Math.sin(a) * edgeDist,
@@ -1202,8 +1242,8 @@ function updateAndDrawVolatileEffects(dt: number): void {
 
     // Edge/flash tint — damage carries the red buildup color; heal carries warm gold.
     const erR = ex.heal ? 255 : Math.min(255, ex.r + Math.floor((255 - ex.r) * 0.7))
-    const erG = ex.heal ? 225 : Math.floor(ex.g * 0.4)
-    const erB = ex.heal ? 130 : Math.floor(ex.b * 0.4)
+    const erG = ex.heal ? 246 : Math.floor(ex.g * 0.4)
+    const erB = ex.heal ? 210 : Math.floor(ex.b * 0.4)
 
     // Area glow — radial gradient extending past the hitbox edge. Cheap (one fill per frame),
     // additive composite so overlapping explosions accumulate brightness like real light. Gold for
@@ -1213,10 +1253,10 @@ function updateAndDrawVolatileEffects(dt: number): void {
       const glowAlpha = (1 - t) * (1 - t) * 0.78
       const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, glowR)
       if (ex.heal) {
-        grad.addColorStop(0, `rgba(255, 235, 170, ${Math.min(1, glowAlpha)})`)
-        grad.addColorStop(0.45, `rgba(255, 210, 110, ${glowAlpha * 0.78})`)
-        grad.addColorStop(0.85, `rgba(255, 185, 70, ${glowAlpha * 0.27})`)
-        grad.addColorStop(1, 'rgba(255, 180, 60, 0)')
+        grad.addColorStop(0, `rgba(255, 250, 228, ${Math.min(1, glowAlpha)})`)
+        grad.addColorStop(0.45, `rgba(255, 238, 190, ${glowAlpha * 0.78})`)
+        grad.addColorStop(0.85, `rgba(255, 225, 160, ${glowAlpha * 0.27})`)
+        grad.addColorStop(1, 'rgba(255, 220, 150, 0)')
       } else {
         grad.addColorStop(0, `rgba(255, 125, 70, ${Math.min(1, glowAlpha)})`)
         grad.addColorStop(0.45, `rgba(255, 75, 40, ${glowAlpha * 0.78})`)
@@ -3992,9 +4032,9 @@ function drawWalls(): void {
       const baseR = d.w.radius * d.visScale           // wall body half-thickness in screen px
       // Volatile-language color: damage reddens + darkens toward the fire beat; heal holds warm
       // gold and brightens. Both intensify as the band charges.
-      const eg = heal ? 215 : 90, eb = heal ? 130 : 55
-      const cg = heal ? Math.floor(200 + 40 * charge) : Math.floor(110 - 55 * charge)
-      const cb = heal ? Math.floor(150 - 55 * charge) : Math.floor(60 - 30 * charge)
+      const eg = heal ? 244 : 90, eb = heal ? 200 : 55
+      const cg = heal ? Math.floor(238 + 17 * charge) : Math.floor(110 - 55 * charge)
+      const cb = heal ? Math.floor(200 - 25 * charge) : Math.floor(60 - 30 * charge)
       // (1) Faint full reach — persistent SPACE fill + a defined boundary edge (always visible).
       strokeWallLayer(d, 2 * range, `rgba(255, ${eg}, ${eb}, 0.05)`)
       strokeBandEdge(d, baseR + range, `rgba(255, ${eg}, ${eb}, 0.20)`, 1.5)
@@ -4011,8 +4051,8 @@ function drawWalls(): void {
       if (fireT > 0.01) {
         // Bright fill across the FULL reach + a crisp edge exactly AT the hitbox boundary — flush
         // with the damage reach, no overshoot past it.
-        strokeWallLayer(d, 2 * range, `rgba(255, ${heal ? 235 : 150}, ${heal ? 180 : 110}, ${0.5 * fireT})`)
-        strokeBandEdge(d, baseR + range, `rgba(255, ${heal ? 230 : 100}, ${heal ? 150 : 65}, ${0.55 * fireT})`, 4)
+        strokeWallLayer(d, 2 * range, `rgba(255, ${heal ? 248 : 150}, ${heal ? 222 : 110}, ${0.5 * fireT})`)
+        strokeBandEdge(d, baseR + range, `rgba(255, ${heal ? 245 : 100}, ${heal ? 210 : 65}, ${0.55 * fireT})`, 4)
         strokeBandEdge(d, baseR + range, `rgba(255, 255, 255, ${0.85 * fireT})`, 2)
       }
     }
@@ -5428,6 +5468,7 @@ export function resetRenderer(): void {
   absorbEffects.length = 0
   volatileExplosions.length = 0
   pendingExplosionVisuals = []
+  vitGhosts.length = 0; lastSeenBoost = 0; starGlints.length = 0
   revengeRings.length = 0
   toasts.length = 0
   borderWaveIntensity = 0
@@ -6007,7 +6048,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfEnd('shockpush')
 
   perfStart('player')
-  drawPlayer(player)
+  drawPlayer(player)   // (boost star burst is drawn inside, under the dash dots so they stay readable)
   perfEnd('player')
 
   // Above-player pass for orbit ring shards — when the player is standing at the ring center,
@@ -6888,9 +6929,10 @@ function drawXPOrbs(player: Player): void {
 
         // Absorb stream — only for player-collected orbs
         if (orb.consumedBy !== 'enemy') {
+          // HP = white-gold heal stream (ties the suck-up to the heal identity); XP keeps its color.
           const absR = isHP ? 255 : Math.min(255, orbR + 50)
-          const absG = isHP ? 140 : Math.min(255, orbG + 30)
-          const absB = isHP ? 140 : Math.min(255, orbB + 30)
+          const absG = isHP ? 222 : Math.min(255, orbG + 30)
+          const absB = isHP ? 150 : Math.min(255, orbB + 30)
           addAbsorbEffect(orb.x, orb.y, absR, absG, absB)
         }
 
@@ -6981,8 +7023,10 @@ function drawXPOrbs(player: Player): void {
     const beatPulse = 1 + orbBeat * (isHP ? 0.4 : 0.15)
     const iconScale = (r / 4.5) * beatPulse  // scale to orb size, breathes with beat
     const iconAlpha = ringOver ? 0.95 : (0.8 + globalBeatPulse * 0.15)
-    ctx.fillStyle = `rgba(255, 255, 255, ${Math.min(1, iconAlpha)})`
-    ctx.strokeStyle = `rgba(255, 255, 255, ${Math.min(1, iconAlpha)})`
+    // HP heart stays essentially white with just a faint warm hint; XP plus stays pure white.
+    const iconCol = isHP ? `255, 251, 240` : `255, 255, 255`
+    ctx.fillStyle = `rgba(${iconCol}, ${Math.min(1, iconAlpha)})`
+    ctx.strokeStyle = `rgba(${iconCol}, ${Math.min(1, iconAlpha)})`
     if (isHP) {
       // Heart — single combined path
       const hs = iconScale * 2.2
@@ -6991,10 +7035,9 @@ function drawXPOrbs(player: Player): void {
       const lx = sx - humpR * 0.9  // left hump center
       const rx = sx + humpR * 0.9  // right hump center
       const hy = cy - hs * 0.15    // hump center y
-      // Cached white glow sprite under the heart — large + low alpha so the bright sprite
-      // center disappears and only a soft halo remains around the heart shape.
+      // Cached glow sprite under the heart — near-white with a faint warm hint, large + low alpha.
       {
-        const sprite = getGlowSprite(255, 255, 255)
+        const sprite = getGlowSprite(255, 246, 225)
         const dim = hs * 7
         const prevComp = ctx.globalCompositeOperation
         const prevAlpha = ctx.globalAlpha
@@ -7034,10 +7077,163 @@ function drawXPOrbs(player: Player): void {
   }
 }
 
+// ── Boost-pickup STAR burst — dramatic gold sparkle-stars erupt from the player on a boost grab ──
+interface StarGlint { x: number; y: number; vx: number; vy: number; size: number; rot: number; rotSpeed: number; life: number; maxLife: number; parent: ParticleParent; lastPX: number; lastPY: number }
+const starGlints: StarGlint[] = []
+
+export function spawnBoostStarBurst(parent: ParticleParent, bodyR: number, count = 1): void {
+  // Ring of 4-point sparkle-stars flung outward + a couple big slow ones + a round energy spray.
+  // PARENT-ATTACHED to the player so the burst rides with you (you're moving fast on a boost) while
+  // each star still flies outward relative to your body — reads as bursting OUT of the player. They
+  // SPAWN at the body edge and launch fast so they're already outside you while still bright. The
+  // overheal `count` (1–3) scales star quantity + size, so a 200% grab erupts noticeably bigger.
+  const px = parent.x, py = parent.y
+  const edge = bodyR * 0.65   // spawn a bit further out from center toward the body edge
+  const lvl = Math.max(0, (count - 1) / 2)        // 0/0.5/1 at count 1/2/3
+  const ringN = 6 + Math.round(lvl * 6)           // 6 / 9 / 12 stars
+  const szMul = 1 + lvl * 0.35
+  const widthMul = 1 + lvl * 1.0                  // count 3 flings stars ~2× as far = much wider burst
+  for (let i = 0; i < ringN; i++) {
+    const a = (i / ringN) * Math.PI * 2 + Math.random() * 0.5
+    const sp = (175 + Math.random() * 185) * widthMul
+    starGlints.push({ x: px + Math.cos(a) * edge * (1 + lvl * 0.4), y: py + Math.sin(a) * edge * (1 + lvl * 0.4), vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+      size: (9 + Math.random() * 10) * szMul, rot: Math.random() * Math.PI, rotSpeed: (Math.random() - 0.5) * 6,
+      life: 0, maxLife: 0.45 + Math.random() * 0.25, parent, lastPX: px, lastPY: py })
+  }
+  for (let i = 0; i < 2; i++) {
+    const a = Math.random() * Math.PI * 2
+    const sp = 90 + Math.random() * 90
+    starGlints.push({ x: px + Math.cos(a) * edge, y: py + Math.sin(a) * edge, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+      size: 18 + Math.random() * 9, rot: Math.random() * Math.PI, rotSpeed: (Math.random() - 0.5) * 3,
+      life: 0, maxLife: 0.5 + Math.random() * 0.28, parent, lastPX: px, lastPY: py })
+  }
+  for (let i = 0; i < 16; i++) {
+    const a = Math.random() * Math.PI * 2
+    const sp = 130 + Math.random() * 180
+    spawnParticleAttached(px + Math.cos(a) * edge, py + Math.sin(a) * edge, Math.cos(a) * sp, Math.sin(a) * sp,
+      255, 245, 210, 0.22 + Math.random() * 0.18, 2.5 + Math.random() * 2, 255, 235, 185, parent)
+  }
+}
+
+function updateAndDrawStarGlints(dt: number): void {
+  if (starGlints.length === 0) return
+  const prevComp = ctx.globalCompositeOperation
+  ctx.globalCompositeOperation = 'lighter'
+  for (let i = starGlints.length - 1; i >= 0; i--) {
+    const g = starGlints[i]!
+    g.life += dt / g.maxLife
+    if (g.life >= 1) { starGlints[i] = starGlints[starGlints.length - 1]!; starGlints.pop(); continue }
+    // Ride with the parent (player) — shift by its per-frame delta, then apply own outward velocity.
+    g.x += g.parent.x - g.lastPX; g.y += g.parent.y - g.lastPY
+    g.lastPX = g.parent.x; g.lastPY = g.parent.y
+    g.x += g.vx * dt; g.y += g.vy * dt
+    g.vx *= 0.91; g.vy *= 0.91   // friction — spreads out a moderate distance then settles
+    g.rot += g.rotSpeed * dt
+    const grow = g.life < 0.25 ? g.life / 0.25 : 1            // pop in, then hold
+    const fade = g.life < 0.25 ? 1 : 1 - (g.life - 0.25) / 0.75
+    const R = g.size * grow
+    const sx = g.x - camX, sy = g.y - camY
+    // soft center glow
+    ctx.beginPath(); ctx.arc(sx, sy, R * 0.5, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(255, 250, 228, ${fade * 0.5})`; ctx.fill()
+    // 4-point sparkle star
+    ctx.beginPath()
+    for (let k = 0; k < 4; k++) {
+      const ao = g.rot + k * Math.PI / 2
+      const ai = ao + Math.PI / 4
+      ctx.lineTo(sx + Math.cos(ao) * R, sy + Math.sin(ao) * R)
+      ctx.lineTo(sx + Math.cos(ai) * R * 0.34, sy + Math.sin(ai) * R * 0.34)
+    }
+    ctx.closePath()
+    ctx.fillStyle = `rgba(255, 242, 200, ${fade})`
+    ctx.fill()
+  }
+  ctx.globalCompositeOperation = prevComp
+}
+
+// ── Heal-at-full SPEED BOOST trail — gold afterimages while the 1s +50% boost is active ──
+interface VitGhost { x: number; y: number; r: number; life: number; maxLife: number }
+const vitGhosts: VitGhost[] = []
+const MAX_VIT_GHOSTS = 44
+let vitTrailDist = 0
+let lastVitX = 0, lastVitY = 0
+let lastSeenBoost = 0
+
+// Draws the gold afterimage speed trail + idle aura while the boost is active. Called at the START
+// of drawPlayer so ghosts render UNDER the body. Intensity tracks the REMAINING timer, so the trail
+// is brightest right after a pickup and fades out over the second — conveying the 1s countdown.
+function updateAndDrawSpeedBoostTrail(player: Player, bodyR: number): void {
+  const timer = player.speedBoostTimer
+  const frac = Math.max(0, Math.min(1, timer / SPEED_BOOST_DURATION))   // 1 fresh → 0 expired
+  const lvl = Math.max(0, Math.min(1, (player.speedBoostCount - 1) / 2))  // 0/0.5/1 at count 1/2/3
+  const cx = player.x - camX, cy = player.y - camY
+  // Pickup response — a dramatic gold STAR burst out of the player whenever the boost is (re)granted.
+  // Burst + SFX scale with the overheal count so 1 vs 3 (100% vs 200%) reads distinctly.
+  if (timer > lastSeenBoost + 0.001) {
+    spawnBoostStarBurst(player, bodyR, player.speedBoostCount)
+    playSpeedBoost(player.speedBoostCount)   // surge SFX, layers over the orb-collect chime
+  }
+  lastSeenBoost = timer
+
+  // Spawn afterimages while moving + boosted.
+  if (timer > 0) {
+    const dvx = player.x - lastVitX, dvy = player.y - lastVitY
+    const moved = Math.sqrt(dvx * dvx + dvy * dvy)
+    vitTrailDist += moved
+    if (moved > 0.4 && vitTrailDist >= 12) {
+      vitTrailDist = 0
+      if (vitGhosts.length >= MAX_VIT_GHOSTS) vitGhosts.shift()
+      vitGhosts.push({ x: player.x, y: player.y, r: bodyR, life: 0, maxLife: 0.45 + lvl * 0.25 })
+    }
+  }
+  lastVitX = player.x; lastVitY = player.y
+
+  // Draw + decay ghosts (additive gold, under the body). Brightness scales with the remaining timer
+  // (frac) so the whole streak dims as the boost runs out.
+  if (vitGhosts.length > 0) {
+    const prevComp = ctx.globalCompositeOperation
+    ctx.globalCompositeOperation = 'lighter'
+    const briScale = (0.18 + frac * 0.42) * (1 + lvl * 0.5)
+    for (let i = vitGhosts.length - 1; i >= 0; i--) {
+      const g = vitGhosts[i]!
+      g.life += lastDt / g.maxLife
+      if (g.life >= 1) { vitGhosts[i] = vitGhosts[vitGhosts.length - 1]!; vitGhosts.pop(); continue }
+      const a = (1 - g.life) * briScale
+      const gx = g.x - camX, gy = g.y - camY
+      const gr = g.r * (0.8 + 0.2 * (1 - g.life))
+      const grad = ctx.createRadialGradient(gx, gy, 0, gx, gy, gr)
+      grad.addColorStop(0, `rgba(255, 242, 195, ${a})`)
+      grad.addColorStop(0.6, `rgba(255, 226, 150, ${a * 0.6})`)
+      grad.addColorStop(1, 'rgba(255, 216, 130, 0)')
+      ctx.fillStyle = grad
+      ctx.beginPath(); ctx.arc(gx, gy, gr, 0, Math.PI * 2); ctx.fill()
+    }
+    ctx.globalCompositeOperation = prevComp
+  }
+
+  // Idle aura — soft gold ring on the body so the boost reads even standing still; fades with the
+  // remaining timer.
+  if (timer > 0) {
+    const prevComp = ctx.globalCompositeOperation
+    ctx.globalCompositeOperation = 'lighter'
+    const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.012)
+    const aA = (0.05 + frac * 0.18) * (0.7 + pulse * 0.3) * (1 + lvl * 0.6)
+    const aR = bodyR * 1.7
+    const grad = ctx.createRadialGradient(cx, cy, bodyR * 0.7, cx, cy, aR)
+    grad.addColorStop(0, 'rgba(255, 232, 170, 0)')
+    grad.addColorStop(0.7, `rgba(255, 226, 150, ${aA})`)
+    grad.addColorStop(1, 'rgba(255, 216, 130, 0)')
+    ctx.fillStyle = grad
+    ctx.beginPath(); ctx.arc(cx, cy, aR, 0, Math.PI * 2); ctx.fill()
+    ctx.globalCompositeOperation = prevComp
+  }
+}
+
 function drawPlayer(player: Player): void {
   const baseRadius = getBodyRadius(player)
   let sx = player.x - camX
   let sy = player.y - camY
+  updateAndDrawSpeedBoostTrail(player, baseRadius)
 
   // Heal-pulse tracking — fire from the EVENT (HP actually gained this frame), not a net-HP diff,
   // so a heal still flashes gold even when a same-frame hit cancels it on the HP total.
@@ -7063,9 +7259,9 @@ function drawPlayer(player: Player): void {
       spawnParticleAttached(
         player.x + Math.cos(a) * dist, player.y + Math.sin(a) * dist,
         Math.cos(a) * spd, Math.sin(a) * spd - 55,   // strong upward drift = gentle, benevolent rise
-        255, 235, 170,                                // bright warm gold body
+        255, 245, 215,                                // bright white-gold body
         0.75 + Math.random() * 0.55, 3.6 + Math.random() * 3.2,   // long-lived + big = round, floaty glow
-        255, 200, 90,                                 // gold tint target → gold glow halo blooms in
+        255, 232, 180,                                // pale-gold tint target → white-gold glow halo
         player)
     }
     // White-hot twinkle highlights — a few soft bright motes drifting up from the center
@@ -7076,9 +7272,9 @@ function drawPlayer(player: Player): void {
       spawnParticleAttached(
         player.x, player.y,
         Math.cos(a) * spd, Math.sin(a) * spd - 45,
-        255, 250, 225,
+        255, 252, 238,
         0.55 + Math.random() * 0.35, 2.4 + Math.random() * 2.2,
-        255, 225, 150,
+        255, 242, 205,
         player)
     }
   }
@@ -7701,19 +7897,19 @@ function drawPlayer(player: Player): void {
       ctx.arc(sx, sy, drawRadius, hpStart, mainEnd)
       ctx.closePath()
       const innerGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, drawRadius)
-      innerGrad.addColorStop(0,    `rgba(255, 240, 180, ${baseA * 0.30})`)
-      innerGrad.addColorStop(0.5,  `rgba(255, 215, 110, ${baseA * 0.35})`)
-      innerGrad.addColorStop(1,    `rgba(255, 180, 60, ${baseA * 0.12})`)
+      innerGrad.addColorStop(0,    `rgba(255, 248, 218, ${baseA * 0.30})`)
+      innerGrad.addColorStop(0.5,  `rgba(255, 238, 188, ${baseA * 0.35})`)
+      innerGrad.addColorStop(1,    `rgba(255, 226, 158, ${baseA * 0.12})`)
       ctx.fillStyle = innerGrad
       ctx.fill()
       // (2) Outer halo ring extending past the body — softer reach, lower alpha
       const haloR = drawRadius * 1.85
       const haloGrad = ctx.createRadialGradient(sx, sy, drawRadius * 0.85, sx, sy, haloR)
-      haloGrad.addColorStop(0,    'rgba(255, 235, 150, 0)')
-      haloGrad.addColorStop(0.35, `rgba(255, 230, 150, ${baseA * 0.32})`)
-      haloGrad.addColorStop(0.55, `rgba(255, 215, 120, ${baseA * 0.42})`)
-      haloGrad.addColorStop(0.80, `rgba(255, 195, 80, ${baseA * 0.16})`)
-      haloGrad.addColorStop(1,    'rgba(255, 180, 60, 0)')
+      haloGrad.addColorStop(0,    'rgba(255, 246, 205, 0)')
+      haloGrad.addColorStop(0.35, `rgba(255, 244, 200, ${baseA * 0.32})`)
+      haloGrad.addColorStop(0.55, `rgba(255, 240, 192, ${baseA * 0.42})`)
+      haloGrad.addColorStop(0.80, `rgba(255, 230, 170, ${baseA * 0.16})`)
+      haloGrad.addColorStop(1,    'rgba(255, 226, 158, 0)')
       ctx.fillStyle = haloGrad
       ctx.beginPath()
       ctx.arc(sx, sy, haloR, 0, Math.PI * 2)
@@ -7798,10 +7994,19 @@ function drawPlayer(player: Player): void {
     // HP segment lines — across full pie including missing health
     if (player.maxHp <= 40) {
       const now = performance.now()
-      const segBeat = player.attackTimer >= 0 && player.attackTimer < ATTACK_EXPAND_TIME
+      const inAttack = player.attackTimer >= 0 && player.attackTimer < ATTACK_EXPAND_TIME
+      const segBeat = inAttack
         ? Math.min(player.attackTimer / (ATTACK_EXPAND_TIME * 0.80), 0.6)
         : globalBeatPulse
-      const segInner = drawRadius * (0.60 - segBeat * 0.30)
+      // Extend and shrink want opposite curves: while expanding (attack), EASE-OUT (fast at the start,
+      // settling into the peak) so the lines whip in right on the beat. While decaying, square the pulse
+      // so it retracts FAST at the start then settles. The two match at the handoff (attack peak 0.18 ≈
+      // decay start 0.5²·0.72 = 0.18), so there's no jump.
+      const et = Math.min(1, segBeat / 0.6)
+      const extendEase = 1 - (1 - et) * (1 - et)   // ease-out
+      const segInner = inAttack
+        ? drawRadius * (0.60 - 0.18 * extendEase)
+        : drawRadius * (0.60 - segBeat * segBeat * 0.72)
       for (let i = 0; i < player.maxHp; i++) {
         const phase = (i / player.maxHp) * Math.PI * 2
         const wave = 0.5 + 0.5 * Math.sin(now / 800 - phase * 1.5)
@@ -8347,6 +8552,10 @@ function drawPlayer(player: Player): void {
     ctx.stroke()
   }
 
+  // Boost-pickup star burst — drawn here (over the body, for drama) but BEFORE the dash charge dots
+  // below, so the dash dots stay readable on top of the burst.
+  updateAndDrawStarGlints(lastDt)
+
   // Dash charges
   const orbitR = drawRadius
   const orbitSpeed = performance.now() / 800
@@ -8434,6 +8643,18 @@ function drawPlayer(player: Player): void {
       }
     }
 
+    // Local dark knockback halo behind each dash dot — mutes the additive gold/heal noise right
+    // where the dots live so they read against a busy screen (drawn under both states below).
+    {
+      const haloR = 24
+      const halo = ctx.createRadialGradient(dotX, dotY, 0, dotX, dotY, haloR)
+      halo.addColorStop(0, 'rgba(0, 8, 4, 0.5)')
+      halo.addColorStop(0.55, 'rgba(0, 6, 3, 0.3)')
+      halo.addColorStop(1, 'rgba(0, 0, 0, 0)')
+      ctx.fillStyle = halo
+      ctx.beginPath(); ctx.arc(dotX, dotY, haloR, 0, Math.PI * 2); ctx.fill()
+    }
+
     if (timer <= 0) {
       // Bounce effect — check if this slot has an active ready flash (in shockwave phase)
       let bounce = 1.0
@@ -8460,6 +8681,10 @@ function drawPlayer(player: Player): void {
       }
       // Ready — green dot with radial-gradient body, swimming inner sparks, beat-pulsing core
       const dotR = 11.87 * bounce
+      // Dark backing disc — the green bead sits on dark (not on gold noise); the margin past the
+      // body also forms the dark outer ring of the two-tone "target" edge.
+      ctx.beginPath(); ctx.arc(dotX, dotY, dotR + 2.5, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)'; ctx.fill()
       // D: Radial gradient body — bright center, slightly darker edge (glowing bead look)
       const bodyGrad = ctx.createRadialGradient(dotX, dotY, 0, dotX, dotY, dotR)
       if (bounce > 1.1) {
@@ -8473,23 +8698,26 @@ function drawPlayer(player: Player): void {
       ctx.arc(dotX, dotY, dotR, 0, Math.PI * 2)
       ctx.fillStyle = bodyGrad
       ctx.fill()
-      // White-hot core pulse on top
-      const coreR = dotR * (0.45 + globalBeatPulse * 1.65)
-      const coreAlpha = 0.55 + globalBeatPulse * 0.45
+      // White-hot core — static now (no beat growth; the dark backing gives enough contrast).
+      const coreR = dotR * 0.5
+      const coreAlpha = 0.7
       ctx.beginPath()
       ctx.arc(dotX, dotY, coreR, 0, Math.PI * 2)
       ctx.fillStyle = `rgba(170, 255, 190, ${coreAlpha})`
       ctx.fill()
-      ctx.strokeStyle = 'rgba(100, 255, 120, 0.6)'
-      ctx.lineWidth = 1.5
+      // Bright inner rim — two-tone with the dark backing margin = a crisp edge on any background.
+      ctx.strokeStyle = 'rgba(190, 255, 205, 0.95)'
+      ctx.lineWidth = 1.6
       ctx.stroke()
     } else {
       // Charging — bright white pie on dark backing (NOT green — green = ready)
       const fill = 1 - (timer / (player.dashChargeTime * player.modifiers.dashChargeMult))
       const pieR = 11.87   // 10.32 * 1.15 — 15% bigger than the ready dot for visibility
+      // Dark backing disc — extends past the pie so there's a dark ring around the white (contrast
+      // + the dark outer edge of the two-tone target).
       ctx.beginPath()
-      ctx.arc(dotX, dotY, pieR, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.55)'
+      ctx.arc(dotX, dotY, pieR + 2.5, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'
       ctx.fill()
       if (fill > 0) {
         ctx.beginPath()
@@ -9184,32 +9412,33 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     enemy.pendingHeal = 0
     enemy.healAmount = Math.max(enemy.healAmount, gained)
     enemy.healFlash = HEAL_PULSE_DURATION
-    // Scale the whole burst to the enemy's size relative to the player, so a small enemy looks
-    // exactly like the player heal and a big one scales up proportionally (instead of tiny motes
-    // stranded near the center). Clamped so extremes stay sane. PARENT-ATTACHED to the enemy (like
-    // the player burst rides the player) so the sparkles emanate from the body and rise WITH it.
+    // Match the PLAYER heal's relaxed round feel on enemies of any size: keep the SAME slow speed +
+    // gentle upward drift (NOT scaled by size — scaling speed is what made big enemies spray sharp
+    // spikes). Only the spawn spread (dist), particle SIZE, and COUNT scale with the body, so a big
+    // enemy gets a fuller, bigger cloud — still slow and round, not a fast burst. `sizeMult` is mild.
     const s = Math.max(0.6, Math.min(2.5, r / Math.max(1, player.hitRadius)))
-    const sparkCount = Math.min(30, 8 + Math.round(gained * 5))
+    const sizeMult = Math.max(0.8, Math.min(1.8, s))
+    const sparkCount = Math.min(40, 8 + Math.round(gained * 5) + Math.round((s - 1) * 8))
     for (let i = 0; i < sparkCount; i++) {
       const a = (i / sparkCount) * Math.PI * 2 + Math.random() * 0.4
-      const spd = (55 + Math.random() * 90) * s                 // SLOW = floaty (same as player heal)
-      const dist = r * (0.3 + Math.random() * 0.5)
+      const spd = 75 + Math.random() * 110                      // gentle outward drift (still floaty)
+      const dist = r * (0.55 + Math.random() * 0.75)            // spawn out to the body edge + beyond
       spawnParticleAttached(
         enemy.x + Math.cos(a) * dist, enemy.y + Math.sin(a) * dist,
-        Math.cos(a) * spd, Math.sin(a) * spd - 55 * s,          // strong upward drift = benevolent rise
-        255, 235, 170,                                          // warm gold body
-        0.75 + Math.random() * 0.55, (3.6 + Math.random() * 3.2) * s,   // long-lived + big = round, floaty glow
-        255, 200, 90,                                           // gold glow tint → gold halo bloom
+        Math.cos(a) * spd, Math.sin(a) * spd - 55,             // drift outward + gentle upward rise
+        255, 245, 215,                                          // bright white-gold body
+        0.75 + Math.random() * 0.55, (3.6 + Math.random() * 3.2) * sizeMult,   // big, round, floaty glow
+        255, 232, 180,                                          // pale-gold glow tint → white-gold halo
         enemy, 0, false, true)                                  // belowEnemies → render UNDER the body
     }
     // White-gold twinkle highlights drifting up from the center (same as the player heal burst)
-    const hotCount = Math.min(6, 2 + Math.round(gained))
+    const hotCount = Math.min(7, 2 + Math.round(gained) + Math.round((s - 1) * 2))
     for (let i = 0; i < hotCount; i++) {
       const a = Math.random() * Math.PI * 2
-      const spd = (65 + Math.random() * 100) * s
-      spawnParticleAttached(enemy.x, enemy.y, Math.cos(a) * spd, Math.sin(a) * spd - 45 * s,
-        255, 250, 225, 0.55 + Math.random() * 0.35, (2.4 + Math.random() * 2.2) * s,
-        255, 225, 150, enemy, 0, false, true)
+      const spd = 65 + Math.random() * 100
+      spawnParticleAttached(enemy.x, enemy.y, Math.cos(a) * spd, Math.sin(a) * spd - 45,
+        255, 252, 238, 0.55 + Math.random() * 0.35, (2.4 + Math.random() * 2.2) * sizeMult,
+        255, 242, 205, enemy, 0, false, true)
     }
   }
   if (enemy.healFlash > 0) {
@@ -9248,20 +9477,20 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     const prevComp = ctx.globalCompositeOperation
     ctx.globalCompositeOperation = 'lighter'
     const innerGrad = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
-    innerGrad.addColorStop(0,   `rgba(255, 240, 180, ${baseA * 0.30})`)
-    innerGrad.addColorStop(0.5, `rgba(255, 215, 110, ${baseA * 0.35})`)
-    innerGrad.addColorStop(1,   `rgba(255, 180, 60, ${baseA * 0.12})`)
+    innerGrad.addColorStop(0,   `rgba(255, 248, 218, ${baseA * 0.30})`)
+    innerGrad.addColorStop(0.5, `rgba(255, 238, 188, ${baseA * 0.35})`)
+    innerGrad.addColorStop(1,   `rgba(255, 226, 158, ${baseA * 0.12})`)
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
     ctx.fillStyle = innerGrad
     ctx.fill()
     const haloR = r * 1.85
     const haloGrad = ctx.createRadialGradient(sx, sy, r * 0.85, sx, sy, haloR)
-    haloGrad.addColorStop(0,    'rgba(255, 235, 150, 0)')
-    haloGrad.addColorStop(0.35, `rgba(255, 230, 150, ${baseA * 0.32})`)
-    haloGrad.addColorStop(0.55, `rgba(255, 215, 120, ${baseA * 0.42})`)
-    haloGrad.addColorStop(0.80, `rgba(255, 195, 80, ${baseA * 0.16})`)
-    haloGrad.addColorStop(1,    'rgba(255, 180, 60, 0)')
+    haloGrad.addColorStop(0,    'rgba(255, 246, 205, 0)')
+    haloGrad.addColorStop(0.35, `rgba(255, 244, 200, ${baseA * 0.32})`)
+    haloGrad.addColorStop(0.55, `rgba(255, 240, 192, ${baseA * 0.42})`)
+    haloGrad.addColorStop(0.80, `rgba(255, 230, 170, ${baseA * 0.16})`)
+    haloGrad.addColorStop(1,    'rgba(255, 226, 158, 0)')
     ctx.beginPath()
     ctx.arc(sx, sy, haloR, 0, Math.PI * 2)
     ctx.fillStyle = haloGrad
@@ -10095,7 +10324,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
     ctx.beginPath()
     ctx.arc(sx, sy, r, 0, Math.PI * 2)
     ctx.fillStyle = heal
-      ? `rgba(255, 215, 130, ${0.12 + vPulse * 0.15})`
+      ? `rgba(255, 240, 200, ${0.12 + vPulse * 0.15})`
       : `rgba(255, 100, 0, ${0.12 + vPulse * 0.15})`
     ctx.fill()
 
@@ -10112,9 +10341,9 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         // (same palette as the heal bullet's in-flight motes), drifting up off the body.
         spawnParticle(px, py,
           (Math.random() - 0.5) * 16, -25 - Math.random() * 35,
-          255, 240 + Math.floor(tint * 15), 210 + Math.floor(tint * 45),
+          255, 246 + Math.floor(tint * 9), 218 + Math.floor(tint * 30),
           0.2 + Math.random() * 0.15, (4.95 + Math.random() * 4.14) * fireScale,
-          0, 255, 230, 170)
+          0, 255, 235, 188)
       } else {
         spawnParticle(px, py,
           (Math.random() - 0.5) * 20, -25 - Math.random() * 35,

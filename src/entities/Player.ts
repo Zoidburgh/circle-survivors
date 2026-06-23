@@ -86,6 +86,10 @@ export interface Player {
   overheal: number      // temporary extra HP from a heal that overflowed maxHp — soaks incoming damage
   overhealTimer: number // for a brief window then decays. Lets a heal fully absorb a same-beat hit at
                         // full HP (net 0) instead of being wasted.
+  speedBoostTimer: number // seconds left on the heal-at-full SPEED BURST (decays to 0 over 2s).
+  speedBoostCount: number // overheal hearts banked in the active window (1–3); resets when it decays.
+  speedBoostPeak: number  // peak move-speed bonus for this burst: 1.0/1.5/2.0 (= +100/150/200%), which
+                          // the timer decays from. Drives the gold afterimage trail + scales the visual.
   dashTimer: number
   dashDirX: number
   dashDirY: number
@@ -179,6 +183,9 @@ export function createPlayer(x: number, y: number): Player {
     pendingHurt: 0,
     overheal: 0,
     overhealTimer: 0,
+    speedBoostTimer: 0,
+    speedBoostCount: 0,
+    speedBoostPeak: 0,
     dashTimer: -1,
     dashDirX: 0,
     dashDirY: 0,
@@ -236,6 +243,8 @@ export function resetPlayer(player: Player): void {
   player.facingAngle = 0
   player.attackTimer = -1
   player.hitFlash = 0
+  player.overheal = 0; player.overhealTimer = 0
+  player.speedBoostTimer = 0; player.speedBoostCount = 0; player.speedBoostPeak = 0
   player.dashTimer = -1
   player.dashDirX = 0
   player.dashDirY = 0
@@ -294,6 +303,14 @@ const DAMAGE_COOLDOWN = 0.1  // seconds of immunity after taking a hit
 const OVERHEAL_MAX = 2
 const OVERHEAL_WINDOW = 0.1   // seconds
 
+// Heal-at-full SPEED BOOST — collecting overheal hearts grants a BURST of move speed that decays to
+// 0 over 2s. Each overheal heart collected within the active window adds to a count (at-once OR
+// chained): 1 → +100%, 2 → +150%, 3+ → +200% (max). The count resets when the boost fully decays.
+export const SPEED_BOOST_DURATION = 2.0   // seconds
+export const SPEED_BOOST_BASE = 1.0       // +100% for the first overheal
+export const SPEED_BOOST_PER_EXTRA = 0.5  // +50% per extra overheal (at once or chained)
+export const SPEED_BOOST_MAX_COUNT = 3    // cap → max +200%
+
 export function hurtPlayer(player: Player, amount: number): boolean {
   if (player.damageCooldown > 0) return false
   // Echo Step recall traversal — player is mid-warp, completely invulnerable. Mirrors
@@ -323,7 +340,7 @@ export function hurtPlayer(player: Player, amount: number): boolean {
     if (amount <= 0) return true
   }
 
-  // No shield — take HP damage
+  // No shield — take HP damage.
   const before = player.hp
   player.hp -= amount
   if (player.hp <= 0) player.hp = 0
@@ -355,8 +372,15 @@ export function healPlayer(player: Player, amount: number): number {
   if (overflow > 0) {
     player.overheal = Math.min(player.overheal + overflow, OVERHEAL_MAX)
     player.overhealTimer = OVERHEAL_WINDOW
+    // Overheal → grow the speed-burst count (only ever rises within a window; resets after it decays
+    // in updatePlayer), recompute the peak, and refresh the timer. Counting overflow (not hearts)
+    // means a partly-healing grab only counts the part that overflowed. Same path for at-once (several
+    // healPlayer calls one frame) and chaining (more collected before the boost fades).
+    player.speedBoostCount = Math.min(SPEED_BOOST_MAX_COUNT, player.speedBoostCount + overflow)
+    player.speedBoostPeak = SPEED_BOOST_BASE + SPEED_BOOST_PER_EXTRA * (player.speedBoostCount - 1)
+    player.speedBoostTimer = SPEED_BOOST_DURATION
   }
-  player.pendingHeal += amount   // gold pulse for the whole heal (real gain + overheal buffer)
+  player.pendingHeal += gained   // normal heal pulse only for HP actually restored (0 at full → none)
   return gained
 }
 
@@ -365,6 +389,10 @@ export function updatePlayer(player: Player, dt: number): void {
   if (player.overhealTimer > 0) {
     player.overhealTimer -= dt
     if (player.overhealTimer <= 0) { player.overhealTimer = 0; player.overheal = 0 }
+  }
+  if (player.speedBoostTimer > 0) {
+    player.speedBoostTimer -= dt
+    if (player.speedBoostTimer <= 0) { player.speedBoostTimer = 0; player.speedBoostCount = 0; player.speedBoostPeak = 0 }
   }
   if (player.damageCooldown > 0) player.damageCooldown -= dt
   if (player.shieldBreakFlash > 0) player.shieldBreakFlash -= dt
@@ -436,7 +464,11 @@ export function updatePlayer(player: Player, dt: number): void {
         // live in modifiers.dashDistanceMult; Slipstream's chain bonus sits in dashChainBoost.
         // Compounding them means each upgrade keeps its full proportional effect on the others.
         distanceMult: player.modifiers.dashDistanceMult * player.dashChainBoost,
-        speedMult: player.modifiers.speedMult,
+        // Move-speed bonuses (Swift + the heal-at-full burst) apply at HALF strength to the dash, so
+        // the dash extends but not as dramatically as walking. Half of each BONUS (the part above 1×),
+        // multiplied together; Long Dash (distanceMult) is separate and unaffected.
+        speedMult: (1 + (player.modifiers.speedMult - 1) * 0.5)
+                   * (1 + player.speedBoostPeak * (player.speedBoostTimer / SPEED_BOOST_DURATION) * 0.5),
         // Pivot — aggressive mid-dash steering so the dash can carve curves instead of
         // committing to a straight lunge. 12× steers ~96% toward input per frame at 60fps (4
         // substeps × 55% each), so direction snaps to WASD nearly instantly. useAngleSteer
@@ -453,8 +485,11 @@ export function updatePlayer(player: Player, dt: number): void {
   } else {
     const dir = Input.getMovementDir()
     if (dir.x !== 0 || dir.y !== 0) {
-      player.x += dir.x * player.speed * player.modifiers.speedMult * dt
-      player.y += dir.y * player.speed * player.modifiers.speedMult * dt
+      // Heal-at-full speed boost — a burst that decays with the timer from its peak (+100/150/200%),
+      // multiplicative on top of speed upgrades so it stacks naturally.
+      const boostMult = 1 + player.speedBoostPeak * (player.speedBoostTimer / SPEED_BOOST_DURATION)
+      player.x += dir.x * player.speed * player.modifiers.speedMult * boostMult * dt
+      player.y += dir.y * player.speed * player.modifiers.speedMult * boostMult * dt
       player.facingAngle = Math.atan2(dir.y, dir.x)
     }
   }

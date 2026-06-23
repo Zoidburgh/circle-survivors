@@ -303,9 +303,9 @@ export function initHitDetection(): void {
           // Absorb stream from orb to enemy
           const isHP = orb.orbType === 'hp'
           const absR = isHP ? 255 : 150
-          const absG = isHP ? 140 : 255
-          const absB = isHP ? 140 : 200
-          addAbsorbEffect(orb.x, orb.y, absR, absG, absB, enemy.x, enemy.y)
+          const absG = isHP ? 222 : 255
+          const absB = isHP ? 150 : 200
+          addAbsorbEffect(orb.x, orb.y, absR, absG, absB, enemy.x, enemy.y, enemy)
         }
       }
       } // end origins loop

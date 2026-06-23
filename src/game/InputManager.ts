@@ -34,7 +34,9 @@ export function init(canvas: HTMLCanvasElement): void {
     e.preventDefault()
     inputMode = 'keyboard'
     keysDown.add(e.key.toLowerCase())
-    if (e.key === ' ') { spacePressed = true; spaceConsumed = false }
+    // Only a FRESH press arms a dash — ignore OS key auto-repeat (e.repeat), which would otherwise
+    // re-arm consumeSpace() every repeat tick and chain-dash while you simply hold space.
+    if (e.key === ' ' && !e.repeat) { spacePressed = true; spaceConsumed = false }
   })
   window.addEventListener('keyup', e => {
     keysDown.delete(e.key.toLowerCase())

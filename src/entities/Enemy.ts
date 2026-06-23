@@ -1223,14 +1223,20 @@ export const DEATH_DURATION = 0.3
 /** Spawn all drops for a killed enemy — handles count, proportions, and cluster positioning */
 export function spawnDrops(enemy: Enemy, orbValue: number, spawnOrb: (x: number, y: number, value: number, type: 'xp' | 'hp') => void): void {
   const count = enemy.dropCount
+  // Cluster around the PINNED death spot (deathX/deathY captured at the kill) when dying, so the
+  // hearts stay centered on the death animation instead of the post-death snapped/advanced position
+  // (which shoved them in the bouncer's movement direction). Non-death spawns (shrines) use live pos.
+  const cx = enemy.dying ? enemy.deathX : enemy.x
+  const cy = enemy.dying ? enemy.deathY : enemy.y
   for (let i = 0; i < count; i++) {
     const drop = rollDrop(enemy)
     if (!drop) continue
-    // Cluster offset — spiral outward from enemy center
+    // Cluster offset — evenly-spaced ring at a roughly fixed radius (symmetric, stays centered on the
+    // death spot) rather than an outward spiral whose growing radius read as lopsided/pushed.
     const angle = (i / count) * Math.PI * 2 + Math.random() * 0.3
-    const dist = count > 1 ? 8 + (i / count) * 12 : 0
-    const ox = enemy.x + Math.cos(angle) * dist
-    const oy = enemy.y + Math.sin(angle) * dist
+    const dist = count > 1 ? 11 + Math.random() * 5 : 0
+    const ox = cx + Math.cos(angle) * dist
+    const oy = cy + Math.sin(angle) * dist
     spawnOrb(ox, oy, orbValue, drop)
   }
 }
