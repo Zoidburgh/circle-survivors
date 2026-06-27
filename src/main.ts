@@ -16,7 +16,7 @@ import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryTex
 import { setVolume } from './audio/AudioEngine.ts'
 import { submitScore, isNameClean, fetchOnlineScores } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
-import { setArenaShape, getArenaShape, clampToArena, setWalls } from './game/Arena.ts'
+import { setArenaShape, setPolygonSides, getArenaShape, clampToArena, setWalls } from './game/Arena.ts'
 import type { ArenaShape } from './game/Arena.ts'
 import { setPattern, getPattern } from './audio/PatternClock.ts'
 import { SONG_DEFAULT } from './audio/SongPatterns.ts'
@@ -93,7 +93,13 @@ setLeaderboardUrl('https://beatback-leaderboard.pohling777.workers.dev')
 
 let lastChallenge: Challenge | null = null
 
-import { setActiveChallenge, getActiveChallenge, getChallenges, getChallengeArena } from './game/ChallengeBuilder.ts'
+import { setActiveChallenge, getActiveChallenge, getChallenges, getChallengeArena, getChallengePolygonSides } from './game/ChallengeBuilder.ts'
+
+// Apply an arena shape to the live game, including the N-gon side count when shape is 'polygon'.
+function applyArena(shape: ArenaShape, sides: number): void {
+  setArenaShape(shape)
+  if (shape === 'polygon') setPolygonSides(sides)
+}
 import * as ChallengeBuilderMod from './game/ChallengeBuilder.ts'
 
 function launchTestPlay(): void {
@@ -105,7 +111,7 @@ function launchTestPlay(): void {
   const arena = getChallengeArena()
   ensureAudio()
   resetGameState('playing')
-  setArenaShape(arena as ArenaShape)
+  applyArena(arena as ArenaShape, getChallengePolygonSides())
   for (const ce of placements) {
     const type = ENEMY_TYPES.find(t => t.name === ce.typeName)
     if (type) getEnemies().push(createEnemy(ce.x, ce.y, type))
@@ -121,7 +127,7 @@ function returnFromRun(): void {
     resetGameState('designer')
     enterDesigner(prevReturn)
     setActiveChallenge(null)   // designer doesn't run a challenge — clear so toasts don't fire
-    setArenaShape(getChallengeArena() as ArenaShape)
+    applyArena(getChallengeArena() as ArenaShape, getChallengePolygonSides())
     const p = getPlayer()
     const c = clampToArena(p.x, p.y, p.hitRadius)
     p.x = c.x; p.y = c.y
@@ -139,7 +145,7 @@ function launchChallenge(ch: Challenge): void {
   Audio.switchBeat(0)
   resetGameState()
   resetVictoryScroll()
-  setArenaShape(ch.arenaShape as any)
+  applyArena(ch.arenaShape as ArenaShape, ch.polygonSides ?? 8)
   setWalls((ch.walls ?? []).map(w => ({ ...w })))
   console.log('Launch challenge:', ch.name, 'enemies:', ch.enemies.map(e => e.typeName), 'ENEMY_TYPES:', ENEMY_TYPES.map(t => t.name))
   for (const ce of ch.enemies) {
@@ -171,7 +177,7 @@ function restartChallenge(): void {
   if (!lastChallenge) return
   challengeRetries++
   resetGameState()
-  setArenaShape(lastChallenge.arenaShape as any)
+  applyArena(lastChallenge.arenaShape as ArenaShape, lastChallenge.polygonSides ?? 8)
   setWalls((lastChallenge.walls ?? []).map(w => ({ ...w })))
   for (const ce of lastChallenge.enemies) {
     const type = ENEMY_TYPES.find(t => t.name === ce.typeName)
@@ -201,7 +207,7 @@ onStartChallenge((ch: Challenge) => {
   ensureAudio()
   Audio.switchBeat(0)
   resetGameState()
-  setArenaShape(ch.arenaShape as any)
+  applyArena(ch.arenaShape as ArenaShape, ch.polygonSides ?? 8)
   // Spawn all challenge enemies
   console.log('Starting challenge:', ch.name, 'enemies:', ch.enemies.length, 'types available:', ENEMY_TYPES.map(t => t.name))
   for (const ce of ch.enemies) {
@@ -270,7 +276,7 @@ window.addEventListener('keydown', e => {
     if (getPhase() !== 'playing' && getPhase() !== 'entering_name') {
       if (!audioStarted) { ensureAudio(); Audio.switchBeat(0) }
       setDesignerPrevArenaShape(getArenaShape())
-      setArenaShape(getChallengeArena() as ArenaShape)
+      applyArena(getChallengeArena() as ArenaShape, getChallengePolygonSides())
       const p = getPlayer()
       const c = clampToArena(p.x, p.y, p.hitRadius)
       p.x = c.x; p.y = c.y

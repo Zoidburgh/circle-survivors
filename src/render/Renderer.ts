@@ -10,7 +10,7 @@ import { complementColor, staccatoProgress, STACCATO_LEAD } from '../utils/math.
 import { getPattern, getLoopPosition, getLoopLength, getAbsoluteBeats } from '../audio/PatternClock.ts'
 import { getPreviewEnemy } from '../game/EnemyDesigner.ts'
 import type { Camera, Wall } from '../game/Arena.ts'
-import { ARENA_W, ARENA_H, ARENA_RADIUS, ARENA_CX, ARENA_CY, PILL_R, PILL_HALF_W, CROSS_HW, CROSS_HE, getArenaShape, getHexVertices, getCrossVertices, getWalls, computeWallArc, resetWallsToRest, getWallSnapPoints, WALL_DEATH_DURATION_MS } from '../game/Arena.ts'
+import { ARENA_W, ARENA_H, ARENA_RADIUS, ARENA_CX, ARENA_CY, PILL_R, PILL_HALF_W, CROSS_HW, CROSS_HE, getArenaShape, getHexVertices, getPolygonVertices, getPolygonSides, getCrossVertices, getWalls, computeWallArc, resetWallsToRest, getWallSnapPoints, WALL_DEATH_DURATION_MS } from '../game/Arena.ts'
 import { getBlockedArcs } from '../game/RingOcclusion.ts'
 import { getRitualGroups, getActiveIndex } from '../game/RitualNodes.ts'
 import { isPlaceMode, getPlacingEnemies, getSelectedPlacement, getChallenges, getActiveChallenge, getWallDrag, getWallThickness, getPlaceTool, getHoveredWallIdx, getHoveredEnemyIdx, getSelectedWallIdx, getEndpointDrag, getWallCurveHandle, getPlacingPrefab, getPrefabCursor, getPrefabRotation, getSelectedWallPivotWorld, isPivotSetMode } from '../game/ChallengeBuilder.ts'
@@ -30,6 +30,10 @@ import {
   PLAYER_RADIUS,
   MAX_RING_RADIUS,
   PARTICLE_CAP,
+  BEAT_DASH_RADIUS_MULT,
+  PARTICLE_LOD_SOFT,
+  PARTICLE_LOD_HARD,
+  PARTICLE_LOD_FLOOR,
   ARENA_BUFFER,
   HIT_FLASH_DURATION,
   SHIELD_ORBIT_RADIUS_OFFSET,
@@ -137,6 +141,15 @@ function makeBlankParticle(): Particle {
 }
 const particles: Particle[] = Array.from({ length: MAX_PARTICLES }, makeBlankParticle)
 let particleCount = 0   // # of live particles, packed at the front of `particles`
+let frameTick = 0       // increments once per render frame — used for frame-by-frame strobe effects
+// ── Render diagnostics (dev-only) — per-frame tallies to SEE why ring shards go missing in the
+// finale: how many shards a ring asks for vs how many the full pool drops, the pool level at the
+// moment a ring peaks, and tether-slash drops. Reset at render start, emitted to the overlay's
+// counts panel before perfFlush. Answers "throttling or logic?" directly.
+let dbgRingReq = 0      // ring-circumference shards requested this frame (all rings)
+let dbgRingDrop = 0     // ...of those, dropped because the pool was full
+let dbgPoolAtPeak = 0   // particleCount the instant a ring hit its shard-spawn (last ring wins)
+let dbgSlashDrop = 0    // tether slash shards dropped because the pool was full
 let lastDt = 0.016
 let borderWaveIntensity = 0
 // Spike-on-trigger from triggerBeatDashConfirm to make the arena border pulse + waveform
@@ -503,6 +516,21 @@ let perfCountDisplay: Record<string, number> = {}
 let perfFrames = 0
 let perfLastFlushTs = 0   // for FRAME_REAL (true wall-clock frame period — catches GC stalls)
 let lastTickJsMs = 0      // for TICK_JS — TOTAL per-frame JS (update+render+loop), set by GameLoop
+// Spike/attribution additions: per-label MAX over the window (the felt drop is a spike, not the
+// average), avg of the frame-level derived metrics, the update-step count (catch-up spirals), the
+// current phase string (tags each CSV row so shared section labels stay split by mode), and a
+// captured "worst frame" breakdown so a hitch's source can be read after the fact.
+let perfMaxAccum: Record<string, number> = {}
+let perfMaxDisplay: Record<string, number> = {}
+let perfDerivedAccum: Record<string, number> = {}
+let perfDerivedDisplay: Record<string, number> = {}
+let perfUpdateSteps = 0
+let perfCurPhase = ''
+let perfWorstWin: { frameMs: number; row: Record<string, number>; phase: string } | null = null
+let perfWorstDisplay: { frameMs: number; row: Record<string, number>; phase: string } | null = null
+let perfWorstFrames = 0
+const PERF_WORST_WINDOW = 180   // refresh the "worst frame" panel ~every 3s so a spike lingers long enough to read
+const PERF_DERIVED_KEYS = ['FRAME_REAL', 'TICK_JS', 'unacc_js', 'non_js', 'update_steps', 'u_unacc']
 
 export function perfStart(label: string): void {
   if (!__DEV__) return
@@ -538,6 +566,18 @@ export function recordTickJs(ms: number): void {
   if (!__DEV__) return
   lastTickJsMs = ms
 }
+// Called once per fixed update step (by GameManager) so a catch-up spiral — N updates in one
+// render frame — shows up as `update_steps` instead of silently inflating U_TOTAL.
+export function perfStep(): void {
+  if (!__DEV__) return
+  perfUpdateSteps++
+}
+// Tag the current game phase so shared section labels (e.g. `tethers`) can be split by mode in
+// the exported CSV. One mode runs per frame, so the tag fully disambiguates the row.
+export function perfSetPhase(phase: string): void {
+  if (!__DEV__) return
+  perfCurPhase = phase
+}
 const perfFrame: Record<string, number> = {}
 
 function perfFlush(): void {
@@ -552,15 +592,57 @@ function perfFlush(): void {
   if (perfLastFlushTs > 0) snapshot['FRAME_REAL'] = nowTs - perfLastFlushTs
   perfLastFlushTs = nowTs
   snapshot['TICK_JS'] = lastTickJsMs   // total JS this frame; FRAME_REAL - TICK_JS = GPU/compositor
+  snapshot['update_steps'] = perfUpdateSteps
+  perfUpdateSteps = 0
   for (const k of Object.keys(perfAccum)) {
     snapshot[k] = (perfAccum[k] ?? 0) - (perfFrame[k] ?? 0)
     perfFrame[k] = perfAccum[k] ?? 0
   }
+  // Derived attribution rows — make every frame fully accountable at a glance:
+  //   unacc_js = JS this frame NOT inside any timed total → GC / allocation / untimed code.
+  //   non_js   = wall-clock not spent in JS at all        → GPU paint / compositor / vsync idle.
+  // updTotal = whichever update path ran (only one of U/D/PHASE does per frame).
+  const updTotal = (snapshot['U_TOTAL'] ?? 0) + (snapshot['D_TOTAL'] ?? 0) + (snapshot['PHASE_UPD'] ?? 0)
+  const rTotal = snapshot['R_TOTAL'] ?? 0
+  snapshot['unacc_js'] = Math.max(0, (snapshot['TICK_JS'] ?? 0) - updTotal - rTotal)
+  snapshot['non_js'] = Math.max(0, (snapshot['FRAME_REAL'] ?? 0) - (snapshot['TICK_JS'] ?? 0))
+  // u_unacc = code INSIDE the update path not covered by a u_* child (toasts, walls, zones,
+  // revenge, win-check…). Distinct from unacc_js (which is GC + code outside the totals). Sum the
+  // u_* section deltas, then subtract from whichever update total ran. Match exactly 'u_' (char
+  // 117,95) so 'unacc_js'/'update_steps'/'U_TOTAL' are excluded.
+  let uChildren = 0
+  for (const k of Object.keys(snapshot)) {
+    if (k.charCodeAt(0) === 117 && k.charCodeAt(1) === 95) uChildren += snapshot[k]!
+  }
+  snapshot['u_unacc'] = Math.max(0, (snapshot['U_TOTAL'] ?? 0) + (snapshot['D_TOTAL'] ?? 0) - uChildren)
   // Fold live entity counts into the row (prefixed '#') so the CSV can correlate cost with
   // load — e.g. whether `particles` tracks `#bullets`, or the pool (`#particles`) is saturated.
   for (const k of Object.keys(perfCountAccum)) snapshot['#' + k] = perfCountAccum[k]!
   perfLog.push(snapshot)
-  if (perfLog.length > MAX_LOG_FRAMES) perfLog.shift()
+  perfLogPhase.push(perfCurPhase)
+  if (perfLog.length > MAX_LOG_FRAMES) { perfLog.shift(); perfLogPhase.shift() }
+
+  // Accumulate the frame-level derived metrics for their own averaged display row.
+  for (const k of PERF_DERIVED_KEYS) perfDerivedAccum[k] = (perfDerivedAccum[k] ?? 0) + (snapshot[k] ?? 0)
+  // Per-label MAX over the window — surfaces spikes the 30-frame average smooths away.
+  for (const k of Object.keys(snapshot)) {
+    if (k.charCodeAt(0) === 35) continue   // skip '#' count columns
+    const v = snapshot[k]!
+    if (v > (perfMaxAccum[k] ?? 0)) perfMaxAccum[k] = v
+  }
+  // Worst-frame capture — keep the highest-FRAME_REAL frame's full breakdown so the source of a
+  // hitch can be read after it happens. Rolls over every PERF_WORST_WINDOW frames so it tracks
+  // RECENT spikes rather than the session's all-time worst.
+  const frameMs = snapshot['FRAME_REAL'] ?? 0
+  if (!perfWorstWin || frameMs > perfWorstWin.frameMs) {
+    perfWorstWin = { frameMs, row: { ...snapshot }, phase: perfCurPhase }
+  }
+  perfWorstFrames++
+  if (perfWorstFrames >= PERF_WORST_WINDOW) {
+    if (perfWorstWin) perfWorstDisplay = perfWorstWin
+    perfWorstWin = null
+    perfWorstFrames = 0
+  }
 
   perfFrames++
   if (perfFrames >= 30) {   // refresh the on-screen readout ~2×/sec
@@ -568,19 +650,27 @@ function perfFlush(): void {
     const disp: Record<string, number> = {}
     for (const k of Object.keys(perfAccum)) disp[k] = perfAccum[k]! * inv   // avg ms/frame
     perfDisplay = disp
+    perfMaxDisplay = { ...perfMaxAccum }
+    const derived: Record<string, number> = {}
+    for (const k of PERF_DERIVED_KEYS) derived[k] = (perfDerivedAccum[k] ?? 0) * inv
+    perfDerivedDisplay = derived
     perfCountDisplay = { ...perfCountAccum }
     for (const k of Object.keys(perfAccum)) {
       perfAccum[k] = 0
       perfFrame[k] = 0
     }
+    perfMaxAccum = {}
+    perfDerivedAccum = {}
     perfFrames = 0
   }
 }
 export function getPerfDisplay(): Record<string, number> { return perfDisplay }
 export function getPerfCounts(): Record<string, number> { return perfCountDisplay }
 
-// Perf log — stores per-frame snapshots for export
+// Perf log — stores per-frame snapshots for export. perfLogPhase is a parallel array of the phase
+// string for each frame (kept separate so perfLog stays a clean numeric map).
 const perfLog: Record<string, number>[] = []
+const perfLogPhase: string[] = []
 const MAX_LOG_FRAMES = 1800  // ~30s at 60fps / ~12s at 150fps — long enough to catch a brief drop
 
 export function exportPerfLog(): void {
@@ -589,12 +679,15 @@ export function exportPerfLog(): void {
   // would misalign the CSV. Totals first, then the rest alphabetised, for a stable layout.
   const keySet = new Set<string>()
   for (const row of perfLog) for (const k of Object.keys(row)) keySet.add(k)
-  const totals = ['U_TOTAL', 'R_TOTAL'].filter(k => keySet.has(k))
-  const cols = [...totals, ...[...keySet].filter(k => k !== 'U_TOTAL' && k !== 'R_TOTAL').sort()]
-  const csv = ['frame,' + cols.join(',')]
+  // Headline columns first (whole-frame totals + the GC/GPU/steps attribution), then the rest
+  // alphabetised, so a hitch can be read left-to-right without hunting.
+  const pinned = ['U_TOTAL', 'D_TOTAL', 'PHASE_UPD', 'R_TOTAL', 'FRAME_REAL', 'TICK_JS', 'unacc_js', 'non_js', 'u_unacc', 'update_steps']
+  const totals = pinned.filter(k => keySet.has(k))
+  const cols = [...totals, ...[...keySet].filter(k => !pinned.includes(k)).sort()]
+  const csv = ['frame,phase,' + cols.join(',')]
   for (let i = 0; i < perfLog.length; i++) {
     const row = perfLog[i]!
-    csv.push(i + ',' + cols.map(k => (row[k] ?? 0).toFixed(3)).join(','))
+    csv.push(i + ',' + (perfLogPhase[i] ?? '') + ',' + cols.map(k => (row[k] ?? 0).toFixed(3)).join(','))
   }
   const blob = new Blob([csv.join('\n')], { type: 'text/csv' })
   const url = URL.createObjectURL(blob)
@@ -637,6 +730,11 @@ interface LightningBolt {
 }
 const lightningBolts: LightningBolt[] = []
 const MAX_BOLTS = 90
+// Shared spin applied to EVERY beat-dash bolt so the whole burst rotates together (layered ON TOP
+// of each strand's individual angularVel). One module clock → all live bolts read the same global
+// angle, so they swirl in unison rather than each doing its own thing.
+const LIGHTNING_GLOBAL_SPIN = 4.0   // rad/s — collective swirl rate
+let lightningSpinClock = 0
 
 function buildBoltPoints(angle: number, length: number): { x: number; y: number }[] {
   const SEGMENTS = 8
@@ -662,7 +760,9 @@ function spawnLightningBolt(enemy: Enemy, angle: number, length: number, scale: 
   lightningBolts.push({
     enemy, pts: buildBoltPoints(angle, length),
     lastX: enemy.x, lastY: enemy.y,
-    timer: 0, lifetime: 0.29 + Math.random() * 0.07, scale,
+    // Longer life than the AOE-center bolts so the lightning lingers + fades slower ON the enemies
+    // that got hit (was 0.29–0.36s).
+    timer: 0, lifetime: 0.5 + Math.random() * 0.12, scale,
     fadeOffset: -0.05 + Math.random() * 0.30,
     flickerSeed: Math.random() * 100,
     angularVel: (Math.random() - 0.5) * 11,  // ±~5.5 rad/s
@@ -684,6 +784,8 @@ function spawnStaticLightningBolt(x: number, y: number, angle: number, length: n
 }
 
 function updateAndDrawLightningBolts(dt: number): void {
+  lightningSpinClock += dt
+  const globalRot = lightningSpinClock * LIGHTNING_GLOBAL_SPIN   // shared angle — all bolts co-rotate
   for (let i = lightningBolts.length - 1; i >= 0; i--) {
     const b = lightningBolts[i]!
     b.timer += dt
@@ -716,8 +818,9 @@ function updateAndDrawLightningBolts(dt: number): void {
     // Static-origin bolts (enemy = null) keep their initial lastX/lastY untouched.
     if (b.enemy && b.enemy.alive && !b.enemy.dying) { b.lastX = b.enemy.x; b.lastY = b.enemy.y }
     const ax = b.lastX, ay = b.lastY
-    // Rotate the entire bolt around the enemy center over time.
-    const rot = b.timer * b.angularVel
+    // Rotate the bolt around its anchor — its own angularVel PLUS the shared global swirl, so each
+    // strand spins individually while the whole burst rotates together.
+    const rot = b.timer * b.angularVel + globalRot
     const cr = Math.cos(rot), sr = Math.sin(rot)
     const pts = b.pts
     const totalSegs = pts.length - 1
@@ -745,15 +848,15 @@ function updateAndDrawLightningBolts(dt: number): void {
     // breaking the warm yellow/white palette the way black would.
     ctx.lineCap = 'round'
     ctx.strokeStyle = `rgba(70, 8, 8, ${alpha * 0.7})`
-    ctx.lineWidth = 4.95 * b.scale * (0.7 + fadeT * 0.3) * 1.4
+    ctx.lineWidth = 6.2 * b.scale * (0.7 + fadeT * 0.3) * 1.4
     ctx.stroke()
     // Fat yellow glow — thickness scales with the originating enemy's size
     ctx.strokeStyle = `rgba(255, 200, 60, ${alpha * 0.9})`
-    ctx.lineWidth = 4.95 * b.scale * (0.7 + fadeT * 0.3)
+    ctx.lineWidth = 6.2 * b.scale * (0.7 + fadeT * 0.3)
     ctx.stroke()
     // Hot white core on top
     ctx.strokeStyle = `rgba(255, 255, 220, ${alpha})`
-    ctx.lineWidth = 1.54 * b.scale
+    ctx.lineWidth = 2.0 * b.scale
     ctx.stroke()
   }
   ctx.lineCap = 'butt'
@@ -807,21 +910,31 @@ function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
       ctx.globalCompositeOperation = 'lighter'
       ctx.lineCap = 'round'
       ctx.beginPath(); ctx.moveTo(sx1, sy1); ctx.lineTo(sx2, sy2)
-      ctx.strokeStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${beamA * 0.16})`
-      ctx.lineWidth = 11
+      ctx.strokeStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${beamA * 0.2})`
+      ctx.lineWidth = 13
       ctx.stroke()
       ctx.beginPath(); ctx.moveTo(sx1, sy1); ctx.lineTo(sx2, sy2)
-      ctx.strokeStyle = `rgba(${Math.min(255, fx.r + 60)}, ${Math.min(255, fx.g + 50)}, ${Math.min(255, fx.b + 50)}, ${beamA * 0.3})`
-      ctx.lineWidth = 3
+      ctx.strokeStyle = `rgba(${Math.min(255, fx.r + 60)}, ${Math.min(255, fx.g + 50)}, ${Math.min(255, fx.b + 50)}, ${beamA * 0.38})`
+      ctx.lineWidth = 3.8
       ctx.stroke()
       ctx.globalCompositeOperation = prevComp
     }
 
     // Chain orbs — count + spacing scale with distance so a long stream stays DENSE and continuous
     // instead of a few dots strung far apart.
-    const chainCount = Math.max(6, Math.min(16, 5 + Math.round(dist / 85)))
+    // More orbs at distance so a long stream stays DENSE/full instead of sparse. The expensive
+    // glow halo is capped at an absolute count below (not a fraction), so these extra distance orbs
+    // are just cheap cores + beams — fuller look, ~flat cost.
+    const chainCount = Math.max(9, Math.min(16, 5 + Math.round(dist / 70)))
     const spacing = 0.5 / chainCount
     ctx.lineCap = 'round'
+
+    // Perpendicular-to-travel unit vector — constant for the whole stream (origin/target don't
+    // move within one render call), so compute it ONCE here instead of per chain orb. perpLen is
+    // identical to `dist` (a 90° rotation preserves magnitude), so reuse the sqrt already taken.
+    const hasWave = dist > 1
+    const wnx = hasWave ? -ddy / dist : 0
+    const wny = hasWave ? ddx / dist : 0
 
     for (let c = 0; c < chainCount; c++) {
       const orbT = t - c * spacing
@@ -830,30 +943,30 @@ function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
       const orbLife = 1 - orbT
 
       // Sine wave perpendicular to travel direction
-      const perpX = -ddy, perpY = ddx
-      const perpLen = Math.sqrt(perpX * perpX + perpY * perpY)
-      const wave = perpLen > 1
+      const wave = hasWave
         ? Math.sin(orbT * 12 + c * 1.5) * 22 * orbLife * orbLife  // wave fades faster near target
         : 0
-      const wnx = perpLen > 1 ? perpX / perpLen : 0
-      const wny = perpLen > 1 ? perpY / perpLen : 0
 
       const orbX = sx1 + ddx * orbEase + wnx * wave
       const orbY = sy1 + ddy * orbEase + wny * wave
       // Size tapers from the leading orb back along the chain by FRACTION (so it stays sensible at
       // any chainCount), front ~22px → tail ~7px.
-      const orbSize = (22 - 15 * (c / chainCount)) * Math.max(orbLife, 0.15)
+      const orbSize = (25 - 16 * (c / chainCount)) * Math.max(orbLife, 0.15)
 
-      // Glow — bigger + brighter so the chain pops clearly even at distance
-      ctx.beginPath()
-      ctx.arc(orbX, orbY, orbSize + 22, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.32})`
-      ctx.fill()
+      // Glow — the big additive halo is the dominant fill-rate cost, so cap it at an ABSOLUTE count
+      // (not a fraction of chainCount). That bounds overdraw no matter how long/dense the stream
+      // gets; the extra distance orbs beyond this still draw cheap cores + beams to fill the gaps.
+      if (c < 9) {
+        ctx.beginPath()
+        ctx.arc(orbX, orbY, orbSize + 25, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.38})`
+        ctx.fill()
+      }
 
-      // Core — bumped from 0.6 → 0.85
+      // Core — bright bead
       ctx.beginPath()
       ctx.arc(orbX, orbY, Math.max(1, orbSize), 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${Math.min(255, fx.r + 80)}, ${Math.min(255, fx.g + 60)}, ${Math.min(255, fx.b + 60)}, ${orbLife * 0.85})`
+      ctx.fillStyle = `rgba(${Math.min(255, fx.r + 90)}, ${Math.min(255, fx.g + 70)}, ${Math.min(255, fx.b + 70)}, ${Math.min(1, orbLife * 0.92)})`
       ctx.fill()
 
       // Beam to next — bumped from 0.36 → 0.55
@@ -868,14 +981,14 @@ function updateAndDrawAbsorbEffects(dt: number, player: Player): void {
           ctx.beginPath()
           ctx.moveTo(orbX, orbY)
           ctx.lineTo(nextX, nextY)
-          ctx.strokeStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.55})`
-          ctx.lineWidth = 5 * orbLife
+          ctx.strokeStyle = `rgba(${fx.r}, ${fx.g}, ${fx.b}, ${orbLife * 0.63})`
+          ctx.lineWidth = 6 * orbLife
           ctx.stroke()
         }
       }
 
-      // Energy sparks along stream
-      if (Math.random() < 0.3) {
+      // Energy sparks along stream — trimmed rate (was 0.3) to cut pool churn from many streams.
+      if (Math.random() < 0.2) {
         const sparkSpeed = 15 + Math.random() * 25
         const sa = Math.random() * Math.PI * 2
         spawnParticle(
@@ -918,7 +1031,7 @@ export function addVolatileExplosion(x: number, y: number, range: number, r: num
 }
 
 export function spawnVolatileParticles(cx: number, cy: number, range: number, r: number, g: number, b: number): void {
-  const count = Math.min(56, Math.round(Math.sqrt(range) * 3.5))
+  const count = lodCount(Math.min(56, Math.round(Math.sqrt(range) * 3.5)))
   for (let i = 0; i < count; i++) {
     const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
     const dist = range * (0.3 + Math.random() * 0.7)
@@ -937,7 +1050,7 @@ export function spawnVolatileParticles(cx: number, cy: number, range: number, r:
       0.24 + Math.random() * 0.14, 9 + Math.random() * 7, spin)   // shortened so the big debris fade WITH the blast (no lingering stragglers)
   }
   // White-hot core flash particles — fast outward burst from center
-  const hotCount = Math.min(16, Math.round(range / 10))
+  const hotCount = lodCount(Math.min(16, Math.round(range / 10)))
   for (let i = 0; i < hotCount; i++) {
     const angle = Math.random() * Math.PI * 2
     const speed = 200 + Math.random() * 300
@@ -947,7 +1060,7 @@ export function spawnVolatileParticles(cx: number, cy: number, range: number, r:
       0.19 + Math.random() * 0.13, 4 + Math.random() * 3)
   }
   // Edge ring sparks — fast particles tracing the blast circumference
-  const edgeCount = Math.min(20, Math.round(range / 8))
+  const edgeCount = lodCount(Math.min(20, Math.round(range / 8)))
   for (let i = 0; i < edgeCount; i++) {
     const angle = (i / edgeCount) * Math.PI * 2
     const tangent = angle + Math.PI / 2 * (Math.random() < 0.5 ? 1 : -1)
@@ -967,7 +1080,7 @@ export function spawnVolatileParticles(cx: number, cy: number, range: number, r:
 // motion is FLOATY (slower, with an upward lift) rather than violent debris — it blooms and rises
 // instead of shattering outward. Snappy life so it still pops on the beat, not a lingering haze.
 export function spawnHealExplosionParticles(cx: number, cy: number, range: number): void {
-  const count = Math.min(52, Math.round(Math.sqrt(range) * 3.2))
+  const count = lodCount(Math.min(52, Math.round(Math.sqrt(range) * 3.2)))
   for (let i = 0; i < count; i++) {
     const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
     const dist = range * (0.25 + Math.random() * 0.7)
@@ -984,7 +1097,7 @@ export function spawnHealExplosionParticles(cx: number, cy: number, range: numbe
       255, 232, 180)                                       // pale-gold glow tint → white-gold bloom
   }
   // White-gold twinkle highlights rising from the center — the bright "sparkle" core
-  const hotCount = Math.min(14, Math.round(range / 12))
+  const hotCount = lodCount(Math.min(14, Math.round(range / 12)))
   for (let i = 0; i < hotCount; i++) {
     const angle = Math.random() * Math.PI * 2
     const speed = 90 + Math.random() * 160
@@ -1032,7 +1145,7 @@ export function spawnWallZoneBurst(w: Wall, heal: boolean): void {
     }
   }
   for (const c of centers) {
-    const count = Math.min(heal ? 64 : 44, Math.round(Math.sqrt(blastR) * (heal ? 4.6 : 3.2)))
+    const count = lodCount(Math.min(heal ? 64 : 44, Math.round(Math.sqrt(blastR) * (heal ? 4.6 : 3.2))))
     for (let i = 0; i < count; i++) {
       const a = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
       // Heal spreads EVENLY across the band by area (sqrt) so it fills the field uniformly rather
@@ -1092,7 +1205,7 @@ export function spawnExplodeBulletDestruction(x: number, y: number, heal: boolea
     // nourish counterpart to the fiery ignition. Gold glow tints make each mote bloom a gold halo.
     spawnParticle(x, y, 0, 0, 255, 250, 228, 0.16, 32, 0, 255, 238, 195)   // bright white-gold core flash
     spawnParticle(x, y, 0, 0, 255, 240, 200, 0.22, 22, 0, 255, 232, 180)   // white-gold outer flash
-    const n = 20
+    const n = lodCount(20)
     for (let i = 0; i < n; i++) {
       const a = (i / n) * Math.PI * 2 + (Math.random() - 0.5) * 0.5
       const sp = 110 + Math.random() * 180                 // gentler than the fiery scatter
@@ -1108,7 +1221,7 @@ export function spawnExplodeBulletDestruction(x: number, y: number, heal: boolea
   }
   spawnParticle(x, y, 0, 0, 255, 236, 200, 0.16, 34)            // bright core flash
   spawnParticle(x, y, 0, 0, 255, 160, 80, 0.22, 22)            // warm outer flash
-  const n = 22
+  const n = lodCount(22)
   for (let i = 0; i < n; i++) {
     const a = (i / n) * Math.PI * 2 + (Math.random() - 0.5) * 0.5
     const sp = 170 + Math.random() * 260
@@ -1514,6 +1627,28 @@ function updateAndDrawDeathRipples(dt: number): void {
   }
 }
 
+// Adaptive particle LOD. Returns a 0..1 multiplier for non-essential BURST sizes based on how
+// full the live pool is: full quality below SOFT, linear ramp to FLOOR by HARD. Multi-particle
+// bursts (deaths, detonations, hit/consume sparks) scale by this so combat pile-ups stop flooding
+// the pool — which costs both JS draw time and GPU overdraw. Single "core flash" spawns and
+// player-feedback effects do NOT use this (they stay full at every load). See constants.ts.
+function particleLod(): number {
+  if (particleCount <= PARTICLE_LOD_SOFT) return 1
+  if (particleCount >= PARTICLE_LOD_HARD) return PARTICLE_LOD_FLOOR
+  const t = (particleCount - PARTICLE_LOD_SOFT) / (PARTICLE_LOD_HARD - PARTICLE_LOD_SOFT)
+  return 1 - t * (1 - PARTICLE_LOD_FLOOR)
+}
+// Scale a burst's particle count by the current LOD, keeping at least `min` so a throttled burst
+// shrinks but never vanishes (the effect must still read). NOTE: named particleLod (not burstScale)
+// because a local `burstScale` particle-SIZE scalar already exists in the enemy-dodge renderer.
+function lodCount(count: number, min = 2): number {
+  return Math.max(min, Math.round(count * particleLod()))
+}
+
+// Top slice of the pool reserved for PRIORITY spawns (ring shards). Every normal spawn stops at
+// (MAX_PARTICLES - this), so the continuous flood (trails, tether slashes, detonation sparks) can't
+// pin the pool at the cap and starve the ring-attack shards — which fire LAST, at the hit frame.
+const PARTICLE_PRIORITY_RESERVE = 220
 function spawnParticle(
   x: number, y: number,
   vx: number, vy: number,
@@ -1521,9 +1656,10 @@ function spawnParticle(
   lifetime: number, size: number,
   spinRate = 0,
   tintR = -1, tintG = 0, tintB = 0,
-  orbitCx = 0, orbitCy = 0, orbitR = -1
+  orbitCx = 0, orbitCy = 0, orbitR = -1,
+  priority = false   // ring shards pass true → may use the reserved top slice of the pool
 ): void {
-  if (particleCount >= MAX_PARTICLES) return
+  if (particleCount >= (priority ? MAX_PARTICLES : MAX_PARTICLES - PARTICLE_PRIORITY_RESERVE)) return
   if (getPhase() === 'entering_name') return  // block game particles on name entry screen
   const p = particles[particleCount++]!   // reuse the pooled slot — overwrite EVERY field
   p.x = x; p.y = y; p.vx = vx; p.vy = vy; p.r = r; p.g = g; p.b = b
@@ -1550,7 +1686,7 @@ function spawnParticleAttached(
   tintLate: boolean = false,
   belowEnemies: boolean = false,
 ): void {
-  if (particleCount >= MAX_PARTICLES) return
+  if (particleCount >= MAX_PARTICLES - PARTICLE_PRIORITY_RESERVE) return   // leave the reserve for priority ring shards
   if (getPhase() === 'entering_name') return
   const initialLife = delaySec > 0 ? -delaySec / lifetime : 0
   const p = particles[particleCount++]!   // reuse the pooled slot — overwrite EVERY field
@@ -1738,23 +1874,20 @@ export function addEnemyDetonationViz(x: number, y: number, expandTime: number, 
   // enemy ring attack. drawRing reads ring.radius (when no override) and ring.color.
   const ring = { phase: 0, radius: ringRadius, tempo: 1, color: [r / 255, g / 255, b / 255, 1] as [number, number, number, number], owner: 'enemy' as const }
   enemyDetonationVizList.push({ x, y, attackTimer: 0, expandTime, ringRadius, r, g, b, ring })
-  // Impact moment — bright outward sparks in ring color, sells the bullet→ring transition.
-  // Count scales mildly with ring radius so big detonations punch harder. LODs DOWN as the
-  // particle pool fills: a cascade-detonation beat fires dozens of detonations at once, and
-  // those sparks were a measured spike (particles + GC). Full count below 60% pool load, then
-  // tapers to a 25% floor as it saturates — graceful degradation vs. randomly starving other
-  // effects via the hard MAX_PARTICLES cap. When 50 rings explode together you don't miss a
-  // few sparks each.
-  const poolLoad = particleCount / MAX_PARTICLES
-  const sparkLod = poolLoad > 0.6 ? Math.max(0.25, (1 - poolLoad) / 0.4) : 1
-  // Fuse-themed pop — the burning fuse reaches the bomb and CRACKLES: a firecracker burst of
-  // hot white-gold embers (a few longer streaking ones), with a minority carrying the ring
-  // colour so the source still reads. Sells "fuse → boom" rather than a generic ring flash.
-  const sparkCount = Math.round((10 + Math.min(10, Math.floor(ringRadius / 26))) * sparkLod)
+  spawnDetonationBurst(x, y, ringRadius, r, g, b)
+}
+
+// The "bullet destroyed/split" explosion — a fast, punchy firecracker burst (hot white-gold sparks
+// + a bright core flash + chunky debris). SNAPPY: high outward speed, short lifetimes, so it reads
+// as an instant POP rather than a slow bloom. Shared by normal detonations AND cluster splits.
+// LODs down via particleLod() so a cascade of many at once can't flood the pool.
+export function spawnDetonationBurst(x: number, y: number, ringRadius: number, r: number, g: number, b: number): void {
+  const sparkLod = particleLod()
+  const sparkCount = Math.round((16 + Math.min(16, Math.floor(ringRadius / 20))) * sparkLod)
   for (let i = 0; i < sparkCount; i++) {
     const a = Math.random() * Math.PI * 2
     const streak = Math.random() < 0.3                       // a few long firework embers
-    const sp = (streak ? 320 : 200) + Math.random() * 260
+    const sp = (streak ? 840 : 580) + Math.random() * 560    // very fast — snaps outward instantly
     const gold = Math.random() < 0.7                          // most sparks are hot white-gold
     const sr = gold ? 255 : Math.min(255, r + 60)
     const sg = gold ? 225 : Math.min(255, g + 60)
@@ -1763,27 +1896,25 @@ export function addEnemyDetonationViz(x: number, y: number, expandTime: number, 
       x, y,
       Math.cos(a) * sp, Math.sin(a) * sp,
       sr, sg, sb,
-      (streak ? 0.4 : 0.22) + Math.random() * 0.18,
-      (streak ? 1.6 : 2.4) + Math.random() * 1.5,
+      (streak ? 0.22 : 0.13) + Math.random() * 0.08,         // short life — quick pop, no lingering
+      (streak ? 2.3 : 3.4) + Math.random() * 2,
     )
   }
-  // Punch — a bright white core FLASH (big, very short-lived) that pops then vanishes, giving
-  // the boom an instant of brilliance. Scaled to the ring so big detonations flash harder.
-  const flashR = Math.min(26, 9 + ringRadius * 0.12)
-  spawnParticle(x, y, 0, 0, 255, 248, 230, 0.1, flashR)
-  spawnParticle(x, y, 0, 0, 255, 235, 200, 0.16, flashR * 0.62)
-  // Chunky debris — a few fat, slower embers that arc out and linger, giving the blast weight
-  // (the fast sparks alone read as thin/wispy). LOD-gated like the sparks.
-  const debrisCount = Math.round(5 * sparkLod)
+  // Punch — a bright white core FLASH (big, very short-lived) that pops then vanishes.
+  const flashR = Math.min(42, 14 + ringRadius * 0.17)
+  spawnParticle(x, y, 0, 0, 255, 248, 230, 0.09, flashR)
+  spawnParticle(x, y, 0, 0, 255, 235, 200, 0.14, flashR * 0.62)
+  // Chunky debris — a few fat embers that arc out for weight (still quick).
+  const debrisCount = Math.round(8 * sparkLod)
   for (let i = 0; i < debrisCount; i++) {
     const a = Math.random() * Math.PI * 2
-    const sp = 70 + Math.random() * 150
+    const sp = 320 + Math.random() * 400
     spawnParticle(
       x, y,
       Math.cos(a) * sp, Math.sin(a) * sp,
       255, Math.min(255, g + 90), Math.min(255, b + 40),
-      0.45 + Math.random() * 0.35,
-      3.5 + Math.random() * 2.5,
+      0.24 + Math.random() * 0.16,
+      5 + Math.random() * 3.5,
     )
   }
 }
@@ -1807,18 +1938,25 @@ function drawEnemyBulletsAndDetonations(player: Player): void {
     if (salvos.size > 0) {
       const prevComp = ctx.globalCompositeOperation
       ctx.globalCompositeOperation = 'lighter'
-      ctx.setLineDash([5, 8])
+      // Discrete dots at a fixed WORLD spacing — uniform circles locked to world-aligned positions
+      // along each line. As the bullets spread, the line slides over this fixed dot grid: existing
+      // dots hold their place and new ones append at the growing end. No dash phase/junction
+      // artifacts (every dot identical), no swimming.
+      const DOT_SPACING = 15
       for (const bullets of salvos.values()) {
         if (bullets.length < 2) continue
         bullets.sort((a, b) => a.salvoIndex - b.salvoIndex)
         const sample = bullets[0]!
-        // Anticipation buildup — alpha grows over flight so the preview gets more
-        // pronounced as the impact beat approaches.
+        // Anticipation buildup — alpha grows over flight so the preview gets more pronounced as the
+        // impact beat approaches.
         const flightT = Math.min(1, sample.elapsed / sample.lifetime)
         const alpha = 0.32 + flightT * 0.55    // 0.32 at fire → 0.87 near detonation
-        ctx.strokeStyle = `rgba(${sample.r}, ${sample.g}, ${sample.b}, ${alpha})`
-        ctx.lineWidth = Math.max(1, sample.tetherWidth * 0.85 - 2)   // preview lines thinned 2px
-        // Hub for star topology — centroid in world space (camera applied per-stroke)
+        // Blend ~40% toward white for contrast against the black floor, keeping a hint of bullet colour.
+        const wr = Math.round(sample.r + (255 - sample.r) * 0.4)
+        const wg = Math.round(sample.g + (255 - sample.g) * 0.4)
+        const wb = Math.round(sample.b + (255 - sample.b) * 0.4)
+        ctx.fillStyle = `rgba(${wr}, ${wg}, ${wb}, ${alpha})`
+        const dotR = Math.max(1.6, (sample.tetherWidth * 0.85 - 2) * 0.6)
         const m = bullets.length
         let hubWx = 0, hubWy = 0
         if (sample.tetherTopology === 'star') {
@@ -1827,13 +1965,24 @@ function drawEnemyBulletsAndDetonations(player: Player): void {
         }
         for (const [a, b] of tetherVizPairs(sample.tetherTopology, m)) {
           const ba = bullets[a]!
-          const ax = ba.x - camX, ay = ba.y - camY
-          const bx = b === m ? hubWx - camX : bullets[b]!.x - camX
-          const by = b === m ? hubWy - camY : bullets[b]!.y - camY
-          ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke()
+          const awx = ba.x, awy = ba.y                              // segment start (WORLD)
+          const bwx = b === m ? hubWx : bullets[b]!.x               // segment end (WORLD)
+          const bwy = b === m ? hubWy : bullets[b]!.y
+          const ddx = bwx - awx, ddy = bwy - awy
+          const len = Math.sqrt(ddx * ddx + ddy * ddy)
+          if (len < 1) continue
+          const ndx = ddx / len, ndy = ddy / len
+          const projA = awx * ndx + awy * ndy                       // world projection of the endpoints
+          const projB = projA + len
+          // First dot at the next world-spacing multiple ≥ projA → dots locked to a fixed world grid.
+          let proj = Math.ceil(projA / DOT_SPACING) * DOT_SPACING
+          for (let count = 0; proj <= projB && count < 80; proj += DOT_SPACING, count++) {
+            const s = proj - projA
+            ctx.beginPath(); ctx.arc(awx + ndx * s - camX, awy + ndy * s - camY, dotR, 0, Math.PI * 2); ctx.fill()
+          }
         }
       }
-      ctx.setLineDash([])
+      ctx.globalCompositeOperation = prevComp
       ctx.globalCompositeOperation = prevComp
     }
   }
@@ -1916,8 +2065,16 @@ function drawEnemyBulletsAndDetonations(player: Player): void {
       const flightT = Math.min(1, b.elapsed / b.lifetime)
       const remainingFlight = b.lifetime - b.elapsed
 
-      const sx = b.x - camX
-      const sy = b.y - camY
+      // Visual-only back-shift: the dart's BUTT sits at the sim pos and its tip leads forward, so the
+      // explosion (at the true sim pos) reads at the dart's BACK. Nudge the whole visual back along
+      // the heading so the explosion lands nearer the tip instead. Sim position + detonation point are
+      // unchanged (they still use b.x/b.y) — this only moves where the dart/halo are drawn.
+      const _bvspeed = Math.sqrt(b.vx * b.vx + b.vy * b.vy)
+      const BULLET_VIS_BACK = 9
+      const _bvbx = _bvspeed > 1 ? (b.vx / _bvspeed) * BULLET_VIS_BACK : 0
+      const _bvby = _bvspeed > 1 ? (b.vy / _bvspeed) * BULLET_VIS_BACK : 0
+      const sx = b.x - _bvbx - camX
+      const sy = b.y - _bvby - camY
       // Muzzle pop (#1) — bright flash + expanding ring at the LAUNCH point the instant the bullet
       // appears. muzzleX/Y captured on the first drawn frame (= release point) so it stays put as
       // the bullet flies off. bornT = time since the bullet became visible.
@@ -2400,7 +2557,7 @@ function arenaRimDistance(angle: number): number {
   const shape = getArenaShape()
   const cs = Math.abs(Math.cos(angle))
   const sn = Math.abs(Math.sin(angle))
-  if (shape === 'circle' || shape === 'hex') return ARENA_RADIUS
+  if (shape === 'circle' || shape === 'hex' || shape === 'polygon') return ARENA_RADIUS
   if (shape === 'pill') {
     // Capsule = horizontal stadium (two semicircular caps + straight top/bottom). A ray from
     // origin hits the flat top/bottom edge if its slope is steep enough, otherwise it hits a cap.
@@ -2597,8 +2754,8 @@ function updateAndDrawBeatDashConfirm(dt: number): void {
     ctx.rect(0, 0, width, height)
     if (shape === 'circle') {
       ctx.arc((ARENA_CX - camX) * z, (ARENA_CY - camY) * z, ARENA_RADIUS * z, 0, Math.PI * 2)
-    } else if (shape === 'hex') {
-      cachedHexVerts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
+    } else if (shape === 'hex' || shape === 'polygon') {
+      cachedHexVerts = arenaConvexVerts()
       ctx.moveTo((cachedHexVerts[0]!.x - camX) * z, (cachedHexVerts[0]!.y - camY) * z)
       for (let i = 1; i < cachedHexVerts.length; i++) {
         ctx.lineTo((cachedHexVerts[i]!.x - camX) * z, (cachedHexVerts[i]!.y - camY) * z)
@@ -2649,8 +2806,8 @@ function updateAndDrawBeatDashConfirm(dt: number): void {
     ctx.beginPath()
     if (shape === 'circle') {
       ctx.arc((ARENA_CX - camX) * z, (ARENA_CY - camY) * z, ARENA_RADIUS * z, 0, Math.PI * 2)
-    } else if (shape === 'hex') {
-      const verts = cachedHexVerts ?? getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
+    } else if (shape === 'hex' || shape === 'polygon') {
+      const verts = cachedHexVerts ?? arenaConvexVerts()
       ctx.moveTo((verts[0]!.x - camX) * z, (verts[0]!.y - camY) * z)
       for (let i = 1; i < verts.length; i++) {
         ctx.lineTo((verts[i]!.x - camX) * z, (verts[i]!.y - camY) * z)
@@ -2858,6 +3015,11 @@ function updateAndDrawTethers(_dt: number): void {
   for (let i = tetherVizList.length - 1; i >= 0; i--) {
     const t = tetherVizList[i]!
     const elapsed = tetherClock - t.bornTime   // shared sim clock — locked to the sim strike, no framerate drift
+    // Red BAR telegraph — push to the dead-last overlay RING_SNAP_LEAD before the strike (elapsed
+    // reaches prearmTime), the line analogue of the ring's red snap. Fires once as it crosses.
+    if (elapsed >= t.prearmTime - TETHER_SNAP_LEAD && elapsed - _dt < t.prearmTime - TETHER_SNAP_LEAD) {
+      pushTetherSnap(t.xs, t.ys, t.topology, t.width)
+    }
     // Pre-arm phase — draw a PULSING WARNING (red dashed lines) at the tether's landing
     // positions so the player keeps reading "the geometry is coming" instead of seeing the
     // flight preview vanish and nothing for half a second. Alpha + thickness build over the
@@ -2979,6 +3141,10 @@ function updateAndDrawTethers(_dt: number): void {
     // capped at distToEnd/speed so a shard never visually overshoots an endpoint.
     if (simActive && effective < _dt * 1.5) {
       for (const [a, b] of tetherVizPairs(t.topology, n)) {
+        // Reserve the top ~20% of the pool for the few critical ring shards (and other priority
+        // effects). The fractal-tether slash flood would otherwise fill the pool and starve the
+        // ring-attack circles of shards. Slashes stop here; ring shards still spawn to the full cap.
+        if (particleCount >= MAX_PARTICLES * 0.8) break
         const ax = t.xs[a]!, ay = t.ys[a]!
         const bx = b === n ? hubWx : t.xs[b]!
         const by = b === n ? hubWy : t.ys[b]!
@@ -2987,7 +3153,10 @@ function updateAndDrawTethers(_dt: number): void {
         if (len < 1) continue
         const nx = dx / len, ny = dy / len
         const perpX = -ny, perpY = nx
-        const SPARK_COUNT = 4 + Math.min(6, Math.floor(len / 80))
+        // LOD-scaled so a fractal-tether finale thins these — but floored at 50% of full so the
+        // slash identity stays readable instead of scaling down to a couple of wisps.
+        const baseSpark = 4 + Math.min(6, Math.floor(len / 80))
+        const SPARK_COUNT = lodCount(baseSpark, Math.ceil(baseSpark * 0.5))
         for (let k = 0; k < SPARK_COUNT; k++) {
           // Bias spawn toward the middle 50% of the beam so outward-racing shards have
           // enough runway to live their full lifetime.
@@ -3008,11 +3177,16 @@ function updateAndDrawTethers(_dt: number): void {
           // Endpoint safety — if even the natural-lifetime would push past the end, clip it.
           const distToEnd = dir > 0 ? (1 - tt) * len : tt * len
           const life = Math.max(0.02, Math.min(naturalLife, distToEnd / speed))
-          const isWhite = k % 3 === 0
-          const pr = isWhite ? 255 : Math.min(255, t.r + 100)
-          const pg = isWhite ? 255 : Math.min(255, t.g + 60)
-          const pb = isWhite ? 255 : Math.min(255, t.b + 60)
+          // ~20% red "danger" slashing sparks (matches the ring-hit red). Make them the LAST sparks
+          // spawned in the beam so their source-over cores draw ON TOP of the white/ring-coloured
+          // ones instead of getting buried under them.
+          const isRed = k >= SPARK_COUNT - Math.max(1, Math.round(SPARK_COUNT * 0.2))
+          const isWhite = !isRed && k % 3 === 0
+          const pr = isRed ? 255 : isWhite ? 255 : Math.min(255, t.r + 100)
+          const pg = isRed ? 60 + Math.floor(Math.random() * 40) : isWhite ? 255 : Math.min(255, t.g + 60)
+          const pb = isRed ? 50 + Math.floor(Math.random() * 30) : isWhite ? 255 : Math.min(255, t.b + 60)
           const sz = (isWhite ? 14 : 11) + Math.random() * 4
+          if (__DEV__ && particleCount >= MAX_PARTICLES) dbgSlashDrop++
           spawnParticle(ox, oy, vx, vy, pr, pg, pb, life, sz)
         }
       }
@@ -4851,7 +5025,7 @@ export function triggerBeatDashFlash(x: number, y: number, radius: number): void
   // a tight inner cluster of short bolts (the "core arc"), and a longer outer ring that
   // reaches roughly to where enemy bolts will spawn so the spread visually connects.
   const innerCount = 9
-  const innerScale = 1.4
+  const innerScale = 2.1   // thicker AOE-center "player" lightning (was 1.4)
   const innerLen = radius * 0.74
   const innerLife = 0.36
   for (let i = 0; i < innerCount; i++) {
@@ -4859,7 +5033,7 @@ export function triggerBeatDashFlash(x: number, y: number, radius: number): void
     spawnStaticLightningBolt(x, y, a, innerLen * (0.75 + Math.random() * 0.5), innerScale, innerLife + Math.random() * 0.06)
   }
   const outerCount = 6
-  const outerScale = 1.1
+  const outerScale = 1.65   // thicker AOE-center "player" lightning (was 1.1)
   const outerLen = radius * 1.37
   const outerLife = 0.30
   for (let i = 0; i < outerCount; i++) {
@@ -5251,6 +5425,12 @@ function getIceShardSprite(): HTMLCanvasElement {
 }
 
 function drawParticles(layer: 'below' | 'above' | 'all' | 'underEnemies' = 'all'): void {
+  // Load-aware glow gate. The additive glow halo is the dominant per-particle GPU cost (overdraw),
+  // so as the pool fills we RAISE the size threshold for drawing it — in a storm only the biggest/
+  // brightest particles keep their bloom, killing the fill-rate (non_js) hit exactly when it's the
+  // bottleneck. Calm scenes (full LOD) keep the original 2.0 threshold, so they look identical.
+  // Computed once per call — particleCount is fixed during the draw loop (no spawning here).
+  const glowThresh = 2.0 + (1 - particleLod()) * 2.5   // ~2.0 calm → ~3.7 at the pool cap
   for (let i = 0; i < particleCount; i++) {
     const p = particles[i]!
     // Dormant particles (life < 0 due to spawn delay) — skip until they "wake up"
@@ -5307,7 +5487,7 @@ function drawParticles(layer: 'below' | 'above' | 'all' | 'underEnemies' = 'all'
     // most numerous. Big/bright particles (blood, shards, sparks) keep full bloom. Universal
     // fill-rate win at full resolution — helps phones and PCs alike, no blur.
     const glowAlpha = Math.min(1, alpha * tintBlend * 1.3)
-    if (tintBlend > 0 && hs >= 2.0 && glowAlpha > 0.05) {
+    if (tintBlend > 0 && hs >= glowThresh && glowAlpha > 0.05) {
       const sprite = getGlowSprite(p.tintR, p.tintG, p.tintB)
       const glowScale = Math.max(0.7, hs / 5) * (0.9 + tintBlend * 0.5)
       const dim = sprite.width * glowScale
@@ -5412,6 +5592,28 @@ function hexPathScreen(cx: number, cy: number, r: number): void {
   ctx.closePath()
 }
 
+/** Draw a regular N-gon path in screen-space (matches getPolygonVertices orientation). */
+function polyPathScreen(cx: number, cy: number, r: number, sides: number): void {
+  ctx.beginPath()
+  const base = Math.PI / 2 + Math.PI / sides
+  const stepA = (Math.PI * 2) / sides
+  for (let i = 0; i < sides; i++) {
+    const a = base + i * stepA
+    const vx = cx + Math.cos(a) * r
+    const vy = cy + Math.sin(a) * r
+    if (i === 0) ctx.moveTo(vx, vy)
+    else ctx.lineTo(vx, vy)
+  }
+  ctx.closePath()
+}
+
+/** Current arena outline vertices in WORLD space for hex OR polygon (both are convex N-gons). */
+function arenaConvexVerts(r: number = ARENA_RADIUS): { x: number; y: number }[] {
+  return getArenaShape() === 'polygon'
+    ? getPolygonVertices(ARENA_CX, ARENA_CY, r, getPolygonSides())
+    : getHexVertices(ARENA_CX, ARENA_CY, r)
+}
+
 /** Add a cross subpath from world-space vertices (no beginPath) */
 function crossPath(cx: number, cy: number, ccw = false): void {
   const verts = getCrossVertices(cx + camX, cy + camY)
@@ -5470,6 +5672,8 @@ export function resetRenderer(): void {
   pendingExplosionVisuals = []
   vitGhosts.length = 0; lastSeenBoost = 0; starGlints.length = 0
   revengeRings.length = 0
+  ringSnaps.length = 0
+  tetherSnaps.length = 0
   toasts.length = 0
   borderWaveIntensity = 0
   globalBeatPulse = 0
@@ -5486,6 +5690,8 @@ export function resetRenderer(): void {
 
 export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0, dt = 0.016, cam?: Camera): void {
   csWasDrawn = false
+  frameTick++
+  if (__DEV__) { dbgRingReq = 0; dbgRingDrop = 0; dbgSlashDrop = 0 }   // per-frame diag reset (poolPeak persists)
   // Portrait orientation check — mobile phones only (not desktop touchscreens)
   const isMobileDevice = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
   if (isMobileDevice && window.innerWidth < window.innerHeight) {
@@ -5622,29 +5828,9 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   updateAndDrawLightningBolts(lastDt)
   perfEnd('ripples')
 
-  // Clip rings and particles to arena bounds
-  perfStart('clip')
-  ctx.save()
-  const shape = getArenaShape()
-  if (shape === 'cross') {
-    // Use bounding box clip (fast) — we'll mask the corners after drawing
-    ctx.beginPath()
-    ctx.rect(ARENA_CX - CROSS_HE - camX, ARENA_CY - CROSS_HE - camY, CROSS_HE * 2, CROSS_HE * 2)
-  } else if (shape === 'pill') {
-    // Use bounding box clip (fast) — pill caps are masked by buffer zone
-    ctx.beginPath()
-    ctx.rect(ARENA_CX - PILL_HALF_W - PILL_R - camX, ARENA_CY - PILL_R - camY, (PILL_HALF_W + PILL_R) * 2, PILL_R * 2)
-  } else if (shape === 'hex') {
-    hexPath(ARENA_CX - camX, ARENA_CY - camY, ARENA_RADIUS)
-  } else if (shape === 'circle') {
-    ctx.beginPath()
-    ctx.arc(ARENA_CX - camX, ARENA_CY - camY, ARENA_RADIUS, 0, Math.PI * 2)
-  } else {
-    ctx.beginPath()
-    ctx.rect(-camX, -camY, ARENA_W, ARENA_H)
-  }
-  ctx.clip()
-  perfEnd('clip')
+  // NOTE: the arena-bounds clip was removed so ALL animations (rings, orbs, the main particle
+  // storm, etc.) spill freely over the edge — consistent with bullets/tethers/blasts, which were
+  // always drawn unclipped after this point. (The matching ctx.restore() below was removed too.)
 
   perfStart('e_occlusion')
   // Pre-compute blocked arcs for all enemies with active rings
@@ -5875,7 +6061,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   }
   const ringDrawX = pastPeakPlayer >= 0 ? ringPeakX : player.x
   const ringDrawY = pastPeakPlayer >= 0 ? ringPeakY : player.y
-  drawRing(ringDrawX, ringDrawY, player.ring, player.attackTimer, getEffectiveRadius(player))
+  drawRing(ringDrawX, ringDrawY, player.ring, player.attackTimer, getEffectiveRadius(player), undefined, undefined, player)
 
   // Extra rings from upgrades — same peak position logic
   for (let i = 0; i < player.extraRingCount; i++) {
@@ -5887,7 +6073,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     }
     const exDrawX = extraPastPeak >= 0 ? ringPeakX : player.x
     const exDrawY = extraPastPeak >= 0 ? ringPeakY : player.y
-    drawRing(exDrawX, exDrawY, player.ring, extraTimer, getEffectiveRadius(player))
+    drawRing(exDrawX, exDrawY, player.ring, extraTimer, getEffectiveRadius(player), undefined, undefined, player)
   }
   perfEnd('p_ring')
 
@@ -5898,8 +6084,6 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfStart('particles')
   drawParticles('below')   // everything except orbit ring shards
   perfEnd('particles')
-
-  ctx.restore()
 
   perfStart('world_fx')
   drawRitualNodes()
@@ -5923,17 +6107,20 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     // so we save 3 beginPath/arc tessellations per frame. Style is swapped between draws.
     ctx.beginPath()
     ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
-    // (1) White area flash
-    const whiteAlpha = t > 0.7 ? t * 0.3 : t * t * 0.15
+    // (1) White area flash — punchier hot snap on the first frames so the hit reads as an IMPACT
+    // (intensity only; still tied to t, so the fade stays exactly as fast).
+    const whiteAlpha = t > 0.7 ? t * 0.55 : t * t * 0.22
     ctx.fillStyle = `rgba(255, 255, 255, ${whiteAlpha})`
     ctx.fill()
     // Total-area gold glow flash — its OWN path (different radius=glowR), so it's separated
     {
       const glowR = beatDashRadius * 1.5
       const grad = ctx.createRadialGradient(bsx, bsy, 0, bsx, bsy, glowR)
-      grad.addColorStop(0, `rgba(255, 240, 160, ${t * 0.85})`)
-      grad.addColorStop(0.38, `rgba(255, 215, 90, ${t * 0.55})`)
-      grad.addColorStop(0.85, `rgba(255, 190, 50, ${t * 0.18})`)
+      // Gold glow dialed back so it no longer dominates — the AOE should read as an ATTACK, not
+      // blend with the gold heal/overheal/boost effects. Red + white-hot now lead.
+      grad.addColorStop(0, `rgba(255, 240, 160, ${t * 0.5})`)
+      grad.addColorStop(0.38, `rgba(255, 215, 90, ${t * 0.32})`)
+      grad.addColorStop(0.85, `rgba(255, 190, 50, ${t * 0.1})`)
       grad.addColorStop(1, `rgba(255, 180, 40, 0)`)
       const prevComp = ctx.globalCompositeOperation
       ctx.globalCompositeOperation = 'lighter'
@@ -5947,7 +6134,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     // the SAME hitbox-radius arc. Rebuild the path once and chain styles.
     ctx.beginPath()
     ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(255, 45, 45, ${t * t * 0.56})`
+    ctx.fillStyle = `rgba(255, 40, 40, ${t * t * 0.74})`
     ctx.fill()
     // Gold shockwave expanding to fill attack range — its own path (different radius=shockR)
     const shockExpand = Math.min((1 - t) * 3, 1)
@@ -5964,9 +6151,10 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       ctx.beginPath()
       ctx.arc(bsx, bsy, beatDashRadius, 0, Math.PI * 2)
     }
-    // Red danger edge — thicker outline so the boundary of the AOE is unmistakable
-    ctx.strokeStyle = `rgba(255, 60, 60, ${t * 0.88})`
-    ctx.lineWidth = 5 * t + 3
+    // Red danger edge — bolder, brighter, more saturated outline so the AOE boundary is an
+    // unmistakable hit-zone ring (thickness still scales with t → same fast fade).
+    ctx.strokeStyle = `rgba(255, 30, 30, ${t * 0.95})`
+    ctx.lineWidth = 6 * t + 4
     ctx.stroke()
     // Cyan border — reuses same arc path
     ctx.strokeStyle = `rgba(0, 255, 255, ${t * 0.12})`
@@ -6001,6 +6189,32 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
           0.14 + Math.random() * 0.10, 4 + Math.random() * 3)
       }
     }
+    // ── Per-enemy "bite" — searing flash on the EXACT overlap of the blast and each damaged enemy.
+    // Clip to the enemy circle and fill/stroke the AOE circle, so only the circle-circle lens paints
+    // (pixel-perfect — handles partial overlap AND fully-engulfed for free). Gated on beatDashFlash so
+    // only enemies the dash actually damaged bite (Reverb / out-of-range enemies don't). Additive
+    // white-hot → red on the SAME `t`, so it fades exactly as fast as the rest of the flash.
+    const biteR = beatDashRadius
+    const prevBiteComp = ctx.globalCompositeOperation
+    ctx.globalCompositeOperation = 'lighter'
+    for (const e of enemies) {
+      if (e.beatDashFlash <= 0 || !e.alive) continue
+      const ex = e.x - camX, ey = e.y - camY
+      const ddx = ex - bsx, ddy = ey - bsy
+      if (ddx * ddx + ddy * ddy > (biteR + e.radius) * (biteR + e.radius)) continue   // no overlap
+      ctx.save()
+      ctx.beginPath(); ctx.arc(ex, ey, e.radius, 0, Math.PI * 2); ctx.clip()   // confine to the enemy
+      // Hot sear fill — white-hot early, cooling to red as t fades.
+      ctx.beginPath(); ctx.arc(bsx, bsy, biteR, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(255, ${Math.floor(80 + t * 175)}, ${Math.floor(60 + t * 180)}, ${t * 0.55})`
+      ctx.fill()
+      // Seam — the blast boundary slicing through the enemy = the cut line. Bright, thin, white-hot.
+      ctx.lineWidth = 2 + t * 2.5
+      ctx.strokeStyle = `rgba(255, ${Math.floor(150 + t * 105)}, ${Math.floor(120 + t * 135)}, ${t * 0.9})`
+      ctx.stroke()
+      ctx.restore()
+    }
+    ctx.globalCompositeOperation = prevBiteComp
   }
   perfEnd('beatdash_aoe')
 
@@ -6094,7 +6308,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
         enemy.x = savedX
         enemy.y = savedY
         for (const origin of origins) {
-          drawRing(origin.x, origin.y, rs.ring, rs.attackTimer, undefined, rs.expandTime, arcs)
+          drawRing(origin.x, origin.y, rs.ring, rs.attackTimer, undefined, rs.expandTime, arcs, enemy)
         }
       }
     }
@@ -6120,6 +6334,10 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     drawChallengePlacements()
   }
 
+  // Damage-frame red snaps — DEAD LAST in world space so they sit on top of every ring, bullet,
+  // tether, and the entire particle flurry. This is what makes the "this is the hit" read clear.
+  perfStart('ring_snaps'); updateAndDrawRingSnaps(lastDt); updateAndDrawTetherSnaps(lastDt); perfEnd('ring_snaps')
+
   // End designer zoom-out transform — HUD and UI render in unscaled screen space below
   if (renderZoom !== 1) {
     ctx.restore()
@@ -6133,6 +6351,12 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfStart('hud'); drawHUD(player, enemies, fps); perfEnd('hud')
   if (getPhase() === 'playing' || getPhase() === 'designer') drawMusicButton()
   perfEnd('R_TOTAL')
+  if (__DEV__) {
+    perfCount('ringReq', dbgRingReq)     // ring shards asked for this frame
+    perfCount('ringDrop', dbgRingDrop)   // ...dropped by a full pool (≈ringReq → throttling is the cause)
+    perfCount('poolPeak', dbgPoolAtPeak) // pool level when a ring last peaked (≈cap → pool was full)
+    perfCount('slashDrop', dbgSlashDrop) // tether slashes dropped by a full pool
+  }
   perfFlush()
 
   // Perf overlay — dev only, gated. Values are avg ms/frame (perfDisplay), refreshed ~2×/sec.
@@ -6144,19 +6368,26 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     if (entries.length > 0) {
       const uTotal = perfDisplay['U_TOTAL'] ?? 0
       const dTotal = perfDisplay['D_TOTAL'] ?? 0   // designer-update path (gameplay uses U_TOTAL)
+      const pTotal = perfDisplay['PHASE_UPD'] ?? 0 // menu/shop/upgrade update path
       const rTotal = perfDisplay['R_TOTAL'] ?? 0
-      const updTotal = uTotal + dTotal              // only one runs per frame, so summing is safe
+      const updTotal = uTotal + dTotal + pTotal     // only one runs per frame, so summing is safe
       const frameMs = updTotal + rTotal
+      // GC/GPU/step attribution (averaged) — answers "section, GC, or GPU?" without exporting.
+      const gcMs = perfDerivedDisplay['unacc_js'] ?? 0
+      const gpuMs = perfDerivedDisplay['non_js'] ?? 0
+      const logicMs = perfDerivedDisplay['u_unacc'] ?? 0
+      const steps = perfDerivedDisplay['update_steps'] ?? 0
       // Section rows: drop the totals (shown in the header) + sub-ms noise, sort desc.
       const rows = entries
-        .filter(([k, v]) => k !== 'U_TOTAL' && k !== 'D_TOTAL' && k !== 'R_TOTAL' && v >= 0.02)
+        .filter(([k, v]) => k !== 'U_TOTAL' && k !== 'D_TOTAL' && k !== 'PHASE_UPD' && k !== 'R_TOTAL' && v >= 0.02)
         .sort((a, b) => b[1] - a[1])
       const counts = Object.entries(perfCountDisplay)
       const lineH = 13
-      const headerRows = 3
+      const headerRows = 4
       const countRows = Math.ceil(counts.length / 2)
-      const boxW = 232
-      const boxH = (headerRows + rows.length + 1 + countRows) * lineH + 14
+      const worstRows = perfWorstDisplay ? 3 : 0
+      const boxW = 248
+      const boxH = (headerRows + rows.length + 1 + countRows + worstRows) * lineH + 14
       const bx = width - boxW
       const by = 130
       ctx.fillStyle = 'rgba(0,0,0,0.74)'
@@ -6171,12 +6402,28 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       ctx.fillText(`${fps}fps  ${frameMs.toFixed(1)}ms  res x${renderResScale.toFixed(2)}`, bx + 6, py); py += lineH
       ctx.fillStyle = '#7CCFFF'
       ctx.fillText(`upd ${updTotal.toFixed(2)}   ren ${rTotal.toFixed(2)}`, bx + 6, py); py += lineH
-      // ── Sections, sorted by cost ──
+      // gc = JS outside the timed totals (alloc/GC); gpu = wall-clock outside JS; logic = untimed
+      // code inside the update path; steps = update passes this frame (>1 = catch-up spiral).
+      ctx.fillStyle = (gcMs > 2 || logicMs > 2 || steps > 1.2) ? '#FFAA6A' : '#8FA0C0'
+      ctx.fillText(`gc ${gcMs.toFixed(2)} gpu ${gpuMs.toFixed(2)} logic ${logicMs.toFixed(2)} st ${steps.toFixed(1)}`, bx + 6, py); py += lineH
+      // ── Sections, sorted by cost (avg/max ms) ──
       for (const [k, ms] of rows) {
         const pct = frameMs > 0 ? (ms / frameMs) * 100 : 0
-        ctx.fillStyle = ms > 2 ? '#FF5252' : ms > 1 ? '#FFD740' : '#9a9a9a'
-        ctx.fillText(`${k.padEnd(15)}${ms.toFixed(2)}  ${pct.toFixed(0)}%`, bx + 6, py)
+        const mx = perfMaxDisplay[k] ?? 0
+        ctx.fillStyle = mx > 4 ? '#FF5252' : ms > 1 ? '#FFD740' : '#9a9a9a'
+        ctx.fillText(`${k.padEnd(12)}${ms.toFixed(2)}/${mx.toFixed(1)} ${pct.toFixed(0)}%`, bx + 6, py)
         py += lineH
+      }
+      // ── Worst recent frame (the felt hitch) + its top contributors ──
+      if (perfWorstDisplay && perfWorstDisplay.frameMs > 0) {
+        py += lineH * 0.4
+        ctx.fillStyle = perfWorstDisplay.frameMs > 24 ? '#FF5252' : '#FFD740'
+        ctx.fillText(`WORST ${perfWorstDisplay.frameMs.toFixed(1)}ms  ${perfWorstDisplay.phase}`, bx + 6, py); py += lineH
+        const contrib = Object.entries(perfWorstDisplay.row)
+          .filter(([k]) => k.charCodeAt(0) !== 35 && k !== 'FRAME_REAL' && k !== 'TICK_JS' && !k.endsWith('_TOTAL') && k !== 'PHASE_UPD' && k !== 'update_steps')
+          .sort((a, b) => b[1] - a[1]).slice(0, 3)
+        ctx.fillStyle = '#c0b0b0'
+        ctx.fillText(contrib.map(([k, v]) => `${k} ${v.toFixed(1)}`).join('  '), bx + 6, py); py += lineH
       }
       // ── Live counts (2 columns) ──
       py += lineH * 0.4
@@ -6190,6 +6437,46 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       }
     }
   }
+}
+
+// ── Cached fine-grid pattern ────────────────────────────────────────────────────────────────
+// The background grid is full-screen thin lines, redrawn every frame and pulsing with the beat —
+// the single most GPU-fill-heavy, least-cacheable thing on screen, so it's the first element to
+// stutter on a slower compositor path (Chrome vs Brave, or a packaged Chromium / Steam build).
+// We bake ONE grid cell into a tiny offscreen tile and fill the screen with a repeating pattern
+// (one fill op instead of hundreds of strokes). The colour/width pulse is baked per quantised
+// level (tile rebuilt only when the level or device-cell size changes); the SMOOTH alpha pulse and
+// camera scroll are applied per frame via globalAlpha + a fractional pattern transform, so it looks
+// the same but costs a fraction. Falls back to direct stroking if patterns are ever unavailable.
+const GRID_PULSE_LEVELS = 8
+let gridTile: HTMLCanvasElement | null = null
+let gridPattern: CanvasPattern | null = null
+let gridTileLevel = -1
+let gridTileCellDev = 0   // device px per cell the tile was baked at (invalidates on zoom/res change)
+
+function buildGridTile(cellDev: number, level: number): void {
+  const pulse = (level / (GRID_PULSE_LEVELS - 1)) * 0.5   // representative pulse for this level
+  const tile = gridTile ?? document.createElement('canvas')
+  tile.width = cellDev
+  tile.height = cellDev
+  const tctx = tile.getContext('2d')
+  if (!tctx) { gridTile = null; gridPattern = null; return }
+  tctx.clearRect(0, 0, cellDev, cellDev)
+  const gR = Math.floor(100 + pulse * 150)
+  const gG = Math.floor(130 + pulse * 110)
+  const gB = Math.floor(200 + pulse * 60)
+  // Bake at FULL alpha — the per-frame globalAlpha applies the actual (smooth) gridAlpha. Line
+  // width matches the original's device width: (0.5 + pulse*0.5) logical × the cell's scale factor.
+  tctx.strokeStyle = `rgb(${gR}, ${gG}, ${gB})`
+  tctx.lineWidth = (0.5 + pulse * 0.5) * (cellDev / 8)
+  tctx.beginPath()
+  tctx.moveTo(0.5, 0); tctx.lineTo(0.5, cellDev)   // left edge  → vertical grid lines
+  tctx.moveTo(0, 0.5); tctx.lineTo(cellDev, 0.5)   // top edge   → horizontal grid lines
+  tctx.stroke()
+  gridTile = tile
+  gridPattern = ctx.createPattern(tile, 'repeat')
+  gridTileLevel = level
+  gridTileCellDev = cellDev
 }
 
 function drawGrid(player: Player): void {
@@ -6210,26 +6497,48 @@ function drawGrid(player: Player): void {
   // just brighter. Line width also bumps slightly for an extra "energized" feel.
   {
     const gridSize = 8
-    const startX = Math.floor(camX / gridSize) * gridSize
-    const startY = Math.floor(camY / gridSize) * gridSize
     const gridAlpha = 0.05 + globalBeatPulse * 0.40   // ~0.05 → ~0.25 at peak (0.5)
-    const gR = Math.floor(100 + globalBeatPulse * 150)
-    const gG = Math.floor(130 + globalBeatPulse * 110)
-    const gB = Math.floor(200 + globalBeatPulse * 60)
-    ctx.strokeStyle = `rgba(${gR}, ${gG}, ${gB}, ${gridAlpha})`
-    ctx.lineWidth = 0.5 + globalBeatPulse * 0.5
-    ctx.beginPath()
-    for (let gx = startX; gx < camX + effW + gridSize; gx += gridSize) {
-      const sx = gx - camX
-      ctx.moveTo(sx, 0)
-      ctx.lineTo(sx, effH)
+    // Device px per logical px in this (renderResScale × zoom) transform — the tile is baked at
+    // this scale so the pattern blits 1:1 in device space and stays crisp at any zoom / res scale.
+    const scale = renderResScale * zoomNow
+    const cellDev = Math.max(2, Math.round(gridSize * scale))
+    const level = Math.max(0, Math.min(GRID_PULSE_LEVELS - 1, Math.round((globalBeatPulse / 0.5) * (GRID_PULSE_LEVELS - 1))))
+    if (!gridPattern || gridTileCellDev !== cellDev || gridTileLevel !== level) buildGridTile(cellDev, level)
+    if (gridPattern) {
+      // Fill in DEVICE space (identity transform) so the baked tile blits 1:1 — no re-scaling, no
+      // blur. Pattern offset = camera scroll in device px; fractional → smooth sub-pixel scrolling
+      // (no 1px snap). One fillRect replaces the per-frame stroke storm.
+      const offX = -(camX * scale) % cellDev
+      const offY = -(camY * scale) % cellDev
+      gridPattern.setTransform({ a: 1, b: 0, c: 0, d: 1, e: offX, f: offY })
+      ctx.save()
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
+      ctx.globalAlpha = gridAlpha
+      ctx.fillStyle = gridPattern
+      ctx.fillRect(0, 0, canvas.width, canvas.height)
+      ctx.restore()
+    } else {
+      // Fallback — original direct stroking if patterns are unavailable for any reason.
+      const startX = Math.floor(camX / gridSize) * gridSize
+      const startY = Math.floor(camY / gridSize) * gridSize
+      const gR = Math.floor(100 + globalBeatPulse * 150)
+      const gG = Math.floor(130 + globalBeatPulse * 110)
+      const gB = Math.floor(200 + globalBeatPulse * 60)
+      ctx.strokeStyle = `rgba(${gR}, ${gG}, ${gB}, ${gridAlpha})`
+      ctx.lineWidth = 0.5 + globalBeatPulse * 0.5
+      ctx.beginPath()
+      for (let gx = startX; gx < camX + effW + gridSize; gx += gridSize) {
+        const sx = gx - camX
+        ctx.moveTo(sx, 0)
+        ctx.lineTo(sx, effH)
+      }
+      for (let gy = startY; gy < camY + effH + gridSize; gy += gridSize) {
+        const sy = gy - camY
+        ctx.moveTo(0, sy)
+        ctx.lineTo(effW, sy)
+      }
+      ctx.stroke()
     }
-    for (let gy = startY; gy < camY + effH + gridSize; gy += gridSize) {
-      const sy = gy - camY
-      ctx.moveTo(0, sy)
-      ctx.lineTo(effW, sy)
-    }
-    ctx.stroke()
   }
 
   // Inner vignette — spotlight centered on player, edges darken
@@ -6238,6 +6547,7 @@ function drawGrid(player: Player): void {
   const shape = getArenaShape()
   const maxR = shape === 'circle' ? ARENA_RADIUS
     : shape === 'hex' ? ARENA_RADIUS
+    : shape === 'polygon' ? ARENA_RADIUS
     : shape === 'pill' ? PILL_HALF_W + PILL_R
     : shape === 'cross' ? CROSS_HE
     : Math.max(ARENA_W, ARENA_H) * 0.5
@@ -6359,8 +6669,8 @@ function drawArenaBorder(player: Player): void {
       crossPath(acx, acy, true)
     } else if (arenaShape === 'pill') {
       pillPath(acx, acy, PILL_HALF_W, PILL_R, true)
-    } else if (arenaShape === 'hex') {
-      const verts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
+    } else if (arenaShape === 'hex' || arenaShape === 'polygon') {
+      const verts = arenaConvexVerts()
       for (let i = verts.length - 1; i >= 0; i--) {
         const vx = verts[i]!.x - camX, vy = verts[i]!.y - camY
         if (i === verts.length - 1) ctx.moveTo(vx, vy)
@@ -6375,36 +6685,38 @@ function drawArenaBorder(player: Player): void {
     ctx.fillRect(0, 0, effW, effH)
     ctx.restore()
   } else {
-    // Top
+    // Darken the ENTIRE outside of the rect with a TRUE distance-from-edge fade so it matches the
+    // round arenas everywhere (no seams). Straight sides use a perpendicular (linear) fade; the four
+    // corners use a RADIAL fade centered on the rect corner — so the darkness is identical at equal
+    // distance from the play area all the way around, including the corners. Every gradient clamps to
+    // 0.85 beyond the buffer width → uniform dark void far out, soft 0.3 near the edge so the glow
+    // reads as "lit." The 4 sides + 4 corners tile the whole surround with no overlaps and no gaps.
+    const c0 = 'rgba(0, 0, 0, 0.3)'
+    const c1 = 'rgba(0, 0, 0, 0.85)'
+    const xr = x + w, yb = y + h
+    // ── Straight sides (over the edge span only) ──
     const topGrad = ctx.createLinearGradient(0, y, 0, y - buffer)
-    topGrad.addColorStop(0, 'rgba(0, 0, 0, 0.3)')
-    topGrad.addColorStop(1, 'rgba(0, 0, 0, 0.85)')
-    ctx.fillStyle = topGrad
-    ctx.fillRect(x - buffer, y - buffer, w + buffer * 2, buffer)
-    // Bottom
-    const botGrad = ctx.createLinearGradient(0, y + h, 0, y + h + buffer)
-    botGrad.addColorStop(0, 'rgba(0, 0, 0, 0.3)')
-    botGrad.addColorStop(1, 'rgba(0, 0, 0, 0.85)')
-    ctx.fillStyle = botGrad
-    ctx.fillRect(x - buffer, y + h, w + buffer * 2, buffer)
-    // Left
+    topGrad.addColorStop(0, c0); topGrad.addColorStop(1, c1)
+    ctx.fillStyle = topGrad; ctx.fillRect(x, 0, w, y)
+    const botGrad = ctx.createLinearGradient(0, yb, 0, yb + buffer)
+    botGrad.addColorStop(0, c0); botGrad.addColorStop(1, c1)
+    ctx.fillStyle = botGrad; ctx.fillRect(x, yb, w, effH - yb)
     const leftGrad = ctx.createLinearGradient(x, 0, x - buffer, 0)
-    leftGrad.addColorStop(0, 'rgba(0, 0, 0, 0.3)')
-    leftGrad.addColorStop(1, 'rgba(0, 0, 0, 0.85)')
-    ctx.fillStyle = leftGrad
-    ctx.fillRect(x - buffer, y, buffer, h)
-    // Right
-    const rightGrad = ctx.createLinearGradient(x + w, 0, x + w + buffer, 0)
-    rightGrad.addColorStop(0, 'rgba(0, 0, 0, 0.3)')
-    rightGrad.addColorStop(1, 'rgba(0, 0, 0, 0.85)')
-    ctx.fillStyle = rightGrad
-    ctx.fillRect(x + w, y, buffer, h)
-    // Corners
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.85)'
-    ctx.fillRect(x - buffer, y - buffer, buffer, buffer)
-    ctx.fillRect(x + w, y - buffer, buffer, buffer)
-    ctx.fillRect(x - buffer, y + h, buffer, buffer)
-    ctx.fillRect(x + w, y + h, buffer, buffer)
+    leftGrad.addColorStop(0, c0); leftGrad.addColorStop(1, c1)
+    ctx.fillStyle = leftGrad; ctx.fillRect(0, y, x, h)
+    const rightGrad = ctx.createLinearGradient(xr, 0, xr + buffer, 0)
+    rightGrad.addColorStop(0, c0); rightGrad.addColorStop(1, c1)
+    ctx.fillStyle = rightGrad; ctx.fillRect(xr, y, effW - xr, h)
+    // ── Corners (radial fade out from the corner point) ──
+    const corner = (ccx: number, ccy: number, rx: number, ry: number, rw: number, rh: number) => {
+      const g = ctx.createRadialGradient(ccx, ccy, 0, ccx, ccy, buffer)
+      g.addColorStop(0, c0); g.addColorStop(1, c1)
+      ctx.fillStyle = g; ctx.fillRect(rx, ry, rw, rh)
+    }
+    corner(x,  y,  0,  0,  x,        y)              // top-left
+    corner(xr, y,  xr, 0,  effW - xr, y)             // top-right
+    corner(x,  yb, 0,  yb, x,        effH - yb)      // bottom-left
+    corner(xr, yb, xr, yb, effW - xr, effH - yb)     // bottom-right
   }
 
   perfEnd('buf_zone')
@@ -6432,6 +6744,9 @@ function drawArenaBorder(player: Player): void {
       ctx.stroke()
     } else if (arenaShape === 'hex') {
       hexPathScreen(acx, acy, ARENA_RADIUS + offset)
+      ctx.stroke()
+    } else if (arenaShape === 'polygon') {
+      polyPathScreen(acx, acy, ARENA_RADIUS + offset, getPolygonSides())
       ctx.stroke()
     } else if (arenaShape === 'circle') {
       ctx.beginPath()
@@ -6544,10 +6859,11 @@ function drawArenaBorder(player: Player): void {
         const wx = acx - PILL_HALF_W + Math.cos(a) * PILL_R, wy = acy + Math.sin(a) * PILL_R
         addWavePt(wx, wy, Math.cos(a), Math.sin(a), proxPill(wx, wy), 3)
       }
-    } else if (arenaShape === 'hex') {
-      const verts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
-      for (let e = 0; e < 6; e++) {
-        const v0 = verts[e]!, v1 = verts[(e + 1) % 6]!
+    } else if (arenaShape === 'hex' || arenaShape === 'polygon') {
+      const verts = arenaConvexVerts()
+      const n = verts.length
+      for (let e = 0; e < n; e++) {
+        const v0 = verts[e]!, v1 = verts[(e + 1) % n]!
         const edx = v1.x - v0.x, edy = v1.y - v0.y
         const edgeLen = Math.sqrt(edx * edx + edy * edy)
         const enx = edy / edgeLen, eny = -edx / edgeLen
@@ -6653,8 +6969,8 @@ function drawArenaBorder(player: Player): void {
       crossPath(acx, acy, true)
     } else if (arenaShape === 'pill') {
       pillPath(acx, acy, PILL_HALF_W, PILL_R, true)
-    } else if (arenaShape === 'hex') {
-      const verts = getHexVertices(ARENA_CX, ARENA_CY, ARENA_RADIUS)
+    } else if (arenaShape === 'hex' || arenaShape === 'polygon') {
+      const verts = arenaConvexVerts()
       for (let i = verts.length - 1; i >= 0; i--) {
         const vx = verts[i]!.x - camX, vy = verts[i]!.y - camY
         if (i === verts.length - 1) ctx.moveTo(vx, vy)
@@ -6739,7 +7055,98 @@ function drawArcWithGapsResolved(cx: number, cy: number, radius: number, arcs: {
   }
 }
 
-function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: number, radiusOverride?: number, expandTime = ATTACK_EXPAND_TIME, blockedArcs: BlockedArc[] = []): void {
+// ── Damage-frame red SNAP — top-most overlay ────────────────────────────────────────────────
+// The red "this is the hit" ring used to draw inline in drawRing, where it got buried under the
+// particle flurry (player ring) or fought same-radius shards (enemy rings). Instead, on the exact
+// peak/damage frame the ring pushes a snap here, and we draw the whole list DEAD LAST (after every
+// particle pass) so it's guaranteed on top. Fat-then-thin width + 0.2s fade, same as before.
+interface RingSnap { x: number; y: number; radius: number; timer: number; arcs: BlockedArc[]; follow: { x: number; y: number } | null; offX: number; offY: number; flash: boolean }
+const ringSnaps: RingSnap[] = []
+const RING_SNAP_DUR = 0.2
+const RING_SNAP_LEAD = 0.066   // telegraph appears ~4 frames (@60fps) BEFORE the hit and holds at full, then fades over RING_SNAP_DUR — so it STARTS earlier but ENDS at the same time
+function pushRingSnap(x: number, y: number, radius: number, blockedArcs: BlockedArc[], follow: { x: number; y: number } | null = null, flash = false): void {
+  ringSnaps.push({ x, y, radius, timer: 0, arcs: blockedArcs.length > 0 ? [...blockedArcs] : [],
+    follow, offX: follow ? x - follow.x : 0, offY: follow ? y - follow.y : 0, flash })
+}
+function updateAndDrawRingSnaps(dt: number): void {
+  if (ringSnaps.length === 0) return
+  for (let i = ringSnaps.length - 1; i >= 0; i--) {
+    const s = ringSnaps[i]!
+    // Hold at full (1) during the lead-in (timer < LEAD), then fade 1 → 0 over RING_SNAP_DUR. The
+    // snap is pushed LEAD seconds before the peak, so the fade still bottoms out at the same moment.
+    const redFade = Math.max(0, Math.min(1, 1 - (s.timer - RING_SNAP_LEAD) / RING_SNAP_DUR))
+    if (redFade <= 0) { ringSnaps[i] = ringSnaps[ringSnaps.length - 1]!; ringSnaps.pop(); continue }
+    // Track the enemy during the lead/expansion (the real ring follows it pre-peak), then freeze at
+    // the peak — keeps the telegraph aligned with a moving attacker instead of lagging behind.
+    if (s.follow && s.timer < RING_SNAP_LEAD) { s.x = s.follow.x + s.offX; s.y = s.follow.y + s.offY }
+    // Frame-by-frame strobe for player rings — alternate bright/dim every render frame so the
+    // player's own red hit-circle visibly flickers (distinct from the steady enemy snap).
+    const strobe = s.flash ? ((frameTick & 1) ? 0.3 : 1) : 1
+    const redAlpha = 0.8 * redFade * strobe
+    const wMul = 0.5 + 2.2 * redFade * redFade          // ~2.7× at fire → 0.5× as it thins out
+    const sx = s.x - camX, sy = s.y - camY
+    const resolved = s.arcs.length > 0 ? resolveArcs(s.arcs) : []
+    ctx.strokeStyle = `rgba(255, 100, 100, ${redAlpha * 0.08})`; ctx.lineWidth = 26 * wMul; drawArcWithGapsResolved(sx, sy, s.radius, resolved)
+    ctx.strokeStyle = `rgba(255, 100, 100, ${redAlpha * 0.18})`; ctx.lineWidth = 10 * wMul; drawArcWithGapsResolved(sx, sy, s.radius, resolved)
+    ctx.strokeStyle = `rgba(255, 80, 80, ${redAlpha * 0.5})`;    ctx.lineWidth = 5 * wMul;  drawArcWithGapsResolved(sx, sy, s.radius, resolved)
+    ctx.strokeStyle = `rgba(255, 80, 80, ${redAlpha})`;          ctx.lineWidth = 3 * wMul;  drawArcWithGapsResolved(sx, sy, s.radius, resolved)
+    s.timer += dt
+  }
+}
+
+// Tether equivalent of the ring snap — a red "bar" along the beam segments, drawn DEAD LAST (on top
+// of the slash flurry), pushed RING_SNAP_LEAD before the strike and using the same hold-then-fade +
+// fat-then-thin width. Tether endpoints are frozen at fire, so no follow needed.
+interface TetherSnap { xs: number[]; ys: number[]; topology: TetherTopology; width: number; timer: number }
+const tetherSnaps: TetherSnap[] = []
+// Tethers get a tiny lead (not the ring's 4 frames): staccato beams TELEPORT between hops, so a big
+// early lead leaves the bar stranded at the wrong hop's geometry. ~1 frame keeps it snapped to the
+// strike, aligned with the live beam.
+const TETHER_SNAP_LEAD = 0.04
+function pushTetherSnap(xs: number[], ys: number[], topology: TetherTopology, width: number): void {
+  tetherSnaps.push({ xs: [...xs], ys: [...ys], topology, width, timer: 0 })
+}
+function updateAndDrawTetherSnaps(dt: number): void {
+  if (tetherSnaps.length === 0) return
+  ctx.lineCap = 'round'
+  for (let i = tetherSnaps.length - 1; i >= 0; i--) {
+    const s = tetherSnaps[i]!
+    const redFade = Math.max(0, Math.min(1, 1 - (s.timer - TETHER_SNAP_LEAD) / RING_SNAP_DUR))
+    if (redFade <= 0) { tetherSnaps[i] = tetherSnaps[tetherSnaps.length - 1]!; tetherSnaps.pop(); continue }
+    const redAlpha = 0.8 * redFade
+    const wMul = 0.5 + 2.2 * redFade * redFade
+    const n = s.xs.length
+    let hubWx = 0, hubWy = 0
+    if (s.topology === 'star') {
+      for (let k = 0; k < n; k++) { hubWx += s.xs[k]!; hubWy += s.ys[k]! }
+      hubWx /= n; hubWy /= n
+    }
+    const w = s.width
+    // Three red passes (wide glow → mid → sharp core). Each batches all segments into one stroke so
+    // overlaps at a star hub don't double-darken (source-over).
+    const passes: [number, number, number, number, number][] = [
+      [w * 1.2 + 3,   redAlpha * 0.10, 255, 100, 100],
+      [w * 0.6 + 1.5, redAlpha * 0.5,  255, 80, 80],
+      [w * 0.3 + 1,   redAlpha,        255, 70, 70],
+    ]
+    for (const [lw, a, pr, pg, pb] of passes) {
+      ctx.strokeStyle = `rgba(${pr}, ${pg}, ${pb}, ${a})`
+      ctx.lineWidth = lw * wMul
+      ctx.beginPath()
+      for (const [pa, pb2] of tetherVizPairs(s.topology, n)) {
+        const ax = s.xs[pa]! - camX, ay = s.ys[pa]! - camY
+        const bx = pb2 === n ? hubWx - camX : s.xs[pb2]! - camX
+        const by = pb2 === n ? hubWy - camY : s.ys[pb2]! - camY
+        ctx.moveTo(ax, ay); ctx.lineTo(bx, by)
+      }
+      ctx.stroke()
+    }
+    s.timer += dt
+  }
+  ctx.lineCap = 'butt'
+}
+
+function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: number, radiusOverride?: number, expandTime = ATTACK_EXPAND_TIME, blockedArcs: BlockedArc[] = [], followEntity?: { x: number; y: number }): void {
   if (attackTimer < 0) return
 
   const sx = worldX - camX
@@ -6778,10 +7185,17 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
     spawnRingParticles(worldX, worldY, currentRadius, ri, gi, bi, trailCount, 20 + buildup * 40, 0.3, 2, blockedArcs)
   }
 
-  // Explosion at peak — white-hot sparks racing along the ring circumference
-  if (!isFrozenDeath && showRedRing && pastPeak < lastDt * 2 && particleCount < MAX_PARTICLES - 20) {
+  // Explosion at peak — white-hot sparks racing along the ring circumference. LOD-scaled (not
+  // hard-gated on a full pool) so a fractal-tether finale THINS these to a floor instead of
+  // dropping to zero — which left only the red ring showing.
+  if (!isFrozenDeath && showRedRing && pastPeak < lastDt * 2) {
     const ringScale = Math.max(1, currentRadius / 140)
-    const totalCount = Math.round(8 * ringScale)
+    // Floored at 50% of full so a saturated finale keeps a readable shard ring, not 2 sparks.
+    const baseShards = Math.round(8 * ringScale)
+    const totalCount = lodCount(baseShards, Math.ceil(baseShards * 0.5))
+    const poolBefore = particleCount
+    let ringDropped = 0
+    if (__DEV__) { dbgPoolAtPeak = particleCount; dbgRingReq += totalCount }
     const angleOffset = Math.random() * Math.PI * 2
     for (let i = 0; i < totalCount; i++) {
       const angle = angleOffset + (i / totalCount) * Math.PI * 2 + (Math.random() - 0.5) * (Math.PI * 2 / totalCount) * 0.3
@@ -6827,8 +7241,10 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
       // shimmer below R=200, tightens automatically as rings grow past that.
       const absVariance = Math.min(currentRadius * 0.02, 4)
       const orbitStartR = currentRadius - absVariance + Math.random() * 2 * absVariance
-      spawnParticle(px, py, vx, vy, pr, pg, pb, lt, sz, 0, tR, tG, tB, worldX, worldY, orbitStartR)
+      if (__DEV__ && particleCount >= MAX_PARTICLES) { ringDropped++; dbgRingDrop++ }
+      spawnParticle(px, py, vx, vy, pr, pg, pb, lt, sz, 0, tR, tG, tB, worldX, worldY, orbitStartR, true)   // priority — use the reserved slice
     }
+    if (__DEV__) console.log(`[ring] owner=${ring.owner} r=${Math.round(currentRadius)} req=${totalCount} dropped=${ringDropped} pool=${poolBefore}/${MAX_PARTICLES}`)
   }
 
   // Resolve blocked arcs once — reuse for all draw passes
@@ -6870,25 +7286,14 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
     drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
   }
 
-  // Red flash at peak
-  if (showRedRing) {
-    const redAlpha = 0.8 * (1 - pastPeak / 0.2)
-    // Wide outer glow
-    ctx.strokeStyle = `rgba(255, 100, 100, ${redAlpha * 0.08})`
-    ctx.lineWidth = 26
-    drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
-    // Soft red glow
-    ctx.strokeStyle = `rgba(255, 100, 100, ${redAlpha * 0.18})`
-    ctx.lineWidth = 10
-    drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
-    // Mid red
-    ctx.strokeStyle = `rgba(255, 80, 80, ${redAlpha * 0.5})`
-    ctx.lineWidth = 5
-    drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
-    // Sharp red core
-    ctx.strokeStyle = `rgba(255, 80, 80, ${redAlpha})`
-    ctx.lineWidth = 3
-    drawArcWithGapsResolved(sx, sy, currentRadius, resolvedArcs)
+  // Red damage SNAP — fire ONCE the frame the ring crosses its peak (the actual hit frame), into
+  // the top-most overlay list so it draws above the whole particle flurry instead of under/among
+  // it. The inline per-frame red draw that used to be here was the thing getting buried.
+  // Red hit-circle snap for ALL rings (player + enemy). Pushed RING_SNAP_LEAD before the peak
+  // (telegraph), at the FULL hit radius (baseRadius), tracking the owner during the lead, so it
+  // warns a touch early but still fades out at the same moment.
+  if (!isFrozenDeath && pastPeak >= -RING_SNAP_LEAD && pastPeak - lastDt < -RING_SNAP_LEAD && baseRadius > 1) {
+    pushRingSnap(worldX, worldY, baseRadius, blockedArcs, followEntity ?? null, ring.owner === 'player')
   }
 }
 
@@ -6927,18 +7332,22 @@ function drawXPOrbs(player: Player): void {
         const tpnx = toPlayerDist > 1 ? toPlayerDx / toPlayerDist : 0
         const tpny = toPlayerDist > 1 ? toPlayerDy / toPlayerDist : 0
 
-        // Absorb stream — only for player-collected orbs
+        // Absorb stream — only for player-collected orbs. HP = heal gold blended 60/40 with the
+        // orb's own red so the suck-up carries the orb's colour (still reads as a heal). XP keeps its
+        // own colour (slightly brightened).
         if (orb.consumedBy !== 'enemy') {
-          // HP = white-gold heal stream (ties the suck-up to the heal identity); XP keeps its color.
-          const absR = isHP ? 255 : Math.min(255, orbR + 50)
-          const absG = isHP ? 222 : Math.min(255, orbG + 30)
-          const absB = isHP ? 150 : Math.min(255, orbB + 30)
+          const absR = isHP ? Math.round(255 * 0.8 + orbR * 0.2) : Math.min(255, orbR + 50)
+          const absG = isHP ? Math.round(222 * 0.8 + orbG * 0.2) : Math.min(255, orbG + 30)
+          const absB = isHP ? Math.round(150 * 0.8 + orbB * 0.2) : Math.min(255, orbB + 30)
           addAbsorbEffect(orb.x, orb.y, absR, absG, absB)
         }
 
-        // Spark explosion — orb-colored burst
-        for (let i = 0; i < 18; i++) {
-          const angle = (i / 18) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
+        // Spark explosion — orb-colored burst. LOD-scaled: sweeping a big orb cluster in one beat
+        // started dozens of these at once (the measured pile-up), so the per-orb count tapers as
+        // the pool fills. A lone orb at low load is unchanged.
+        const sparkN = lodCount(18)
+        for (let i = 0; i < sparkN; i++) {
+          const angle = (i / sparkN) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
           const speed = 765 + Math.random() * 425
           spawnParticle(orb.x, orb.y,
             Math.cos(angle) * speed, Math.sin(angle) * speed,
@@ -6946,7 +7355,8 @@ function drawXPOrbs(player: Player): void {
             0.15 + Math.random() * 0.1, 2.5 + Math.random() * 2)
         }
         // Hot white core sparks
-        for (let i = 0; i < 8; i++) {
+        const coreN = lodCount(8)
+        for (let i = 0; i < coreN; i++) {
           const angle = Math.random() * Math.PI * 2
           const speed = 850 + Math.random() * 425
           spawnParticle(orb.x, orb.y,
@@ -7167,6 +7577,12 @@ function updateAndDrawSpeedBoostTrail(player: Player, bodyR: number): void {
   const frac = Math.max(0, Math.min(1, timer / SPEED_BOOST_DURATION))   // 1 fresh → 0 expired
   const lvl = Math.max(0, Math.min(1, (player.speedBoostCount - 1) / 2))  // 0/0.5/1 at count 1/2/3
   const cx = player.x - camX, cy = player.y - camY
+  // Dash tint — while a dash is in effect (dashTimer >= 0), shade the gold trail/aura toward
+  // dash-green so the boost visibly feeds the dash. Partial blend keeps it reading as the gold
+  // boost, just greener. tintGold(r,g,b) lerps a gold channel-trio toward dash-green (110,255,130).
+  const dashGreen = player.dashTimer >= 0 ? 0.4 : 0
+  const tintGold = (r: number, g: number, b: number): [number, number, number] =>
+    [Math.round(r + (110 - r) * dashGreen), Math.round(g + (255 - g) * dashGreen), Math.round(b + (130 - b) * dashGreen)]
   // Pickup response — a dramatic gold STAR burst out of the player whenever the boost is (re)granted.
   // Burst + SFX scale with the overheal count so 1 vs 3 (100% vs 200%) reads distinctly.
   if (timer > lastSeenBoost + 0.001) {
@@ -7194,6 +7610,9 @@ function updateAndDrawSpeedBoostTrail(player: Player, bodyR: number): void {
     const prevComp = ctx.globalCompositeOperation
     ctx.globalCompositeOperation = 'lighter'
     const briScale = (0.18 + frac * 0.42) * (1 + lvl * 0.5)
+    const [c0r, c0g, c0b] = tintGold(255, 242, 195)
+    const [c1r, c1g, c1b] = tintGold(255, 226, 150)
+    const [c2r, c2g, c2b] = tintGold(255, 216, 130)
     for (let i = vitGhosts.length - 1; i >= 0; i--) {
       const g = vitGhosts[i]!
       g.life += lastDt / g.maxLife
@@ -7202,9 +7621,9 @@ function updateAndDrawSpeedBoostTrail(player: Player, bodyR: number): void {
       const gx = g.x - camX, gy = g.y - camY
       const gr = g.r * (0.8 + 0.2 * (1 - g.life))
       const grad = ctx.createRadialGradient(gx, gy, 0, gx, gy, gr)
-      grad.addColorStop(0, `rgba(255, 242, 195, ${a})`)
-      grad.addColorStop(0.6, `rgba(255, 226, 150, ${a * 0.6})`)
-      grad.addColorStop(1, 'rgba(255, 216, 130, 0)')
+      grad.addColorStop(0, `rgba(${c0r}, ${c0g}, ${c0b}, ${a})`)
+      grad.addColorStop(0.6, `rgba(${c1r}, ${c1g}, ${c1b}, ${a * 0.6})`)
+      grad.addColorStop(1, `rgba(${c2r}, ${c2g}, ${c2b}, 0)`)
       ctx.fillStyle = grad
       ctx.beginPath(); ctx.arc(gx, gy, gr, 0, Math.PI * 2); ctx.fill()
     }
@@ -7219,10 +7638,13 @@ function updateAndDrawSpeedBoostTrail(player: Player, bodyR: number): void {
     const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.012)
     const aA = (0.05 + frac * 0.18) * (0.7 + pulse * 0.3) * (1 + lvl * 0.6)
     const aR = bodyR * 1.7
+    const [a0r, a0g, a0b] = tintGold(255, 232, 170)
+    const [a1r, a1g, a1b] = tintGold(255, 226, 150)
+    const [a2r, a2g, a2b] = tintGold(255, 216, 130)
     const grad = ctx.createRadialGradient(cx, cy, bodyR * 0.7, cx, cy, aR)
-    grad.addColorStop(0, 'rgba(255, 232, 170, 0)')
-    grad.addColorStop(0.7, `rgba(255, 226, 150, ${aA})`)
-    grad.addColorStop(1, 'rgba(255, 216, 130, 0)')
+    grad.addColorStop(0, `rgba(${a0r}, ${a0g}, ${a0b}, 0)`)
+    grad.addColorStop(0.7, `rgba(${a1r}, ${a1g}, ${a1b}, ${aA})`)
+    grad.addColorStop(1, `rgba(${a2r}, ${a2g}, ${a2b}, 0)`)
     ctx.fillStyle = grad
     ctx.beginPath(); ctx.arc(cx, cy, aR, 0, Math.PI * 2); ctx.fill()
     ctx.globalCompositeOperation = prevComp
@@ -7343,7 +7765,7 @@ function drawPlayer(player: Player): void {
   // will hit (radius = 2× beat-dash shockRadius = ring.radius * 1.4 * beatBlastMult).
   // When ready: full ring pulses gold. While filling: thinner cyan arc.
   if (player.chargeTimer > 0 || player.chargeReady) {
-    const beatDashAOE = player.ring.radius * 0.7 * player.modifiers.beatBlastMult
+    const beatDashAOE = player.ring.radius * BEAT_DASH_RADIUS_MULT * player.modifiers.beatBlastMult
     const chargeR = beatDashAOE * 2
     const fillFrac = player.chargeReady ? 1 : Math.min(1, player.chargeTimer / 3)
     const arcEnd = -Math.PI / 2 + fillFrac * Math.PI * 2   // start at top, fill clockwise
@@ -10986,15 +11408,17 @@ function drawEnemy(enemy: Enemy, player: Player): void {
           }
         }
         // Core rupture burst outward
-        for (let p = 0; p < 24; p++) {
-          const a = (p / 24) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
+        const ruptureN = lodCount(24)
+        for (let p = 0; p < ruptureN; p++) {
+          const a = (p / ruptureN) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
           const speed = 250 + Math.random() * 300
           spawnParticle(enemy.x, enemy.y,
             Math.cos(a) * speed, Math.sin(a) * speed,
             255, 255, 255, 0.2 + Math.random() * 0.15, 4.5 + Math.random() * 3.5)
         }
         // Pink energy burst
-        for (let p = 0; p < 14; p++) {
+        const pinkN = lodCount(14)
+        for (let p = 0; p < pinkN; p++) {
           const a = Math.random() * Math.PI * 2
           const speed = 180 + Math.random() * 250
           spawnParticle(enemy.x, enemy.y,
@@ -11284,7 +11708,8 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         enemy.dodgeJustConsumed[i] = false
         const dashAngle = Math.atan2(enemy.dashDirY, enemy.dashDirX)
         const backAngle = dashAngle + Math.PI
-        for (let p = 0; p < 25; p++) {
+        const consumeN = lodCount(25)   // enemy dodge (not the player's dash — that's exempt)
+        for (let p = 0; p < consumeN; p++) {
           const a = backAngle + (Math.random() - 0.5) * 1.3
           const speed = 250 + Math.random() * 300
           spawnParticle(wx, wy,
@@ -11315,9 +11740,13 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       }
 
       if (timer <= 0) {
-        // Ready — radial gradient bead + swimming inner sparks + beat-pulsing core
+        // Ready — dark backing + radial-gradient bead + STATIC white-hot core + bright rim, mirroring
+        // the player dash dot's depth treatment. Static core (no globalBeatPulse) = no "bounce".
         const readyR = dotR * 1.15
-        // D: Radial gradient body
+        // Dark backing disc — depth + a dark two-tone edge so the bead reads on a busy screen.
+        ctx.beginPath(); ctx.arc(dx, dy, readyR + 2.5, 0, Math.PI * 2)
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.55)'; ctx.fill()
+        // Radial gradient body — bright center → darker edge (glowing bead look)
         const edgeR = Math.max(0, dr - 40)
         const edgeG = Math.max(0, dg - 40)
         const edgeB = Math.max(0, db - 40)
@@ -11331,14 +11760,15 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         ctx.arc(dx, dy, readyR, 0, Math.PI * 2)
         ctx.fillStyle = bodyGrad
         ctx.fill()
-        const coreR = readyR * (0.45 + globalBeatPulse * 1.65)
-        const coreAlpha = 0.55 + globalBeatPulse * 0.45
+        // Static white-hot core (no beat pulse → no bounce)
+        const coreR = readyR * 0.5
         ctx.beginPath()
         ctx.arc(dx, dy, coreR, 0, Math.PI * 2)
-        ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, ${coreAlpha})`
+        ctx.fillStyle = `rgba(${cr}, ${cg}, ${cb}, 0.7)`
         ctx.fill()
-        ctx.strokeStyle = `rgba(${dr}, ${dg}, ${db}, 0.6)`
-        ctx.lineWidth = 1.5
+        // Bright inner rim — two-tone with the dark backing margin = crisp edge on any background.
+        ctx.strokeStyle = `rgba(${cr}, ${cg}, ${cb}, 0.95)`
+        ctx.lineWidth = 1.6
         ctx.stroke()
         if (Math.random() < 0.7) {
           const spread = orbitR * 0.15
@@ -11349,12 +11779,13 @@ function drawEnemy(enemy: Enemy, player: Player): void {
             dr, dg, db, 0.22 + Math.random() * 0.18, Math.max(1.5, readyR * 0.25))
         }
       } else {
-        // Recharging — cream pie on dark backing (15% bigger than ready dot for visibility)
+        // Recharging — white pie on a dark backing that extends past it (dark ring margin = depth),
+        // matching the player dash-slot pie.
         const fill = 1 - (timer / chargeTime)
         const pieR = dotR * 1.15
         ctx.beginPath()
-        ctx.arc(dx, dy, pieR, 0, Math.PI * 2)
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.55)'
+        ctx.arc(dx, dy, pieR + 2.5, 0, Math.PI * 2)
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)'
         ctx.fill()
         if (fill > 0) {
           ctx.beginPath()

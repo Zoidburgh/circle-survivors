@@ -33,8 +33,24 @@ export const PLAYER_BASE_DAMAGE = 1
 export const HIT_FLASH_DURATION = 0.38
 export const SPAWN_ANIM_DURATION = 0.4
 export const HP_DRAIN_SPEED = 8
-export const PARTICLE_CAP = 2500
+// Beat-dash AOE radius = ring.radius × this × beatBlastMult × (Quiet Storm 2×). Shared by the sim
+// (GameManager) and the Quiet Storm charge telegraph (Renderer) so they can't drift apart.
+export const BEAT_DASH_RADIUS_MULT = 0.77
+export const PARTICLE_CAP = 1800
+// Adaptive particle LOD — burst sizes scale DOWN as the live particle count climbs, so combat
+// pile-ups (many deaths/detonations at once) stop flooding the pool and dropping frames. Full
+// quality at/below SOFT, linear ramp to FLOOR by HARD. Tuned to where frames actually drop
+// (~1100 live), well below the hard PARTICLE_CAP. Player-feedback effects are exempt.
+export const PARTICLE_LOD_SOFT = 400
+export const PARTICLE_LOD_HARD = 1500
+export const PARTICLE_LOD_FLOOR = 0.25
 export const CAMERA_LEAD_AMOUNT = 80
+// ── Camera smoothing ── (anti-jitter: lead only engages on SUSTAINED movement, not taps)
+export const CAMERA_LEAD_GATE_K = 3.5        // low-pass rate for the speed gate (higher = reacts faster)
+export const CAMERA_LEAD_GATE_LO = 0.5       // speed-fraction below which the lead is fully suppressed (kills tap-bounce)
+export const CAMERA_LEAD_GATE_HI = 0.9       // speed-fraction at/above which the lead is at full strength
+export const CAMERA_LEAD_SMOOTH_K = 4.0      // lead-vector ramp rate (frame-rate-independent)
+export const CAMERA_FOLLOW_DEADZONE = 2.0    // px; camera holds still for movements smaller than this
 export const ARENA_BUFFER = 80
 export const HIT_GRACE = 2  // extra pixels on enemy/orb hitbox for easier hits (visual unchanged)
 export const AUDIO_THROTTLE_INTERVAL = 0.04

@@ -763,14 +763,11 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
     if (enemy.spawnTimer >= 1) {
       for (let i = 0; i < enemy.rings.length; i++) {
         const rs = enemy.rings[i]!
-        // Per-ring lead: big rings (radius >= 200) fire EARLIER (lead 0.35) and expand for
-        // longer (0.80), so peak still lands on the beat ((beat - 0.35) + 0.80 = beat + 0.45).
-        const isBig = rs.ring.radius >= 200
-        const ringLead = isBig ? 0.30 : RING_FIRE_LEAD_SEC
-        if (shouldFire(rs.patternName, ringLead)) {
+        // All rings share the same lead + expand regardless of radius (removed the radius>=200
+        // special case that peaked big rings a few ms off the smaller ones).
+        if (shouldFire(rs.patternName, RING_FIRE_LEAD_SEC)) {
           const interval = getBeatInterval(rs.patternName)
-          const baseExpand = isBig ? 0.75 : ATTACK_EXPAND_TIME
-          rs.expandTime = Math.min(baseExpand, interval * 0.8)
+          rs.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * 0.8)
           if (rs.rangedMode) {
             // Ranged mode — fire bullets instead of firing the ring in place. The ring's
             // attackTimer stays at -1 (idle). Detonation is handled by GameManager when the
@@ -1176,12 +1173,11 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
         while (diff < -Math.PI) diff += Math.PI * 2
         rs.edgeAngle += diff * 8 * dt  // smooth lerp
       }
-      const isBig2 = rs.ring.radius >= 200
-      const ringLead2 = isBig2 ? 0.30 : RING_FIRE_LEAD_SEC
-      if (shouldFire(rs.patternName, ringLead2)) {
+      // All rings share the same lead + expand regardless of radius, so different-radius rings on
+      // the same pattern peak on the exact same frame (the old radius>=200 case desynced them).
+      if (shouldFire(rs.patternName, RING_FIRE_LEAD_SEC)) {
         const interval = getBeatInterval(rs.patternName)
-        const baseExpand = isBig2 ? 0.75 : ATTACK_EXPAND_TIME
-        rs.expandTime = Math.min(baseExpand, interval * 0.8)
+        rs.expandTime = Math.min(ATTACK_EXPAND_TIME, interval * 0.8)
         if (rs.rangedMode) {
           // Ranged mode — emit fire event; GameManager spawns bullets. Ring's attackTimer
           // stays idle. Edge mode still advances below so the bullet origin rotates.

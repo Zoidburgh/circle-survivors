@@ -19,14 +19,14 @@ import { tryTriggerUpgrade, updateUpgradeScreen, drawUpgradeScreen, drawXPBar } 
 import { on, emit } from './EventBus.ts'
 import { shouldFire, timeUntilNextBeat, getLoopPosition, getAbsoluteBeats } from '../audio/PatternClock.ts'
 import { getBeatZeroTime } from '../audio/BeatLoop.ts'
-import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playHealExplosion, playWallHealPlayer, playWallHealEnemy, playBeatDash, playFuseStart, playRecallStart, playChillZonePlace, playIceShardBurst, playWallSpringFire, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth, playBoing, playShockPush, playDashShotFire, startDashShotCrackle, stopDashShotCrackle, playEnemyBeatTick } from '../audio/AudioEngine.ts'
+import { playHit, playPlayerHit, playShieldBreak, playShieldRestore, playVolatileExplosion, playHealExplosion, playHeal, playWallHealEnemy, playBeatDash, playFuseStart, playRecallStart, playChillZonePlace, playIceShardBurst, playWallSpringFire, playSummonerSpawn, playTotemSpawn, playNodeLock, playNodeComplete, startShieldFuseBurn, stopShieldFuseBurn, playShrineHit, playShrineSummon, updateDangerMusic, playDeathRoll, playVictoryFanfare, tickAudioHealth, playBoing, playShockPush, playDashShotFire, startDashShotCrackle, stopDashShotCrackle, playEnemyBeatTick } from '../audio/AudioEngine.ts'
 import { resetProTip, showToast } from '../render/Renderer.ts'
 import { updateRitualNodes, getRitualGroups, removeGroup } from '../game/RitualNodes.ts'
 import { getScoresForChallenge, fetchOnlineScores } from '../game/HighScores.ts'
 import { getActiveChallenge } from '../game/ChallengeBuilder.ts'
 import { openShop, updateShopScreen, drawShopScreen } from '../game/ShopScreen.ts'
-import { HIT_FLASH_DURATION } from '../utils/constants.ts'
-import { perfStart, perfEnd, exportPerfLog, addSpawnEffect, addVolatileExplosion, setPendingExplosions } from '../render/Renderer.ts'
+import { HIT_FLASH_DURATION, BEAT_DASH_RADIUS_MULT } from '../utils/constants.ts'
+import { perfStart, perfEnd, perfStep, perfSetPhase, exportPerfLog, addSpawnEffect, addVolatileExplosion, setPendingExplosions } from '../render/Renderer.ts'
 import { getEnemyType } from '../entities/EnemyTypes.ts'
 import { hasBonus } from '../game/UpgradeManager.ts'
 import { probe } from '../audio/TimingProbe.ts'
@@ -261,7 +261,7 @@ function processVolatileExplosions(player: ReturnType<typeof getPlayer>, enemies
       const playerHitRange = exp.range + player.hitRadius
       if (pdx * pdx + pdy * pdy <= playerHitRange * playerHitRange) {
         if (exp.heal) {
-          healPlayer(player, 1)   // event-driven gold pulse (stacks with a same-frame hit)
+          if (healPlayer(player, 1) > 0) playHeal()   // event-driven gold pulse + heal chime (only if HP actually restored)
         } else if (hurtPlayer(player, 1)) {
           playPlayerHit()
         }
@@ -822,6 +822,10 @@ function spawnSalvo(enemy: Enemy, ringIndex: number, layerIndex: number, originX
     ? parentRs
     : parentRs.childLayers[layerIndex - 1]
   if (!rs) return
+  // Tether beam thickness ALWAYS inherits layer 0 (the parent ring), so chained/cluster child
+  // layers don't render thinner telegraph dots/beams than the first set. Per-layer width still
+  // drives everything else; only the visual+hit thickness is unified.
+  const tetherW = parentRs.tetherWidth
   const player = getPlayer()
   // bornRotation = the rotation ALL siblings of this salvo fire with. For parent fires
   // (no override) it's the layer's current rotationAngle. For cluster children it's the
@@ -859,7 +863,7 @@ function spawnSalvo(enemy: Enemy, ringIndex: number, layerIndex: number, originX
       received: 0,
       xs, ys,
       topology: rs.tetherMode,
-      width: rs.tetherWidth,
+      width: tetherW,
       damage: enemy.damage,
       colorR: cr, colorG: cg, colorB: cb,
       consume: enemy.consume,
@@ -914,7 +918,7 @@ function spawnSalvo(enemy: Enemy, ringIndex: number, layerIndex: number, originX
       salvoId,
       salvoIndex: i,
     })
-    Renderer.addEnemyBulletViz(originX, originY, vx, vy, rs.bulletLifetime, rs.ring.radius, cr, cg, cb, trackingRate, launchDelay, anchorToEnemy ? enemy : null, offX, offY, isSurround, surroundTargetX, surroundTargetY, salvoId, i, rs.tetherMode, rs.tetherWidth, rs.pushMode, rs.staccato, rs.staccatoDivision, rs.staccatoPhase, layerIndex > 0, rs.explodeMode, rs.healMode)
+    Renderer.addEnemyBulletViz(originX, originY, vx, vy, rs.bulletLifetime, rs.ring.radius, cr, cg, cb, trackingRate, launchDelay, anchorToEnemy ? enemy : null, offX, offY, isSurround, surroundTargetX, surroundTargetY, salvoId, i, rs.tetherMode, tetherW, rs.pushMode, rs.staccato, rs.staccatoDivision, rs.staccatoPhase, layerIndex > 0, rs.explodeMode, rs.healMode)
   }
   // Layer rotation only advances on a FRESH parent fire (no override). Cluster child salvos
   // inherit their rotation directly from the parent bullet's bornRotation + step, so they
@@ -1046,14 +1050,11 @@ function updateEnemyBullets(dt: number): void {
         // burst as a volatile death, but the circle brews from frame one — and since it appears
         // instantly at detonation, dx/dy's small lead is right (no extra lead needed).
         const overshoot = Math.max(0, b.elapsed - b.lifetime)
-        // Lead the explosion's center forward along the heading, scaled by the bullet's own speed
-        // (faster bullets lead more) — same basis as the ring/push, just a bit longer since the
-        // explosion's telegraph/blast is slower to read.
-        const EXPLODE_LEAD = 0.18
-        const exX = b.x + b.vx * EXPLODE_LEAD
-        const exY = b.y + b.vy * EXPLODE_LEAD
+        // Detonate at the bullet's NATURAL detonation point (dx/dy, the same place a normal/push
+        // detonation lands) — no extra forward lead, so the explosion sits exactly where the bullet
+        // popped instead of drifting ahead of it.
         pendingExplosions.push({
-          x: exX, y: exY,
+          x: dx, y: dy,
           range: b.ringRadius,
           r: b.colorR, g: b.colorG, b: b.colorB,
           timer: 0,
@@ -1063,7 +1064,7 @@ function updateEnemyBullets(dt: number): void {
         })
         // Destruction burst — the dart shatters (flash + hot ember scatter) at the shatter point
         // as the telegraph begins expanding, so the transition reads as a violent ignition.
-        Renderer.spawnExplodeBulletDestruction(exX, exY, detRs?.healMode ?? false)
+        Renderer.spawnExplodeBulletDestruction(dx, dy, detRs?.healMode ?? false)
       } else {
         // Normal detonation — expanding damage ring, hit check applied at peak.
         enemyDetonations.push({
@@ -1136,6 +1137,7 @@ function updateEnemyBullets(dt: number): void {
         const angles: number[] = []
         for (const v of childVels) angles.push(Math.atan2(v.vy, v.vx))
         Renderer.spawnClusterSplitFX(dx, dy, b.colorR, b.colorG, b.colorB, angles)
+        Renderer.spawnDetonationBurst(dx, dy, b.ringRadius, b.colorR, b.colorG, b.colorB)   // same destruction explosion as a normal detonation
         // Pass parent overshoot as child startElapsed — each generation absorbs its parent's
         // frame slop so timing stays locked to the ideal beat regardless of cluster depth.
         const parentOvershoot = Math.max(0, b.elapsed - b.lifetime)
@@ -1154,19 +1156,28 @@ function updateEnemyBullets(dt: number): void {
 // visual + strike (prearmTime 0 = instant snap on the beat). Skips the spawn beat (bullets still
 // bunched at the enemy) by requiring at least one completed hop.
 const staccatoTetherFiredBeat = new Map<number, number>()  // salvoId → last integer beat fired
+// Reused across frames so the per-frame salvo grouping doesn't allocate a fresh Map + sub-arrays
+// every tick while staccato+tether bullets are in flight. Bullet flights are beat-aligned, so that
+// GC churn was landing right on the beat — the worst moment for a hitch.
+const staccatoHopGroups = new Map<number, EnemyBullet[]>()
+const staccatoGroupPool: EnemyBullet[][] = []
 function fireStaccatoHopTethers(): void {
   const curBeat = getAbsoluteBeats()
-  const groups = new Map<number, EnemyBullet[]>()
+  // Recycle last frame's group arrays into the pool, then reuse the same Map (clear is alloc-free).
+  for (const arr of staccatoHopGroups.values()) { arr.length = 0; staccatoGroupPool.push(arr) }
+  staccatoHopGroups.clear()
   for (const b of enemyBullets) {
     if (!b.staccato || !b.released || b.elapsed < b.launchDelay) continue
     if (b.staccatoReleased <= 0.001) continue   // not hopped yet
     const rs = b.layerIndex === 0 ? b.ownerEnemy.rings[b.ringIndex] : b.ownerEnemy.rings[b.ringIndex]?.childLayers[b.layerIndex - 1]
     if (!rs || rs.tetherMode === 'off') continue
-    let arr = groups.get(b.salvoId)
-    if (!arr) { arr = []; groups.set(b.salvoId, arr) }
+    let arr = staccatoHopGroups.get(b.salvoId)
+    if (!arr) { arr = staccatoGroupPool.pop() ?? []; staccatoHopGroups.set(b.salvoId, arr) }
     arr.push(b)
   }
-  for (const [salvoId, arr] of groups) {
+  for (const [salvoId, arr] of staccatoHopGroups) {
+    // Sort kept ON PURPOSE: enemyBullets uses swap-remove, so a salvo's bullets can fall out of
+    // salvoIndex order as other bullets die — chain/ring topology connects segments in this order.
     if (arr.length < 2) continue
     arr.sort((a, b) => a.salvoIndex - b.salvoIndex)
     const b0 = arr[0]!
@@ -1196,24 +1207,26 @@ function fireStaccatoHopTethers(): void {
     staccatoTetherFiredBeat.set(salvoId, hopK)
     const rs0 = b0.layerIndex === 0 ? b0.ownerEnemy.rings[b0.ringIndex] : b0.ownerEnemy.rings[b0.ringIndex]?.childLayers[b0.layerIndex - 1]
     if (!rs0) continue
+    // Beam thickness inherits layer 0 so chained hop tethers match the first set's width.
+    const tetherW0 = b0.ownerEnemy.rings[b0.ringIndex]?.tetherWidth ?? rs0.tetherWidth
     // Predict each bullet's position AT hop hopK (progress = hopK / staccatoHops) so the early
     // telegraph sits where the bullets are about to snap, not where they currently are.
     const xs = arr.map(b => b.x + (hopK / b.staccatoHops - b.staccatoReleased) * b.vx * b.lifetime)
     const ys = arr.map(b => b.y + (hopK / b.staccatoHops - b.staccatoReleased) * b.vy * b.lifetime)
     const hopPrearm = TETHER_PREARM_HOP + leadTime   // +leadTime keeps the strike on its beat
     tetherEntities.push({
-      xs, ys, topology: rs0.tetherMode, width: rs0.tetherWidth, damage: b0.damage,
+      xs, ys, topology: rs0.tetherMode, width: tetherW0, damage: b0.damage,
       colorR: b0.colorR, colorG: b0.colorG, colorB: b0.colorB,
       bornTime: tetherClock, struckProbed: false, prearmTime: hopPrearm, playerHit: false,
       consume: b0.ownerEnemy.consume, enemyOwner: b0.ownerEnemy,
       consumeFired: false, tetherSound: rs0.tetherSound, patternName: rs0.patternName,
       soundFired: false, probeTag: 'hop',
     })
-    Renderer.addTetherViz(xs, ys, rs0.tetherMode, rs0.tetherWidth, b0.colorR, b0.colorG, b0.colorB, hopPrearm, tetherClock)
+    Renderer.addTetherViz(xs, ys, rs0.tetherMode, tetherW0, b0.colorR, b0.colorG, b0.colorB, hopPrearm, tetherClock)
   }
   // Keep the dedupe map bounded to live salvos
-  if (staccatoTetherFiredBeat.size > groups.size) {
-    for (const sid of staccatoTetherFiredBeat.keys()) if (!groups.has(sid)) staccatoTetherFiredBeat.delete(sid)
+  if (staccatoTetherFiredBeat.size > staccatoHopGroups.size) {
+    for (const sid of staccatoTetherFiredBeat.keys()) if (!staccatoHopGroups.has(sid)) staccatoTetherFiredBeat.delete(sid)
   }
 }
 
@@ -1257,7 +1270,7 @@ function updateEnemyDetonations(dt: number): void {
             collectOrb(orb, 'enemy')
             healEnemy(owner, 1)
             const isHP = orb.orbType === 'hp'
-            Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 222 : 255, isHP ? 150 : 200, owner.x, owner.y, owner)
+            Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 250 : 150, isHP ? 190 : 255, isHP ? 134 : 200, owner.x, owner.y, owner)
           }
         }
       }
@@ -1365,10 +1378,22 @@ function updateTethers(dt: number): void {
         hubX /= n; hubY /= n
       }
       const halfW = t.width * 0.5
+      // AABB broadphase — every segment endpoint lies within this box (the star hub is the
+      // centroid, also inside), so an orb farther than its own `reach` from the box can't touch
+      // any segment. One cheap reject per orb skips the O(segments) distance loop for distant orbs.
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+      for (let k = 0; k < n; k++) {
+        const x = t.xs[k]!, y = t.ys[k]!
+        if (x < minX) minX = x
+        if (x > maxX) maxX = x
+        if (y < minY) minY = y
+        if (y > maxY) maxY = y
+      }
       const allOrbs = getOrbs()
       for (const orb of allOrbs) {
         if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
         const reach = orb.radius + halfW
+        if (orb.x < minX - reach || orb.x > maxX + reach || orb.y < minY - reach || orb.y > maxY + reach) continue
         const reachSq = reach * reach
         let hit = false
         for (const [a, b] of tetherPairs(t.topology, n)) {
@@ -1384,7 +1409,7 @@ function updateTethers(dt: number): void {
           collectOrb(orb, 'enemy')
           healEnemy(owner, 1)
           const isHP = orb.orbType === 'hp'
-          Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 222 : 255, isHP ? 150 : 200, owner.x, owner.y, owner)
+          Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 250 : 150, isHP ? 190 : 255, isHP ? 134 : 200, owner.x, owner.y, owner)
         }
       }
     }
@@ -1775,7 +1800,7 @@ on('player:beatDash', (player: Player) => {
   // already telegraphed this 2× area during the charge fill). chargedDashActive flag is
   // set at dash initiation and cleared here so it only buffs ONE beat-dash event.
   const aoeMult = player.chargedDashActive ? 2.0 : 1.0
-  const shockRadius = player.ring.radius * 0.7 * player.modifiers.beatBlastMult * aoeMult
+  const shockRadius = player.ring.radius * BEAT_DASH_RADIUS_MULT * player.modifiers.beatBlastMult * aoeMult
   const damage = player.damage * player.modifiers.damageMult
   // Reverb push strength scales with the same upgrades that grow the AOE (beat blast + Quiet
   // Storm) so a bigger wave hits harder, but dampened by ^0.35 (gentler than sqrt) so the push
@@ -2428,7 +2453,7 @@ function processZoneFires(): void {
     for (const fire of fires) if (fire.wall.zone?.mode === 'damage') tryHitZone(fire.wall, player0, enemies0)
     // One heal SFX per beat per kind — bright chime if it healed the player, dull/ominous tone if it
     // healed an enemy (bad for you). Only fires when a heal actually landed (not at full HP).
-    if (healFlags & 1) playWallHealPlayer()
+    if (healFlags & 1) playHeal()   // unified heal chime (same as volatile nourish)
     if (healFlags & 2) playWallHealEnemy()
   }
   // Pass 2 — grace window: re-check the band for a short spell so an entity that slips in a frame
@@ -2686,17 +2711,18 @@ function updateDesigner(dt: number): void {
   const cam = getCamera()
   const enemies = getEnemies()
   const grid = getGrid()
-  updatePlayer(player, dt)
-  perfStart('d_dashshots'); updateDashShots(dt); perfEnd('d_dashshots')     // Bolt projectiles
-  perfStart('d_bullets'); updateEnemyBullets(dt); perfEnd('d_bullets')      // bullets travel + cluster cascade spawn
-  perfStart('d_shockwaves'); updateShockWaves(dt); perfEnd('d_shockwaves')  // Reverb / push-mode wave
-  perfStart('d_detons'); updateEnemyDetonations(dt); perfEnd('d_detons')    // detonation rings + peak damage
-  perfStart('d_tethers'); updateTethers(dt); perfEnd('d_tethers')           // tether beams + damage window
-  updatePendingPushDetonations(dt) // Push-mode wave/visual queue — fires 0.10s after landing so wave mid-point aligns with tether strike
-  updatePendingSounds(dt) // Push-mode ring sound queue — fires on the correct beat after wave retires
+  perfStart('u_player'); updatePlayer(player, dt); perfEnd('u_player')
+  perfStart('u_dashshots'); updateDashShots(dt); perfEnd('u_dashshots')     // Bolt projectiles
+  perfStart('u_bullets'); updateEnemyBullets(dt); perfEnd('u_bullets')      // bullets travel + cluster cascade spawn
+  perfStart('u_shockwaves'); updateShockWaves(dt); perfEnd('u_shockwaves')  // Reverb / push-mode wave
+  perfStart('u_detons'); updateEnemyDetonations(dt); perfEnd('u_detons')    // detonation rings + peak damage
+  perfStart('u_tethers'); updateTethers(dt); perfEnd('u_tethers')           // tether beams + damage window
+  // Push-mode wave/visual + ring-sound queues (shared label with the gameplay path).
+  perfStart('u_pending'); updatePendingPushDetonations(dt); updatePendingSounds(dt); perfEnd('u_pending')
   // Tick all alive enemies (spawn-test ephemerals AND any children they summon — totems,
   // shrines, summoners. Without this, summoned children stay frozen at spawn radius 1 = "tiny specs").
   // Player can take damage normally — but won't die because death check is gated to phase 'playing'.
+  perfStart('u_grid')
   grid.clear()
   for (const e of enemies) {
     if (e.alive) grid.insert(e)
@@ -2704,6 +2730,7 @@ function updateDesigner(dt: number): void {
   for (const orb of getOrbs()) {
     if (orb.alive && !orb.dying) grid.insert(orb)
   }
+  perfEnd('u_grid')
   // Process queued volatile explosions so designer-spawned exploders actually detonate
   processVolatileExplosions(player, enemies, dt)
   // Process pending revenge rings — without this, revenge enemies in designer queue their
@@ -2721,6 +2748,26 @@ function updateDesigner(dt: number): void {
             if (hurtPlayer(player, pr.damage)) playPlayerHit()
           }
           break
+        }
+      }
+      // Consume: eat orbs at ring peak, heal source enemy (mirrors the main-loop pass — without
+      // this, revenge+consume enemies fire rings in the designer but never eat the hearts).
+      if (pr.consume) {
+        const allOrbs = getOrbs()
+        for (const orb of allOrbs) {
+          if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
+          for (const origin of pr.origins) {
+            const odx = orb.x - origin.x
+            const ody = orb.y - origin.y
+            const oDist = Math.sqrt(odx * odx + ody * ody)
+            if (Math.abs(oDist - pr.radius) < orb.radius + 2) {
+              collectOrb(orb, 'enemy')
+              healEnemy(pr.enemy, 1)
+              const isHP = orb.orbType === 'hp'
+              Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 250 : 150, isHP ? 190 : 255, isHP ? 134 : 200, pr.enemy.x, pr.enemy.y, pr.enemy)
+              break  // one origin per orb
+            }
+          }
         }
       }
       pendingRevenges[i] = pendingRevenges[pendingRevenges.length - 1]!
@@ -2754,16 +2801,17 @@ function updateDesigner(dt: number): void {
       if (e.zoneSlowFrac !== 0) e.zoneSlowFrac = 0
     }
   }
-  perfStart('d_enemies')
+  perfStart('u_enemies')
   for (const e of enemies) {
     if (e.dying) updateDeath(e, dt)
     else if (e.alive) updateEnemy(e, player, dt, grid)
   }
-  perfEnd('d_enemies')
+  perfEnd('u_enemies')
   // Ritual nodes (orbiting nodes around summoners) — without this, summoner nodes are frozen.
   updateRitualNodes(dt)
   // Tick orbs (grow-in, animations). Player pushes orbs aside on contact — collection happens
   // via the ring sweep (HitDetection's player:beat handler), same as real game.
+  perfStart('u_orbs')
   updateOrbs(dt)
   const orbs = getOrbs()
   for (const orb of orbs) {
@@ -2782,7 +2830,8 @@ function updateDesigner(dt: number): void {
       player.y -= ny * overlap * 0.15
     }
   }
-  perfStart('d_collision')
+  perfEnd('u_orbs')
+  perfStart('u_collision')
   // Orb separation (grid-accelerated, mirrors real-game pass). Uses resolveOrbCollision
   // helper so the battering-ram rules stay in sync with the real-game pass below.
   for (const orb of orbs) {
@@ -2891,7 +2940,7 @@ function updateDesigner(dt: number): void {
   }
   const pc = clampToArena(player.x, player.y, player.hitRadius)
   player.x = pc.x; player.y = pc.y
-  perfEnd('d_collision')
+  perfEnd('u_collision')
   // Drop dead/cleaned enemies (ephemerals + their offspring)
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i]!
@@ -2922,21 +2971,25 @@ export function update(dt: number): void {
   if (!Input.isKeyDown('p')) perfExportLock = false
 
   const phase = getPhase()
+  // Perf attribution: tag every frame with its phase and count this fixed-update step so the
+  // tracker works in EVERY mode (not just play/designer) and catch-up spirals are visible.
+  perfSetPhase(phase)
+  perfStep()
 
   if (phase === 'designer') {
     updateDesigner(dt)
     return
   }
   if (phase === 'title' || phase === 'dead' || phase === 'challenge_select' || phase === 'paused' || phase === 'entering_name') {
-    advancePatternClock(dt)
+    perfStart('PHASE_UPD'); advancePatternClock(dt); perfEnd('PHASE_UPD')
     return
   }
   if (phase === 'upgrading') {
-    updateUpgradeScreen(dt)
+    perfStart('PHASE_UPD'); updateUpgradeScreen(dt); perfEnd('PHASE_UPD')
     return
   }
   if (phase === 'shopping') {
-    updateShopScreen(dt)
+    perfStart('PHASE_UPD'); updateShopScreen(dt); perfEnd('PHASE_UPD')
     return
   }
 
@@ -3073,7 +3126,7 @@ export function update(dt: number): void {
   // Toggle arena shape with G key
   if (Input.isKeyDown('g') && !arenaToggleLock) {
     arenaToggleLock = true
-    const shapes = ['rect', 'circle', 'hex', 'pill', 'cross'] as const
+    const shapes = ['rect', 'circle', 'hex', 'pill', 'cross', 'polygon'] as const
     const cur = shapes.indexOf(getArenaShape())
     setArenaShape(shapes[(cur + 1) % shapes.length]!)
   }
@@ -3121,13 +3174,13 @@ export function update(dt: number): void {
   updatePlayer(player, dt)
   perfEnd('u_player')
 
-  updateDashShots(dt)    // Bolt projectiles — advance and detonate on lifetime expiry (may spawn shock waves)
-  updateEnemyBullets(dt) // Enemy ranged ring bullets — travel, then spawn detonation on expiry (push mode may spawn shock waves)
-  updateShockWaves(dt)   // Reverb / push-mode wave — runs AFTER spawners so newly-spawned waves push on the same frame
-  updateEnemyDetonations(dt)  // Detonation rings expand; apply damage at peak
-  updateTethers(dt)      // Tether beams — apply damage in the bright window, retire after fade
-  updatePendingPushDetonations(dt) // Push-mode wave/visual queue — fires 0.10s after landing so wave mid-point aligns with tether strike
-  updatePendingSounds(dt) // Push-mode ring sound queue — fires on the correct beat after wave retires
+  perfStart('u_dashshots'); updateDashShots(dt); perfEnd('u_dashshots')    // Bolt projectiles — advance + detonate on expiry
+  perfStart('u_bullets'); updateEnemyBullets(dt); perfEnd('u_bullets')     // Enemy ranged ring bullets — travel, then detonate
+  perfStart('u_shockwaves'); updateShockWaves(dt); perfEnd('u_shockwaves') // Reverb / push-mode wave — runs AFTER spawners
+  perfStart('u_detons'); updateEnemyDetonations(dt); perfEnd('u_detons')   // Detonation rings expand; apply damage at peak
+  perfStart('u_tethers'); updateTethers(dt); perfEnd('u_tethers')          // Tether beams — damage window, retire after fade
+  // Push-mode wave/visual + ring-sound queues — fire shortly after landing so wave/strike align.
+  perfStart('u_pending'); updatePendingPushDetonations(dt); updatePendingSounds(dt); perfEnd('u_pending')
 
   // Danger music — dark layer when low HP
   updateDangerMusic(player.hp / player.maxHp)
@@ -3550,7 +3603,7 @@ export function update(dt: number): void {
               healEnemy(pr.enemy, 1)
               const isHP = orb.orbType === 'hp'
               if (isHP) hpEatenThisRing++
-              Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 255 : 150, isHP ? 222 : 255, isHP ? 150 : 200, pr.enemy.x, pr.enemy.y, pr.enemy)
+              Renderer.addAbsorbEffect(orb.x, orb.y, isHP ? 250 : 150, isHP ? 190 : 255, isHP ? 134 : 200, pr.enemy.x, pr.enemy.y, pr.enemy)
               break  // one origin per orb
             }
           }
@@ -3590,42 +3643,50 @@ export function update(dt: number): void {
   perfStart('u_orbs')
   updateOrbs(dt)
 
-  // Magnet pull — each orb attracted to closest magnet enemy
-  const magnetOrbs = getOrbs()
-  for (const orb of magnetOrbs) {
-    if (!orb.alive || orb.dying) continue
-    let closestDist = Infinity
-    let closestEnemy: Enemy | null = null
-    for (const enemy of enemies) {
-      if (!enemy.alive || enemy.dying || !enemy.magnet) continue
-      const dx = orb.x - enemy.x
-      const dy = orb.y - enemy.y
-      const dist = Math.sqrt(dx * dx + dy * dy)
-      if (dist < enemy.magnetRange && dist < closestDist) {
-        closestDist = dist
-        closestEnemy = enemy
+  // Magnet pull — each orb attracted to closest magnet enemy. Collect live magnet enemies
+  // ONCE up front so the per-orb loop only iterates magnets (and skips entirely when there are
+  // none — the common case). Selection uses squared distance so the only sqrt is the single one
+  // needed for the actual pull. Behavior is identical to the old O(orbs×enemies) scan.
+  const magnetEnemies: Enemy[] = []
+  for (const e of enemies) {
+    if (e.alive && !e.dying && e.magnet) magnetEnemies.push(e)
+  }
+  if (magnetEnemies.length > 0) {
+    const magnetOrbs = getOrbs()
+    for (const orb of magnetOrbs) {
+      if (!orb.alive || orb.dying) continue
+      let closestDistSq = Infinity
+      let closestEnemy: Enemy | null = null
+      for (const enemy of magnetEnemies) {
+        const dx = orb.x - enemy.x
+        const dy = orb.y - enemy.y
+        const distSq = dx * dx + dy * dy
+        if (distSq < enemy.magnetRange * enemy.magnetRange && distSq < closestDistSq) {
+          closestDistSq = distSq
+          closestEnemy = enemy
+        }
       }
-    }
-    if (closestEnemy && closestDist > closestEnemy.radius + orb.radius) {
-      const dx = closestEnemy.x - orb.x
-      const dy = closestEnemy.y - orb.y
-      const len = Math.sqrt(dx * dx + dy * dy)
-      const stopDist = closestEnemy.radius + orb.radius
-      if (len > stopDist) {
-        const pull = Math.min(MAGNET_STRENGTH * dt, len - stopDist)  // don't overshoot into body
-        orb.x += (dx / len) * pull
-        orb.y += (dy / len) * pull
-        // Don't let magnet pull suck the orb through a wall
-        const ow = resolveWallCollision(orb.x, orb.y, orb.radius)
-        orb.x = ow.x
-        orb.y = ow.y
+      if (closestEnemy) {
+        const dx = closestEnemy.x - orb.x
+        const dy = closestEnemy.y - orb.y
+        const len = Math.sqrt(dx * dx + dy * dy)
+        const stopDist = closestEnemy.radius + orb.radius
+        if (len > stopDist) {
+          const pull = Math.min(MAGNET_STRENGTH * dt, len - stopDist)  // don't overshoot into body
+          orb.x += (dx / len) * pull
+          orb.y += (dy / len) * pull
+          // Don't let magnet pull suck the orb through a wall
+          const ow = resolveWallCollision(orb.x, orb.y, orb.radius)
+          orb.x = ow.x
+          orb.y = ow.y
+        }
       }
     }
   }
   perfEnd('u_orbs')
 
   // Multi-pass separation
-  perfStart('separation')
+  perfStart('u_collision')
   const orbs = getOrbs()
   for (let pass = 0; pass < 2; pass++) {
     // Build grid with enemies + orbs
@@ -3837,7 +3898,7 @@ export function update(dt: number): void {
     player.y = pc.y
   }
 
-  perfEnd('separation')
+  perfEnd('u_collision')
 
   cleanupOrbs()
 

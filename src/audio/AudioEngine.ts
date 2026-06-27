@@ -686,6 +686,48 @@ export function playWallHealPlayer(): void {
   s.start(t + 0.05); s.stop(t + 0.29)
 }
 
+// Player got HEALED (volatile nourish blast OR wall heal zone). A warm, uplifting in-key bell
+// ARPEGGIO (root → third → fifth → octave) rising quickly, capped with a high sustained shimmer —
+// resolves the glittering twinkle of the heal buildup into a clear "you were nourished" chime.
+// Shared by volatile + walls; callers fire it only when HP was actually restored.
+let lastHealSfx = 0
+export function playHeal(): void {
+  ensureContext()
+  const c = ctx!
+  // Throttle — a multi-target heal frame (e.g. a big blast) shouldn't stack several chimes into a blare.
+  if (c.currentTime - lastHealSfx < 0.08) return
+  lastHealSfx = c.currentTime
+  // HIGH priority — heal is player-relevant feedback that fires right as the (high-priority) heal
+  // explosion is consuming the voice budget; 'low' got denied past the soft cap so it never sounded.
+  if (!admitVoice('high')) return
+  // Start a hair after the blast transient so the chime reads ON TOP of the boom, not buried in it.
+  const t = c.currentTime + 0.05
+  const degs = [0, 2, 4, 7]                       // rising root → third → fifth → octave
+  const fallback = [523, 659, 784, 1047]          // C-major arpeggio if no music key is set
+  for (let i = 0; i < degs.length; i++) {
+    const at = t + i * 0.045                       // staggered upward, flows like the twinkle resolving
+    const f = currentMusic ? degreeToFreq(currentMusic, degs[i]!, 1) : fallback[i]!
+    const o = c.createOscillator(); const g = c.createGain()
+    o.type = 'sine'
+    o.frequency.setValueAtTime(f, at)
+    g.gain.setValueAtTime(0.0001, at)
+    g.gain.linearRampToValueAtTime(rVol(0.17 - i * 0.012), at + 0.012)
+    g.gain.exponentialRampToValueAtTime(0.001, at + 0.34)
+    o.connect(g); g.connect(master)
+    const rs = c.createGain(); rs.gain.value = rVol(0.14); g.connect(rs); rs.connect(reverbInput)
+    o.start(at); o.stop(at + 0.38)
+  }
+  // High sustained shimmer on top — the twinkle's sparkle, resolving the buildup.
+  const s = c.createOscillator(); const sg = c.createGain()
+  s.type = 'sine'
+  s.frequency.setValueAtTime(currentMusic ? degreeToFreq(currentMusic, 0, 3) : 2093, t + 0.13)
+  sg.gain.setValueAtTime(0.0001, t + 0.13)
+  sg.gain.linearRampToValueAtTime(rVol(0.07), t + 0.15)
+  sg.gain.exponentialRampToValueAtTime(0.001, t + 0.5)
+  s.connect(sg); sg.connect(reverbInput)
+  s.start(t + 0.13); s.stop(t + 0.52)
+}
+
 // Wall heal zone — an ENEMY got healed (bad for the player). A dull, slightly ominous low tone that
 // sags downward, low-passed so it reads muted/heavy, with a faintly detuned twin for unease. Clearly
 // distinct from the bright player-heal chime.

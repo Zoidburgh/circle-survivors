@@ -1322,7 +1322,7 @@
     {
       "name": "BounceBasic",
       "color": "#b0bec5",
-      "hp": 8,
+      "hp": 4,
       "moveSpeed": 380,
       "radius": 100,
       "ringRadius": 120,
@@ -2096,7 +2096,7 @@
       "hp": 5,
       "moveSpeed": 50,
       "radius": 85,
-      "ringRadius": 120,
+      "ringRadius": 160,
       "key": "33",
       "role": "ping",
       "sound": "ping",
@@ -2108,7 +2108,7 @@
       ],
       "rings": [
         {
-          "ringRadius": 120,
+          "ringRadius": 160,
           "sound": "ping",
           "beats": [
             0,
@@ -2124,7 +2124,7 @@
           "rangedPattern": "aimed",
           "bulletCount": 1,
           "bulletSpeed": 250,
-          "bulletLifetime": 2,
+          "bulletLifetime": 1,
           "rotationStep": 0,
           "surroundRadius": 70,
           "spreadAngle": 1.0471975511965976,
@@ -2138,7 +2138,7 @@
               "rangedPattern": "spread_cone",
               "bulletCount": 2,
               "bulletSpeed": 280,
-              "bulletLifetime": 2,
+              "bulletLifetime": 1.5,
               "rotationStep": 0,
               "surroundRadius": 70,
               "spreadAngle": 1.2217304763960306,
@@ -2189,6 +2189,135 @@
       "dodgeCharges": 2,
       "dodgeChargeTime": 1.5,
       "dodgeDistance": 100,
+      "dodgeSpeed": 1,
+      "shield": false,
+      "shieldRechargeTime": 4,
+      "movePattern": "pursue",
+      "totemSpawn": "",
+      "dropType": "xp",
+      "dropXp": 100,
+      "dropHp": 0,
+      "dropCount": 1,
+      "summon": false,
+      "summonNodes": 3,
+      "summonPhases": [],
+      "isShrine": false,
+      "shrineSpawnEnemy": "",
+      "shrineXpCount": 0,
+      "shrineHpCount": 0,
+      "shrinePhases": [
+        {
+          "xpOrbs": 3
+        }
+      ]
+    },
+    {
+      "name": "Enemy34",
+      "color": "#ffd54f",
+      "hp": 5,
+      "moveSpeed": 50,
+      "radius": 100,
+      "ringRadius": 210,
+      "key": "34",
+      "role": "rim",
+      "sound": "rim",
+      "beats": [
+        0.5,
+        1.5,
+        2.5,
+        3.5,
+        4.5,
+        5.5,
+        6.5,
+        7.5
+      ],
+      "rings": [
+        {
+          "ringRadius": 210,
+          "sound": "rim",
+          "beats": [
+            0.5,
+            1.5,
+            2.5,
+            3.5,
+            4.5,
+            5.5,
+            6.5,
+            7.5
+          ],
+          "edgeMode": false,
+          "edgePoints": 3,
+          "edgeActive": 1,
+          "edgeSwitchBeats": 1,
+          "rangedMode": true,
+          "rangedPattern": "aimed",
+          "bulletCount": 1,
+          "bulletSpeed": 280,
+          "bulletLifetime": 1,
+          "rotationStep": 0,
+          "surroundRadius": 70,
+          "spreadAngle": 1.0471975511965976,
+          "rotationMode": "player_anchored",
+          "tracking": false,
+          "trackingStrength": 1.5707963267948966,
+          "volleyMode": false,
+          "volleyWindow": 0.25,
+          "clusterLayers": [
+            {
+              "rangedPattern": "spread_cone",
+              "bulletCount": 2,
+              "bulletSpeed": 240,
+              "bulletLifetime": 1.5,
+              "rotationStep": 0,
+              "surroundRadius": 70,
+              "spreadAngle": 1.2217304763960306,
+              "rotationMode": "player_anchored",
+              "tracking": false,
+              "trackingStrength": 1.5707963267948966,
+              "volleyMode": false,
+              "volleyWindow": 0.25,
+              "pushMode": false,
+              "explodeMode": false,
+              "healMode": false,
+              "staccato": false,
+              "staccatoHalfBeat": false,
+              "staccatoOffbeat": false,
+              "tetherMode": "closed",
+              "tetherWidth": 8,
+              "ringRadius": 100
+            }
+          ],
+          "pushMode": false,
+          "explodeMode": false,
+          "healMode": false,
+          "staccato": false,
+          "staccatoHalfBeat": false,
+          "staccatoOffbeat": false,
+          "tetherMode": "off",
+          "tetherWidth": 8,
+          "tetherSound": ""
+        }
+      ],
+      "blocksRings": true,
+      "consume": false,
+      "magnet": false,
+      "magnetRange": 200,
+      "blink": false,
+      "blinkBeats": 4,
+      "volatile": false,
+      "volatileRange": 150,
+      "volatileHeal": false,
+      "revenge": false,
+      "revengeRings": 4,
+      "revengeRadius": 120,
+      "pusher": false,
+      "pusherBeats": 2,
+      "pusherPhase": 0,
+      "pusherStrength": 600,
+      "dodge": true,
+      "dodgeCharges": 2,
+      "dodgeChargeTime": 5.5,
+      "dodgeDistance": 430,
       "dodgeSpeed": 1,
       "shield": false,
       "shieldRechargeTime": 4,
@@ -2371,6 +2500,12 @@
             "phaseBeats": 0,
             "ticked": true,
             "pauseFraction": 0.2
+          },
+          "zone": {
+            "mode": "heal",
+            "range": 200,
+            "beatsPerCycle": 2,
+            "phase": 0
           }
         },
         {
@@ -2396,6 +2531,12 @@
             "phaseBeats": 0,
             "ticked": true,
             "pauseFraction": 0.2
+          },
+          "zone": {
+            "mode": "damage",
+            "range": 120,
+            "beatsPerCycle": 2,
+            "phase": 0
           }
         }
       ]
@@ -2406,15 +2547,21 @@
       "enemies": [],
       "walls": [
         {
-          "ax": 857.5,
-          "ay": 507.4999999999999,
-          "bx": 857.5,
-          "by": 507.4999999999999,
+          "ax": 877.8124999999998,
+          "ay": 512.1862279511532,
+          "bx": 877.8124999999998,
+          "by": 512.1862279511532,
           "radius": 158,
           "spring": {
             "beatsPerCycle": 1,
             "phase": 0,
             "strength": 1500
+          },
+          "zone": {
+            "mode": "heal",
+            "range": 70,
+            "beatsPerCycle": 2,
+            "phase": 0
           }
         },
         {

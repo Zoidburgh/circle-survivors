@@ -1,13 +1,17 @@
 // Arena — fixed play area with Brotato-style camera
 // Supports rectangle and circle shapes
 
-import { ARENA_BUFFER, CAMERA_LEAD_AMOUNT, PLAYER_RADIUS } from '../utils/constants.ts'
+import { ARENA_BUFFER, CAMERA_LEAD_AMOUNT, CAMERA_LEAD_GATE_K, CAMERA_LEAD_GATE_LO, CAMERA_LEAD_GATE_HI, CAMERA_LEAD_SMOOTH_K, CAMERA_FOLLOW_DEADZONE, PLAYER_RADIUS, PLAYER_SPEED } from '../utils/constants.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 
-export type ArenaShape = 'rect' | 'circle' | 'hex' | 'pill' | 'cross'
+export type ArenaShape = 'rect' | 'circle' | 'hex' | 'pill' | 'cross' | 'polygon'
 
 // ── Configuration ──
 let arenaShape: ArenaShape = 'rect'
+// Regular N-gon side count for the 'polygon' shape (triangle..dodecagon). circumradius = ARENA_RADIUS.
+let polygonSides = 8
+export function getPolygonSides(): number { return polygonSides }
+export function setPolygonSides(n: number): void { polygonSides = Math.max(3, Math.min(12, Math.round(n))) }
 export const ARENA_W = 1700
 export const ARENA_H = 1100
 export const ARENA_RADIUS = 1000  // for circle mode
@@ -133,6 +137,49 @@ function isInHex(x: number, y: number): boolean {
   return true
 }
 
+// ── Regular N-gon geometry ──
+// Circumradius = ARENA_RADIUS. Edge outward-normals sit at angles (π/2 + k·2π/N) — i.e. one edge
+// is flat at the bottom (normal pointing +y). Vertices bisect adjacent normals (base = π/2 + π/N).
+// At N=6 this reproduces the existing hex outline, so it's a clean generalization.
+export function getPolygonVertices(cx: number, cy: number, r: number, sides: number): { x: number; y: number }[] {
+  const verts: { x: number; y: number }[] = []
+  const base = Math.PI / 2 + Math.PI / sides
+  const stepA = (Math.PI * 2) / sides
+  for (let i = 0; i < sides; i++) {
+    const a = base + i * stepA
+    verts.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r })
+  }
+  return verts
+}
+
+/** Clamp a point inside the regular N-gon (single half-plane pass, mirrors clampToHex). */
+function clampToPolygon(x: number, y: number, entityRadius: number): { x: number; y: number } {
+  let rx = x - ARENA_CX
+  let ry = y - ARENA_CY
+  const sides = polygonSides
+  const apothem = ARENA_RADIUS * Math.cos(Math.PI / sides) - entityRadius
+  const stepA = (Math.PI * 2) / sides
+  for (let k = 0; k < sides; k++) {
+    const a = Math.PI / 2 + k * stepA
+    const nx = Math.cos(a), ny = Math.sin(a)
+    const dot = rx * nx + ry * ny
+    if (dot > apothem) { rx -= (dot - apothem) * nx; ry -= (dot - apothem) * ny }
+  }
+  return { x: ARENA_CX + rx, y: ARENA_CY + ry }
+}
+
+function isInPolygon(x: number, y: number): boolean {
+  const rx = x - ARENA_CX, ry = y - ARENA_CY
+  const sides = polygonSides
+  const apothem = ARENA_RADIUS * Math.cos(Math.PI / sides)
+  const stepA = (Math.PI * 2) / sides
+  for (let k = 0; k < sides; k++) {
+    const a = Math.PI / 2 + k * stepA
+    if (rx * Math.cos(a) + ry * Math.sin(a) > apothem) return false
+  }
+  return true
+}
+
 // ── Pill geometry helpers ──
 /** Clamp to pill (stadium) shape — straight section + semicircle caps */
 function clampToPill(x: number, y: number, entityRadius: number): { x: number; y: number } {
@@ -178,10 +225,13 @@ export interface Camera {
   targetY: number
   smoothLeadX: number
   smoothLeadY: number
+  lastPlayerX: number  // for deriving actual player velocity (speed gate)
+  lastPlayerY: number
+  speedFrac: number    // low-passed fraction of full speed (0..1) — gates the lead
 }
 
 export function createCamera(): Camera {
-  return { x: ARENA_CX, y: ARENA_CY, targetX: ARENA_CX, targetY: ARENA_CY, smoothLeadX: 0, smoothLeadY: 0 }
+  return { x: ARENA_CX, y: ARENA_CY, targetX: ARENA_CX, targetY: ARENA_CY, smoothLeadX: 0, smoothLeadY: 0, lastPlayerX: ARENA_CX, lastPlayerY: ARENA_CY, speedFrac: 0 }
 }
 
 export function updateCamera(
@@ -195,23 +245,45 @@ export function updateCamera(
   dt: number,
   zoom: number = 1
 ): void {
-  // Lead ahead — smooth ramp toward movement direction
-  const targetLeadX = moveX * CAMERA_LEAD_AMOUNT
-  const targetLeadY = moveY * CAMERA_LEAD_AMOUNT
-  const leadSpeed = 4  // how fast the lead ramps up/down
-  cam.smoothLeadX += (targetLeadX - cam.smoothLeadX) * leadSpeed * dt
-  cam.smoothLeadY += (targetLeadY - cam.smoothLeadY) * leadSpeed * dt
+  // ── Speed gate ── derive the player's ACTUAL speed from frame-to-frame displacement (captures
+  // dash, not just input) and low-pass it into speedFrac (0..1). A quick tap can't build speedFrac
+  // up, so the lead stays suppressed on micro-movements (no forward-then-back bounce); sustained
+  // running / dashing ramps it to full. (#1)
+  const vx = dt > 0 ? (playerX - cam.lastPlayerX) / dt : 0
+  const vy = dt > 0 ? (playerY - cam.lastPlayerY) / dt : 0
+  cam.lastPlayerX = playerX
+  cam.lastPlayerY = playerY
+  // Target scales with ACTUAL speed and is allowed past 1 (cap 2.5) — a fast dash (≈2–3× walk speed)
+  // drives the gate up quickly, while a same-direction tap (1× speed) stays well under LO, so dashes
+  // get their lead but taps never do.
+  const speedFracTarget = Math.min(2.5, Math.sqrt(vx * vx + vy * vy) / PLAYER_SPEED)
+  cam.speedFrac += (speedFracTarget - cam.speedFrac) * (1 - Math.exp(-CAMERA_LEAD_GATE_K * dt))
+  // Remap the gate so anything below LO produces ZERO lead (taps) and HI+ produces full lead.
+  const gate = Math.max(0, Math.min(1, (cam.speedFrac - CAMERA_LEAD_GATE_LO) / (CAMERA_LEAD_GATE_HI - CAMERA_LEAD_GATE_LO)))
 
-  // Smooth follow — boost when player is far from camera (fast dash)
+  // Lead — points along movement INPUT (stable intent), magnitude scaled by the gated speed.
+  // Frame-rate-independent ramp via 1 - e^(-k·dt). (#3)
+  const targetLeadX = moveX * CAMERA_LEAD_AMOUNT * gate
+  const targetLeadY = moveY * CAMERA_LEAD_AMOUNT * gate
+  const leadBlend = 1 - Math.exp(-CAMERA_LEAD_SMOOTH_K * dt)
+  cam.smoothLeadX += (targetLeadX - cam.smoothLeadX) * leadBlend
+  cam.smoothLeadY += (targetLeadY - cam.smoothLeadY) * leadBlend
+
+  // ── Smooth follow with a small deadzone ── boost when far (fast dash). The deadzone makes the
+  // camera hold perfectly still for sub-pixel/tiny movements (#2); the step is frame-rate-independent
+  // and can never overshoot. (#3)
   cam.targetX = playerX + cam.smoothLeadX
   cam.targetY = playerY + cam.smoothLeadY
   const dx = cam.targetX - cam.x
   const dy = cam.targetY - cam.y
   const dist = Math.sqrt(dx * dx + dy * dy)
-  const smoothing = dist > 80 ? 6 + (dist - 80) * 0.08 : 6
-  const step = Math.min(smoothing * dt, 1)  // never overshoot
-  cam.x += dx * step
-  cam.y += dy * step
+  if (dist > CAMERA_FOLLOW_DEADZONE) {
+    const smoothing = dist > 80 ? 6 + (dist - 80) * 0.08 : 6
+    const step = 1 - Math.exp(-smoothing * dt)
+    const reach = (dist - CAMERA_FOLLOW_DEADZONE) / dist  // close only the gap beyond the deadzone
+    cam.x += dx * reach * step
+    cam.y += dy * reach * step
+  }
 
   // Clamp camera. Effective viewport in WORLD units = screen / zoom. With zoom < 1 the
   // viewport is wider in world units, so the camera can shift further from arena edges
@@ -239,7 +311,8 @@ export function updateCamera(
     const hexHalfH = ARENA_RADIUS * Math.cos(Math.PI / 6)
     loX = ARENA_CX - hexHalfW + halfW - ARENA_BUFFER; hiX = ARENA_CX + hexHalfW - halfW + ARENA_BUFFER
     loY = ARENA_CY - hexHalfH + halfH - ARENA_BUFFER; hiY = ARENA_CY + hexHalfH - halfH + ARENA_BUFFER
-  } else if (arenaShape === 'circle') {
+  } else if (arenaShape === 'circle' || arenaShape === 'polygon') {
+    // N-gon fits inside circumradius ARENA_RADIUS — bound the camera by that disc (conservative).
     loX = ARENA_CX - ARENA_RADIUS + halfW - ARENA_BUFFER; hiX = ARENA_CX + ARENA_RADIUS - halfW + ARENA_BUFFER
     loY = ARENA_CY - ARENA_RADIUS + halfH - ARENA_BUFFER; hiY = ARENA_CY + ARENA_RADIUS - halfH + ARENA_BUFFER
   } else {
@@ -266,6 +339,9 @@ export function clampToArena(x: number, y: number, radius: number): { x: number;
   }
   if (arenaShape === 'hex') {
     return clampToHex(x, y, radius)
+  }
+  if (arenaShape === 'polygon') {
+    return clampToPolygon(x, y, radius)
   }
   if (arenaShape === 'circle') {
     const dx = x - ARENA_CX
@@ -331,7 +407,7 @@ export interface Wall {
   ax: number; ay: number
   bx: number; by: number
   radius: number    // capsule thickness (half-width)
-  bend?: number     // signed perpendicular bulge from chord midpoint; 0/undefined = straight
+  bend?: number | undefined     // signed perpendicular bulge from chord midpoint; 0/undefined = straight
   motion?: WallMotion   // optional dynamic behavior; undefined = static wall
   translation?: WallTranslation   // optional path translation; stacks on top of motion rotation
   fade?: WallFade       // optional shrink/grow cycle; scales geometry per frame
@@ -340,7 +416,7 @@ export interface Wall {
   // Persistence: when reading from JSON, only the authored fields above are present; the
   // runtime fields are derived and never saved. Designer always reads/writes the AUTHORED
   // (rest) fields directly so the user never sees an animated wall while editing.
-  restAx?: number; restAy?: number; restBx?: number; restBy?: number; restBend?: number
+  restAx?: number; restAy?: number; restBx?: number; restBy?: number; restBend?: number | undefined
   groupCenterX?: number; groupCenterY?: number
   // Group motion — propagated to every wall in the connected group from whichever wall in
   // the group has motion authored on it. Lets a single rotate config spin the whole shape
@@ -1200,7 +1276,7 @@ export function getSpawnPos(playerX: number, playerY: number, minDist = 250): { 
       const ry = (Math.random() - 0.5) * 2 * PILL_R * 0.7
       const c = clampToPill(ARENA_CX + rx, ARENA_CY + ry, 40)
       x = c.x; y = c.y
-    } else if (arenaShape === 'circle' || arenaShape === 'hex') {
+    } else if (arenaShape === 'circle' || arenaShape === 'hex' || arenaShape === 'polygon') {
       const angle = Math.random() * Math.PI * 2
       // Was 0.8 — too restrictive. Use 0.95 so spawns can reach near the arena edge.
       const dist = Math.random() * (ARENA_RADIUS * 0.95)
@@ -1208,6 +1284,9 @@ export function getSpawnPos(playerX: number, playerY: number, minDist = 250): { 
       y = ARENA_CY + Math.sin(angle) * dist
       if (arenaShape === 'hex') {
         const c = clampToHex(x, y, 40)
+        x = c.x; y = c.y
+      } else if (arenaShape === 'polygon') {
+        const c = clampToPolygon(x, y, 40)
         x = c.x; y = c.y
       }
     } else {
@@ -1255,7 +1334,7 @@ export function getPerimeterSpawnPos(playerX: number, playerY: number, minDistFr
         x = ARENA_CX + (Math.random() - 0.5) * 2 * PILL_HALF_W
         y = ARENA_CY + (Math.random() < 0.5 ? -1 : 1) * PILL_R * (0.85 + Math.random() * 0.10)
       }
-    } else if (arenaShape === 'circle' || arenaShape === 'hex') {
+    } else if (arenaShape === 'circle' || arenaShape === 'hex' || arenaShape === 'polygon') {
       // Near the outer radius — 85-95% out
       const angle = Math.random() * Math.PI * 2
       const dist = ARENA_RADIUS * (0.85 + Math.random() * 0.10)
@@ -1263,6 +1342,9 @@ export function getPerimeterSpawnPos(playerX: number, playerY: number, minDistFr
       y = ARENA_CY + Math.sin(angle) * dist
       if (arenaShape === 'hex') {
         const c = clampToHex(x, y, 40)
+        x = c.x; y = c.y
+      } else if (arenaShape === 'polygon') {
+        const c = clampToPolygon(x, y, 40)
         x = c.x; y = c.y
       }
     } else {
@@ -1291,6 +1373,7 @@ export function isInArena(x: number, y: number): boolean {
   if (arenaShape === 'cross') return isInCross(x, y)
   if (arenaShape === 'pill') return isInPill(x, y)
   if (arenaShape === 'hex') return isInHex(x, y)
+  if (arenaShape === 'polygon') return isInPolygon(x, y)
   if (arenaShape === 'circle') {
     const dx = x - ARENA_CX
     const dy = y - ARENA_CY

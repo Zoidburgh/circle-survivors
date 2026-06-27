@@ -296,15 +296,16 @@ export function initHitDetection(): void {
         if ('hp' in entity) continue
         const orb = entity as XPOrb
         if (!orb.alive || orb.dying || orb.spawnTimer < 1) continue
-        const oDist = distance(origin, { x: orb.x, y: orb.y })
+        const odx = orb.x - origin.x, ody = orb.y - origin.y
+        const oDist = Math.sqrt(odx * odx + ody * ody)   // inline — avoids a transient {x,y} per orb
         if (Math.abs(oDist - ringRadius) < orb.radius + HIT_GRACE) {
           collectOrb(orb, 'enemy')
           healEnemy(enemy, 1)   // event-driven gold sparkle (stacks with a same-frame hit)
           // Absorb stream from orb to enemy
           const isHP = orb.orbType === 'hp'
-          const absR = isHP ? 255 : 150
-          const absG = isHP ? 222 : 255
-          const absB = isHP ? 150 : 200
+          const absR = isHP ? 250 : 150   // HP = gold/red blend (matches the player suck-up)
+          const absG = isHP ? 190 : 255
+          const absB = isHP ? 134 : 200
           addAbsorbEffect(orb.x, orb.y, absR, absG, absB, enemy.x, enemy.y, enemy)
         }
       }

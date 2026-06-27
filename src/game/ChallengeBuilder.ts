@@ -3,7 +3,7 @@
 import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
 import type { EnemyType } from '../entities/EnemyTypes.ts'
 import { getCamera, getPhase, getPlayer } from '../core/GameState.ts'
-import { setArenaShape, clampToArena, setWalls, ARENA_CX, ARENA_CY, getWallSnapPoints, SNAP_POINT_5_THRESHOLD } from '../game/Arena.ts'
+import { setArenaShape, setPolygonSides, clampToArena, setWalls, ARENA_CX, ARENA_CY, getWallSnapPoints, SNAP_POINT_5_THRESHOLD } from '../game/Arena.ts'
 import type { ArenaShape, Camera, Wall, WallMotion, WallTranslation, WallFade, WallSpring, WallZone } from '../game/Arena.ts'
 import { getDesignerZoomFactor } from '../render/Renderer.ts'
 import defaultData from '../../data/enemies.json'
@@ -16,7 +16,8 @@ export interface ChallengeEnemy {
 
 export interface Challenge {
   name: string
-  arenaShape: 'rect' | 'circle' | 'hex' | 'pill' | 'cross'
+  arenaShape: 'rect' | 'circle' | 'hex' | 'pill' | 'cross' | 'polygon'
+  polygonSides?: number   // only meaningful when arenaShape === 'polygon' (3..12); default 8
   enemies: ChallengeEnemy[]
   walls?: Wall[]   // optional for backwards-compat with pre-walls challenges
   order?: number   // lower = earlier in list, default 999
@@ -39,6 +40,7 @@ let placingWalls: Wall[] = []
 let selectedPlacementIdx = -1
 let challengeName = 'new_challenge'
 let challengeArena: Challenge['arenaShape'] = 'circle'
+let challengePolygonSides = 8
 
 // Wall-drag transient state — set on mouse-down, updated on mouse-move, committed on
 // mouse-up. Tracked in WORLD coordinates so the snap math stays simple and the ghost
@@ -1032,6 +1034,19 @@ export function setChallengeArena(shape: Challenge['arenaShape']): void {
   challengeArena = shape
   if (getPhase() === 'designer') {
     setArenaShape(shape as ArenaShape)
+    if (shape === 'polygon') setPolygonSides(challengePolygonSides)
+    const p = getPlayer()
+    const c = clampToArena(p.x, p.y, p.hitRadius)
+    p.x = c.x; p.y = c.y
+  }
+}
+
+export function getChallengePolygonSides(): number { return challengePolygonSides }
+/** Set the N-gon side count for the 'polygon' arena (3..12). Applies live in the designer. */
+export function setChallengePolygonSides(n: number): void {
+  challengePolygonSides = Math.max(3, Math.min(12, Math.round(n)))
+  if (getPhase() === 'designer' && challengeArena === 'polygon') {
+    setPolygonSides(challengePolygonSides)
     const p = getPlayer()
     const c = clampToArena(p.x, p.y, p.hitRadius)
     p.x = c.x; p.y = c.y
@@ -1086,6 +1101,7 @@ export function saveChallenge(): void {
   const challenge: Challenge = {
     name: challengeName,
     arenaShape: challengeArena,
+    polygonSides: challengePolygonSides,
     enemies: [...placingEnemies],
     walls: placingWalls.map(w => ({ ...w })),
   }
@@ -1100,6 +1116,7 @@ export function loadChallenge(name: string): void {
   if (!c) return
   activeChallenge = c
   challengeName = c.name
+  challengePolygonSides = c.polygonSides ?? 8
   setChallengeArena(c.arenaShape)
   placingEnemies = c.enemies.map(e => ({ ...e }))
   placingWalls = (c.walls ?? []).map(w => ({ ...w }))

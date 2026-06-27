@@ -613,7 +613,9 @@ export function initDesigner(): void {
           <option value="hex">Hex</option>
           <option value="pill">Pill</option>
           <option value="cross">Cross</option>
+          <option value="polygon">Polygon</option>
         </select>
+        <input id="ed-ch-poly-sides" type="number" min="3" max="12" value="8" title="Polygon sides (3-12)" style="width:46px;padding:4px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;display:none;">
       </div>
       <div style="margin-bottom:6px;">
         <span style="color:#aaa;font:10px monospace;">Pick a type → click arena to place. Click an existing ghost to select; drag to move; Delete to remove.</span>
@@ -855,6 +857,12 @@ export function initDesigner(): void {
   const chListDiv = panel.querySelector('#ed-ch-list') as HTMLDivElement
   const chNameInput = panel.querySelector('#ed-ch-name') as HTMLInputElement
   const chArenaSelect = panel.querySelector('#ed-ch-arena') as HTMLSelectElement
+  const chPolySides = panel.querySelector('#ed-ch-poly-sides') as HTMLInputElement
+  // Show the sides box only for the polygon shape, and keep it in sync with the live value.
+  const syncPolySidesUI = () => {
+    chPolySides.style.display = chArenaSelect.value === 'polygon' ? '' : 'none'
+    chPolySides.value = String(ChallengeBuilder.getChallengePolygonSides())
+  }
 
   function rebuildChTypeButtons(): void {
     chTypesDiv.innerHTML = ''
@@ -918,6 +926,7 @@ export function initDesigner(): void {
         ChallengeBuilder.loadChallenge((btn as HTMLElement).dataset.name!)
         chNameInput.value = ChallengeBuilder.getChallengeName()
         chArenaSelect.value = ChallengeBuilder.getChallengeArena()
+        syncPolySidesUI()
         rebuildChPlacements()
         rebuildChTypeButtons()
       })
@@ -931,7 +940,13 @@ export function initDesigner(): void {
   }
 
   chNameInput.addEventListener('input', () => ChallengeBuilder.setChallengeName(chNameInput.value))
-  chArenaSelect.addEventListener('change', () => ChallengeBuilder.setChallengeArena(chArenaSelect.value as Challenge['arenaShape']))
+  chArenaSelect.addEventListener('change', () => {
+    ChallengeBuilder.setChallengeArena(chArenaSelect.value as Challenge['arenaShape'])
+    syncPolySidesUI()
+  })
+  chPolySides.addEventListener('input', () => {
+    ChallengeBuilder.setChallengePolygonSides(parseInt(chPolySides.value, 10) || 8)
+  })
 
   panel.querySelector('#ed-ch-save')!.addEventListener('click', () => {
     ChallengeBuilder.saveChallenge()
