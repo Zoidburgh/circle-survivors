@@ -1010,6 +1010,8 @@ interface VolatileExplosion {
   timer: number
   duration: number
   heal: boolean   // gold nourish flash (white-hot core kept) instead of the red fire flash
+  parent?: ParticleParent | undefined   // optional: rigidly rides a moving/rotating wall (center + rotation)
+  lastPX?: number; lastPY?: number; lastRot?: number
 }
 const volatileExplosions: VolatileExplosion[] = []
 
@@ -1026,48 +1028,50 @@ export function setPendingExplosions(pending: PendingExplosionVisual[]): void {
   pendingExplosionVisuals = pending
 }
 
-export function addVolatileExplosion(x: number, y: number, range: number, r: number, g: number, b: number, heal: boolean = false): void {
-  volatileExplosions.push({ x, y, range, r, g, b, timer: 0, duration: 0.21, heal })
+export function addVolatileExplosion(x: number, y: number, range: number, r: number, g: number, b: number, heal: boolean = false, parent?: ParticleParent): void {
+  volatileExplosions.push({ x, y, range, r, g, b, timer: 0, duration: 0.21, heal, parent, lastPX: parent?.x ?? x, lastPY: parent?.y ?? y, lastRot: parent?.rot ?? 0 })
 }
 
-export function spawnVolatileParticles(cx: number, cy: number, range: number, r: number, g: number, b: number): void {
-  const count = lodCount(Math.min(56, Math.round(Math.sqrt(range) * 3.5)))
+// countMul scales the particle counts (walls tile this along the spine and pass <1 so the whole
+// strip totals ~one blast). parent (optional) rigidly attaches every particle to a moving/rotating
+// wall — same outward motion, but it rides the wall's center + rotation. No parent = world particles.
+export function spawnVolatileParticles(cx: number, cy: number, range: number, r: number, g: number, b: number, countMul = 1, parent?: ParticleParent): void {
+  // Volatile particles carry no glow tint (tintR = -1) — pass that through whichever spawner.
+  const emit = (px: number, py: number, vx: number, vy: number, pr: number, pg: number, pb: number, life: number, size: number, spin = 0) => {
+    if (parent) spawnParticleAttached(px, py, vx, vy, pr, pg, pb, life, size, -1, 0, 0, parent, 0, false, false, spin)
+    else spawnParticle(px, py, vx, vy, pr, pg, pb, life, size, spin)
+  }
+  const count = lodCount(Math.round(Math.min(56, Math.round(Math.sqrt(range) * 3.5)) * countMul))
   for (let i = 0; i < count; i++) {
     const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
-    const dist = range * (0.3 + Math.random() * 0.7)
+    // Wall bursts (parent) fill EVENLY to the edge (sqrt = area-uniform, biased outward) and launch
+    // faster so the shards reach the zone rim; the point volatile keeps its center-biased look.
+    const dist = parent ? range * Math.sqrt(0.2 + 0.8 * Math.random()) : range * (0.3 + Math.random() * 0.7)
     const px = cx + Math.cos(angle) * dist
     const py = cy + Math.sin(angle) * dist
-    const speed = 140 + Math.random() * 200
+    const speed = parent ? 210 + Math.random() * 240 : 140 + Math.random() * 200
     const outAngle = Math.atan2(py - cy, px - cx)
     const tint = Math.random()
     const pr = Math.min(255, r + Math.floor(tint * 120))
     const pg = Math.min(255, g + Math.floor(tint * 40))
     const pb = Math.min(255, b + Math.floor(tint * 40))
     const spin = (8 + Math.random() * 10) * (Math.random() < 0.5 ? 1 : -1)
-    spawnParticle(px, py,
+    emit(px, py,
       Math.cos(outAngle) * speed, Math.sin(outAngle) * speed,
       pr, pg, pb,
-      0.24 + Math.random() * 0.14, 9 + Math.random() * 7, spin)   // shortened so the big debris fade WITH the blast (no lingering stragglers)
+      0.24 + Math.random() * 0.14, 23 + Math.random() * 10, spin)   // chunky spinning shards (23–33px); shortened life so they fade WITH the blast
   }
-  // White-hot core flash particles — fast outward burst from center
-  const hotCount = lodCount(Math.min(16, Math.round(range / 10)))
-  for (let i = 0; i < hotCount; i++) {
-    const angle = Math.random() * Math.PI * 2
-    const speed = 200 + Math.random() * 300
-    spawnParticle(cx, cy,
-      Math.cos(angle) * speed, Math.sin(angle) * speed,
-      255, 240, 220,
-      0.19 + Math.random() * 0.13, 4 + Math.random() * 3)
-  }
+  // (Removed the white-hot core flash particle burst — redundant with the big white blast flash in
+  // updateAndDrawVolatileEffects, and it was the source of the grey center on fade.)
   // Edge ring sparks — fast particles tracing the blast circumference
-  const edgeCount = lodCount(Math.min(20, Math.round(range / 8)))
+  const edgeCount = lodCount(Math.round(Math.min(20, Math.round(range / 8)) * countMul))
   for (let i = 0; i < edgeCount; i++) {
     const angle = (i / edgeCount) * Math.PI * 2
     const tangent = angle + Math.PI / 2 * (Math.random() < 0.5 ? 1 : -1)
     const speed = 120 + Math.random() * 180
     const px = cx + Math.cos(angle) * range
     const py = cy + Math.sin(angle) * range
-    spawnParticle(px, py,
+    emit(px, py,
       Math.cos(tangent) * speed + Math.cos(angle) * 30,
       Math.sin(tangent) * speed + Math.sin(angle) * 30,
       Math.min(255, r + 100), Math.min(255, g + 60), Math.min(255, b + 60),
@@ -1079,29 +1083,54 @@ export function spawnVolatileParticles(cx: number, cy: number, range: number, r:
 // count scaling, but the palette is the player's heal gold (warm body + gold glow tint) and the
 // motion is FLOATY (slower, with an upward lift) rather than violent debris — it blooms and rises
 // instead of shattering outward. Snappy life so it still pops on the beat, not a lingering haze.
-export function spawnHealExplosionParticles(cx: number, cy: number, range: number): void {
-  const count = lodCount(Math.min(52, Math.round(Math.sqrt(range) * 3.2)))
+export function spawnHealExplosionParticles(cx: number, cy: number, range: number, countMul = 1, parent?: ParticleParent): void {
+  // Gold heal particles carry a pale-gold glow tint — route to attached/world spawner accordingly.
+  const emitG = (px: number, py: number, vx: number, vy: number, pr: number, pg: number, pb: number, life: number, size: number, spin: number, tR: number, tG: number, tB: number) => {
+    if (parent) spawnParticleAttached(px, py, vx, vy, pr, pg, pb, life, size, tR, tG, tB, parent, 0, false, false, spin)
+    else spawnParticle(px, py, vx, vy, pr, pg, pb, life, size, spin, tR, tG, tB)
+  }
+  const count = lodCount(Math.round(Math.min(52, Math.round(Math.sqrt(range) * 3.2)) * countMul))
   for (let i = 0; i < count; i++) {
     const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.3
-    const dist = range * (0.25 + Math.random() * 0.7)
+    // Wall bursts (parent) fill evenly to the edge + drift a bit faster so the bloom reaches the rim.
+    const dist = parent ? range * Math.sqrt(0.2 + 0.8 * Math.random()) : range * (0.25 + Math.random() * 0.7)
     const px = cx + Math.cos(angle) * dist
     const py = cy + Math.sin(angle) * dist
     const outAngle = Math.atan2(py - cy, px - cx)
-    const speed = 70 + Math.random() * 130                 // slower than the 140–340 fire debris = floaty
+    const speed = parent ? 120 + Math.random() * 150 : 70 + Math.random() * 130   // floaty, faster on walls to reach the rim
     const tint = Math.random()
-    spawnParticle(px, py,
+    emitG(px, py,
       Math.cos(outAngle) * speed, Math.sin(outAngle) * speed - 55,   // upward lift = benevolent rise
       255, 242 + Math.floor(tint * 13), 205 + Math.floor(tint * 40),  // white-gold body
       0.38 + Math.random() * 0.26, 5 + Math.random() * 5,
       (Math.random() < 0.5 ? 1 : -1) * (4 + Math.random() * 6),
       255, 232, 180)                                       // pale-gold glow tint → white-gold bloom
   }
+  // Big gold sparkle-STARS — the same 4-point glint the player gets on a boost grab: they POP in fast
+  // on the burst and shrink + fade away. Anchored to `parent` when given (rigidly rides a moving/
+  // rotating wall) — otherwise a frozen point at the blast.
+  const starParent: ParticleParent = parent ?? { x: cx, y: cy }
+  const starN = lodCount(Math.round(Math.min(18, Math.round(Math.sqrt(range) * 1.4)) * countMul))
+  for (let i = 0; i < starN; i++) {
+    const a = (i / starN) * Math.PI * 2 + Math.random() * 0.5
+    const sp = 280 + Math.random() * 260                   // faster launch so they actually reach the rim
+    const dist = range * (0.35 + Math.random() * 0.5)      // start further out (not bunched at center)
+    starGlints.push({
+      x: cx + Math.cos(a) * dist, y: cy + Math.sin(a) * dist,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+      size: 18 + Math.random() * 14,                       // bigger than the boost stars (18–32px)
+      rot: Math.random() * Math.PI, rotSpeed: (Math.random() - 0.5) * 6,
+      life: 0, maxLife: 0.32 + Math.random() * 0.18,       // quick pop
+      parent: starParent, lastPX: starParent.x, lastPY: starParent.y, lastRot: starParent.rot ?? 0,
+      shrink: true, friction: 0.95,                        // coast farther than boost stars
+    })
+  }
   // White-gold twinkle highlights rising from the center — the bright "sparkle" core
-  const hotCount = lodCount(Math.min(14, Math.round(range / 12)))
+  const hotCount = lodCount(Math.round(Math.min(14, Math.round(range / 12)) * countMul))
   for (let i = 0; i < hotCount; i++) {
     const angle = Math.random() * Math.PI * 2
     const speed = 90 + Math.random() * 160
-    spawnParticle(cx, cy,
+    emitG(cx, cy,
       Math.cos(angle) * speed, Math.sin(angle) * speed - 45,
       255, 252, 238,
       0.3 + Math.random() * 0.2, 3 + Math.random() * 2.5,
@@ -1144,52 +1173,16 @@ export function spawnWallZoneBurst(w: Wall, heal: boolean): void {
       centers.push({ x: w.ax + dxw * t, y: w.ay + dyw * t })
     }
   }
+  // Fire the EXACT volatile blast language at each tiled center, ATTACHED to the wall anchor so the
+  // whole burst rigidly rides the wall's center + rotation. countMul = 1/centers so the full strip
+  // totals ~one volatile blast's worth of particles spread along its length. Damage = the fire shards
+  // + flash; heal = the gold sparkle-stars + flash (heal=true routes both the flash and spawner gold).
+  const cmul = 2 / centers.length    // ~2 blasts' worth spread along the strip (doubled)
+  const zr = 255, zg = 75, zb = 30   // fire-red damage palette; heal ignores this (gold via heal flag)
   for (const c of centers) {
-    const count = lodCount(Math.min(heal ? 64 : 44, Math.round(Math.sqrt(blastR) * (heal ? 4.6 : 3.2))))
-    for (let i = 0; i < count; i++) {
-      const a = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.4
-      // Heal spreads EVENLY across the band by area (sqrt) so it fills the field uniformly rather
-      // than clumping near the center; damage keeps its center-biased linear spread.
-      const dist = heal
-        ? blastR * Math.sqrt(0.05 + Math.random() * 0.95)
-        : blastR * (0.12 + Math.random() * 0.82)
-      const px = c.x + Math.cos(a) * dist, py = c.y + Math.sin(a) * dist
-      const outA = Math.atan2(py - c.y, px - c.x)
-      // Speed carries the particle the REMAINING distance to the reach edge so the cloud fills the
-      // band up to the hitbox. DAMAGE = fast, sharp spray; HEAL = slow, floaty drift with a gentle
-      // upward lift + long life + round size, so it blooms benevolently instead of stinging.
-      const remaining = Math.max(0, blastR - dist)
-      if (heal) {
-        // Heal already spawns spread EVENLY across the band (dist 0.1–0.95), so it doesn't need to
-        // rush outward — give it a SLOW gentle drift (with a hint of lift) and a similar-to-damage
-        // lifetime + rounder size. Soft because it's slow + spread, not because it lingers.
-        const life = 0.22 + Math.random() * 0.14
-        const sp = 25 + Math.random() * 55
-        spawnParticleAttached(px, py, Math.cos(outA) * sp, Math.sin(outA) * sp - (10 + Math.random() * 18),
-          255, 242 + Math.floor(Math.random() * 13), 205 + Math.floor(Math.random() * 40),
-          life, 6 + Math.random() * 4, 255, 232, 180, anchor)
-      } else {
-        const life = 0.18 + Math.random() * 0.12
-        const sp = Math.min(650, (remaining / 0.18) * (0.7 + Math.random() * 0.4))   // fast = sharp
-        const tint = Math.random()
-        spawnParticleAttached(px, py, Math.cos(outA) * sp, Math.sin(outA) * sp,
-          255, Math.floor(70 + tint * 120), Math.floor(20 + tint * 45),
-          life, 7 + Math.random() * 5, 255, 120, 30, anchor)
-      }
-    }
-    // Core sparks — DAMAGE: fast white-hot punch. HEAL: a few soft white-gold motes drifting gently.
-    for (let i = 0; i < 5; i++) {
-      const a = Math.random() * Math.PI * 2
-      if (heal) {
-        const sp = 30 + Math.random() * 50
-        spawnParticleAttached(c.x, c.y, Math.cos(a) * sp, Math.sin(a) * sp - (10 + Math.random() * 16),
-          255, 252, 238, 0.2 + Math.random() * 0.12, 3.5 + Math.random() * 2.5, 255, 242, 205, anchor)
-      } else {
-        const sp = Math.min(620, (blastR * 0.85 / 0.18) * (0.5 + Math.random() * 0.4))
-        spawnParticleAttached(c.x, c.y, Math.cos(a) * sp, Math.sin(a) * sp,
-          255, 245, 220, 0.16 + Math.random() * 0.1, 3 + Math.random() * 2.5, 255, 170, 90, anchor)
-      }
-    }
+    addVolatileExplosion(c.x, c.y, blastR, zr, zg, zb, heal, anchor)
+    if (heal) spawnHealExplosionParticles(c.x, c.y, blastR, cmul, anchor)
+    else spawnVolatileParticles(c.x, c.y, blastR, zr, zg, zb, cmul, anchor)
   }
 }
 
@@ -1348,6 +1341,22 @@ function updateAndDrawVolatileEffects(dt: number): void {
       volatileExplosions[i] = volatileExplosions[volatileExplosions.length - 1]!
       volatileExplosions.pop()
       continue
+    }
+    // Parent-follow — rides a moving/rotating wall (its tile center orbits the wall pivot). Translate
+    // by the parent's per-frame delta, then rotate the offset around the parent center.
+    if (ex.parent) {
+      ex.x += ex.parent.x - (ex.lastPX ?? ex.parent.x)
+      ex.y += ex.parent.y - (ex.lastPY ?? ex.parent.y)
+      ex.lastPX = ex.parent.x; ex.lastPY = ex.parent.y
+      const prot = ex.parent.rot
+      if (prot !== undefined && prot !== (ex.lastRot ?? 0)) {
+        const dR = prot - (ex.lastRot ?? 0)
+        const cs = Math.cos(dR), sn = Math.sin(dR)
+        const ox = ex.x - ex.parent.x, oy = ex.y - ex.parent.y
+        ex.x = ex.parent.x + ox * cs - oy * sn
+        ex.y = ex.parent.y + ox * sn + oy * cs
+        ex.lastRot = prot
+      }
     }
     const t = ex.timer / ex.duration
     const alpha = (1 - t) * (1 - t)
@@ -1685,13 +1694,14 @@ function spawnParticleAttached(
   delaySec: number = 0,
   tintLate: boolean = false,
   belowEnemies: boolean = false,
+  spinRate: number = 0,
 ): void {
   if (particleCount >= MAX_PARTICLES - PARTICLE_PRIORITY_RESERVE) return   // leave the reserve for priority ring shards
   if (getPhase() === 'entering_name') return
   const initialLife = delaySec > 0 ? -delaySec / lifetime : 0
   const p = particles[particleCount++]!   // reuse the pooled slot — overwrite EVERY field
   p.x = x; p.y = y; p.vx = vx; p.vy = vy; p.r = r; p.g = g; p.b = b
-  p.life = initialLife; p.lifetime = lifetime; p.size = size; p.spinRate = 0
+  p.life = initialLife; p.lifetime = lifetime; p.size = size; p.spinRate = spinRate
   p.tintR = tintR; p.tintG = tintG; p.tintB = tintB
   p.orbitCx = 0; p.orbitCy = 0; p.orbitR = -1
   p.parent = parent; p.lastParentX = parent.x; p.lastParentY = parent.y; p.lastParentRot = parent.rot ?? 0; p.tintLate = tintLate
@@ -2377,7 +2387,7 @@ function drawEnemyBulletsAndDetonations(player: Player): void {
         enemyDetonationVizList.pop()
         continue
       }
-      drawRing(d.x, d.y, d.ring, d.attackTimer, d.ringRadius, d.expandTime)
+      drawRing(d.x, d.y, d.ring, d.attackTimer, d.ringRadius, d.expandTime, undefined, undefined, true)  // boldStart: readable from the start of growth
       // Kickstart accent — wraps drawRing's leading edge with extra brightness and thickness
       // for the first ~0.2s so the ring is visible from frame one. Critically: it tracks
       // drawRing's EXACT ease-out radius (1 - (1-t)^2), so as the accent fades the main ring
@@ -7146,7 +7156,7 @@ function updateAndDrawTetherSnaps(dt: number): void {
   ctx.lineCap = 'butt'
 }
 
-function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: number, radiusOverride?: number, expandTime = ATTACK_EXPAND_TIME, blockedArcs: BlockedArc[] = [], followEntity?: { x: number; y: number }): void {
+function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: number, radiusOverride?: number, expandTime = ATTACK_EXPAND_TIME, blockedArcs: BlockedArc[] = [], followEntity?: { x: number; y: number }, boldStart = false): void {
   if (attackTimer < 0) return
 
   const sx = worldX - camX
@@ -7165,10 +7175,13 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
   const gi = Math.floor(g * 255)
   const bi = Math.floor(b * 255)
 
-  const baseAlpha = 0.12 + 0.68 * buildup * buildup
+  // boldStart (bullet detonation rings only): start noticeably visible (0.30) and ramp LINEARLY so
+  // you can read where the ring is growing from the get-go. Normal rings (player/enemy in-place) keep
+  // the subtle 0.12 + buildup² charge-up so the peak still punches.
+  const baseAlpha = boldStart ? (0.30 + 0.50 * buildup) : (0.12 + 0.68 * buildup * buildup)
   const alpha = attackTimer <= expandTime ? baseAlpha
     : (attackTimer < expandTime + 0.05 ? baseAlpha * (1 - (attackTimer - expandTime) / 0.05) : 0)
-  const lineW = 1.3 + 2.2 * buildup
+  const lineW = boldStart ? (1.7 + 1.9 * buildup) : (1.3 + 2.2 * buildup)
   // Red ring visible from peak for a short fade-out
   const pastPeak = attackTimer - expandTime
   const showRedRing = pastPeak >= 0 && pastPeak < 0.2
@@ -7488,7 +7501,7 @@ function drawXPOrbs(player: Player): void {
 }
 
 // ── Boost-pickup STAR burst — dramatic gold sparkle-stars erupt from the player on a boost grab ──
-interface StarGlint { x: number; y: number; vx: number; vy: number; size: number; rot: number; rotSpeed: number; life: number; maxLife: number; parent: ParticleParent; lastPX: number; lastPY: number }
+interface StarGlint { x: number; y: number; vx: number; vy: number; size: number; rot: number; rotSpeed: number; life: number; maxLife: number; parent: ParticleParent; lastPX: number; lastPY: number; shrink?: boolean; friction?: number; lastRot?: number }
 const starGlints: StarGlint[] = []
 
 export function spawnBoostStarBurst(parent: ParticleParent, bodyR: number, count = 1): void {
@@ -7536,12 +7549,28 @@ function updateAndDrawStarGlints(dt: number): void {
     // Ride with the parent (player) — shift by its per-frame delta, then apply own outward velocity.
     g.x += g.parent.x - g.lastPX; g.y += g.parent.y - g.lastPY
     g.lastPX = g.parent.x; g.lastPY = g.parent.y
+    // Rotational attachment — rotate the star's offset + velocity around the parent center by its
+    // per-frame angle delta, so it rigidly rides a SPINNING wall (rot is undefined for point parents
+    // like the player → skipped).
+    const prot = g.parent.rot
+    if (prot !== undefined && prot !== (g.lastRot ?? 0)) {
+      const dR = prot - (g.lastRot ?? 0)
+      const cs = Math.cos(dR), sn = Math.sin(dR)
+      const ox = g.x - g.parent.x, oy = g.y - g.parent.y
+      g.x = g.parent.x + ox * cs - oy * sn
+      g.y = g.parent.y + ox * sn + oy * cs
+      const gvx = g.vx, gvy = g.vy
+      g.vx = gvx * cs - gvy * sn
+      g.vy = gvx * sn + gvy * cs
+      g.lastRot = prot
+    }
     g.x += g.vx * dt; g.y += g.vy * dt
-    g.vx *= 0.91; g.vy *= 0.91   // friction — spreads out a moderate distance then settles
+    const fr = g.friction ?? 0.91   // per-star friction (default boost-star value); higher = coasts farther
+    g.vx *= fr; g.vy *= fr
     g.rot += g.rotSpeed * dt
     const grow = g.life < 0.25 ? g.life / 0.25 : 1            // pop in, then hold
     const fade = g.life < 0.25 ? 1 : 1 - (g.life - 0.25) / 0.75
-    const R = g.size * grow
+    const R = g.size * grow * (g.shrink ? fade : 1)          // shrink stars also dwindle in size as they fade
     const sx = g.x - camX, sy = g.y - camY
     // soft center glow
     ctx.beginPath(); ctx.arc(sx, sy, R * 0.5, 0, Math.PI * 2)
