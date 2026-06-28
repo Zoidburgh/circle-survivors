@@ -19,7 +19,7 @@ import { emit } from '../core/EventBus.ts'
 import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC, SHIELD_BREAK_FLASH, HEAVY_YIELD } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import type { Player } from './Player.ts'
-import type { EnemyType, MovePattern, SummonPhase, ShrinePhase, RangedPattern, RangedRotationMode, TetherTopology, ClusterLayer } from './EnemyTypes.ts'
+import type { EnemyType, MovePattern, SummonPhase, ShrinePhase, RangedPattern, RangedRotationMode, TetherTopology, ClusterLayer, WeakNodePattern } from './EnemyTypes.ts'
 import { getEnemyType } from './EnemyTypes.ts'
 import { SpatialGrid } from '../core/SpatialGrid.ts'
 import { getChillRank } from '../game/UpgradeManager.ts'
@@ -178,6 +178,15 @@ export interface Enemy {
   summonBeatCount: number         // monotonic beat counter
   summonLastBeat: number          // last whole beat seen
   summonActivationTimer: number   // >0 = activation animation playing, counts down
+  // Weak-node trait — body is invulnerable; break all moving nodes to kill (see boss_nodes_plan.md)
+  weakNodes: boolean
+  nodeHp: number[]                // per-node remaining HP (0 = broken husk, still drawn but inert)
+  nodeMaxHp: number               // for crack-stage fraction
+  nodesAlive: number              // live-node counter; reaches 0 → enemy dies
+  nodeFlash: number[]             // per-node hit/break FX timer (seconds)
+  nodeSeed: number                // phase offset so clones desync (index-derived, deterministic)
+  nodePattern: WeakNodePattern    // movement pattern
+  nodeOrbitFrac: number; nodeSizeFrac: number; nodeSpeed: number; nodeAmp: number
   isShrine: boolean
   shrineSpawnEnemy: string        // LEGACY — use shrinePhases
   shrineXpCount: number           // LEGACY
@@ -447,6 +456,18 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     summonBeatCount: 0,
     summonLastBeat: -1,
     summonActivationTimer: 0,
+    // Weak-node trait — init per-node HP arrays from the type config
+    weakNodes: type.weakNodes ?? false,
+    nodeHp: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(type.weakNodeHp ?? 3),
+    nodeMaxHp: type.weakNodeHp ?? 3,
+    nodesAlive: Math.max(1, type.weakNodeCount ?? 3),
+    nodeFlash: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(0),
+    nodeSeed: (x * 0.013 + y * 0.017) % (Math.PI * 2),   // deterministic per-spawn phase so clones desync
+    nodePattern: type.weakNodePattern ?? 'orbit',
+    nodeOrbitFrac: type.weakNodeOrbitFrac ?? 0.55,   // inside the body (orbit + node radius < enemy.radius)
+    nodeSizeFrac: type.weakNodeSizeFrac ?? 0.30,
+    nodeSpeed: type.weakNodeSpeed ?? 1,
+    nodeAmp: type.weakNodeAmp ?? 0.3,
     isShrine: type.isShrine ?? false,
     shrineSpawnEnemy: type.shrineSpawnEnemy ?? '',
     shrineXpCount: type.shrineXpCount ?? 0,
@@ -1245,6 +1266,47 @@ export function rollDrop(enemy: Enemy): 'xp' | 'hp' | null {
   if (roll < enemy.dropXp) return 'xp'
   if (roll < enemy.dropXp + enemy.dropHp) return 'hp'
   return null
+}
+
+// ── Weak-node geometry (see boss_nodes_plan.md) ───────────────────────────────
+const NODE_TAU = Math.PI * 2
+
+/** World position of weak-node `i` at shared time `t` (seconds). SINGLE source of truth for both
+ * hit detection (sim) and rendering — callers pass the SAME t, so they can never disagree. */
+export function nodeWorldPos(enemy: Enemy, i: number, t: number): { x: number; y: number } {
+  const n = enemy.nodeHp.length
+  const base = enemy.nodeSeed + (i / n) * NODE_TAU
+  const R = enemy.radius * enemy.nodeOrbitFrac
+  const spd = t * enemy.nodeSpeed
+  let a: number, r: number
+  switch (enemy.nodePattern) {
+    case 'breathe':
+      a = base + spd
+      r = R * (1 + enemy.nodeAmp * Math.sin(spd * 1.7 + base))
+      break
+    case 'multiRadius':
+      a = base + spd * (0.6 + 0.5 * (i % 3))
+      r = R * (0.55 + 0.45 * ((i * 7) % 5) / 4)
+      break
+    case 'figure8': {
+      const p = spd + base
+      return { x: enemy.x + Math.sin(p) * R, y: enemy.y + Math.sin(2 * p) * R * (0.6 + enemy.nodeAmp) }
+    }
+    case 'beatHop':
+      a = base + Math.floor(t / BEAT_SEC) * (NODE_TAU / n) * 0.5
+      r = R
+      break
+    case 'orbit':
+    default:
+      a = base + spd
+      r = R
+  }
+  return { x: enemy.x + Math.cos(a) * r, y: enemy.y + Math.sin(a) * r }
+}
+
+/** Hit/draw radius of an enemy's weak-nodes. */
+export function nodeRadius(enemy: Enemy): number {
+  return Math.max(6, enemy.radius * enemy.nodeSizeFrac)
 }
 
 export function damageEnemy(enemy: Enemy, amount: number): void {

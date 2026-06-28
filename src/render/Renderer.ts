@@ -1,7 +1,7 @@
 import type { Player } from '../entities/Player.ts'
 import { getEffectiveRadius, getBodyRadius, SPEED_BOOST_DURATION } from '../entities/Player.ts'
 import type { Enemy } from '../entities/Enemy.ts'
-import { getRingOrigins } from '../entities/Enemy.ts'
+import { getRingOrigins, nodeWorldPos, nodeRadius } from '../entities/Enemy.ts'
 import type { Ring } from '../entities/Ring.ts'
 import { getRingExpansion, getRingAlpha, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { ENEMY_TYPES, getEnemyType } from '../entities/EnemyTypes.ts'
@@ -5921,6 +5921,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     if (!enemy.alive && !enemy.dying) continue
     if (enemy.isShrine) continue  // already drawn above
     drawEnemy(enemy, player)
+    if (enemy.weakNodes) drawWeakNodes(enemy)
   }
   perfEnd('e_bodies')
 
@@ -9752,6 +9753,36 @@ function drawShrine(enemy: Enemy, player: Player): void {
         Math.min(255, hg + Math.floor(st * 80)),
         Math.min(255, hb + Math.floor(st * 80)),
         0.15 + st * 0.15, 2.5 + st * 2)
+    }
+  }
+}
+
+// Weak-node enemies (see boss_nodes_plan.md). Phase 1: draw the orbiting nodes — live nodes glow,
+// husks (HP 0) read dark/inert. Hit detection + break visuals come in later phases.
+function drawWeakNodes(enemy: Enemy): void {
+  if (enemy.dying) return
+  const t = gameTimeMs / 1000
+  const nodeR = nodeRadius(enemy)
+  for (let i = 0; i < enemy.nodeHp.length; i++) {
+    const p = nodeWorldPos(enemy, i, t)
+    const sx = p.x - camX, sy = p.y - camY
+    if (enemy.nodeHp[i]! > 0) {
+      // Live node — glowing orb (brighter at full HP)
+      const hpFrac = enemy.nodeHp[i]! / enemy.nodeMaxHp
+      ctx.beginPath(); ctx.arc(sx, sy, nodeR, 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(120, 230, 255, ${0.45 + 0.4 * hpFrac})`
+      ctx.fill()
+      ctx.strokeStyle = 'rgba(225, 250, 255, 0.9)'
+      ctx.lineWidth = 2
+      ctx.stroke()
+    } else {
+      // Husk — dark, inert, still riding the pattern (no glow)
+      ctx.beginPath(); ctx.arc(sx, sy, nodeR * 0.8, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(58, 58, 70, 0.7)'
+      ctx.fill()
+      ctx.strokeStyle = 'rgba(28, 28, 38, 0.85)'
+      ctx.lineWidth = 1.5
+      ctx.stroke()
     }
   }
 }

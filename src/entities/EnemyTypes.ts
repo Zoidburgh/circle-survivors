@@ -1,4 +1,6 @@
 export type MovePattern = 'pursue' | 'orbit' | 'zigzag' | 'stationary' | 'bounce' | 'lunge' | 'immovable'
+// Weak-node movement patterns (see boss_nodes_plan.md). All evaluated by Enemy.nodeWorldPos().
+export type WeakNodePattern = 'orbit' | 'breathe' | 'multiRadius' | 'figure8' | 'beatHop'
 
 export type RangedPattern = 'aimed' | 'surround_player' | 'radial' | 'spread_cone' | 'rotating'
 export type RangedRotationMode = 'turret' | 'player_anchored' | 'oscillate'
@@ -155,6 +157,15 @@ export interface EnemyType {
   dodgeSpeed?: number               // burst speed multiplier (default: 1.0)
   shield?: boolean                  // absorbs one hit per charge, recharges over time
   shieldRechargeTime?: number       // seconds to recharge shield after break (default: 4)
+  // Weak-node trait — body invulnerable; break all moving nodes to kill (see boss_nodes_plan.md)
+  weakNodes?: boolean
+  weakNodeCount?: number            // how many nodes (default 3)
+  weakNodeHp?: number               // hits to break each node (default 3)
+  weakNodeOrbitFrac?: number        // orbit radius ÷ enemy.radius (default 0.55 — inside the body)
+  weakNodeSizeFrac?: number         // node radius ÷ enemy.radius (default 0.30)
+  weakNodePattern?: WeakNodePattern // movement pattern (default 'orbit')
+  weakNodeSpeed?: number            // pattern speed multiplier (default 1)
+  weakNodeAmp?: number              // breathe / figure8 amplitude (default 0.3)
   summon?: boolean                  // has orbiting ritual nodes, phased spawning
   summonNodes?: number              // how many nodes (3 = triangle, 5 = pentagon, default 3)
   summonPhases?: SummonPhase[]      // each phase = one completed sequence, spawns enemies

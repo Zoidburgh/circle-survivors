@@ -1995,6 +1995,10 @@ function addEnemyForm(existing?: DesignedEnemy): void {
             <input id="ed-pusher-${id}" type="checkbox" ${existing?.pusher ? 'checked' : ''}>
             <span style="color:#FFB74D;font:11px monospace;">Pusher</span>
           </label>
+          <label style="display:flex;align-items:center;gap:4px;cursor:pointer;" title="Weak Nodes — body is invulnerable; break all moving nodes to kill (see boss_nodes_plan.md)">
+            <input id="ed-weaknodes-${id}" type="checkbox" ${existing?.weakNodes ? 'checked' : ''}>
+            <span style="color:#7FE6FF;font:11px monospace;">Weak Nodes</span>
+          </label>
         </div>
         <div id="ed-magnet-range-wrap-${id}" style="margin-top:6px;display:${existing?.magnet ? 'block' : 'none'};">
           <span style="color:#50B4FF;font:10px monospace;">Range: <span id="ed-magnet-range-val-${id}">${existing?.magnetRange ?? 200}</span></span>
@@ -2036,6 +2040,16 @@ function addEnemyForm(existing?: DesignedEnemy): void {
         <div id="ed-shield-wrap-${id}" style="margin-top:4px;display:${existing?.shield ? 'block' : 'none'};">
           <span style="color:#00DCFF;font:9px monospace;">Recharge: <span id="ed-shield-recharge-val-${id}">${existing?.shieldRechargeTime ?? 4}</span>s</span>
           <input id="ed-shield-recharge-${id}" type="range" min="1" max="20" step="0.5" value="${existing?.shieldRechargeTime ?? 4}" style="width:100%;display:block;">
+        </div>
+        <div id="ed-weaknodes-wrap-${id}" style="margin-top:4px;display:${existing?.weakNodes ? 'block' : 'none'};">
+          <div style="display:flex;gap:6px;align-items:center;">
+            <span style="color:#7FE6FF;font:10px monospace;">Nodes: <span id="ed-weaknodes-count-val-${id}">${existing?.weakNodeCount ?? 3}</span></span>
+            <input id="ed-weaknodes-count-${id}" type="range" min="1" max="8" step="1" value="${existing?.weakNodeCount ?? 3}" style="flex:1;">
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:2px;">
+            <span style="color:#7FE6FF;font:10px monospace;">HP each: <span id="ed-weaknodes-hp-val-${id}">${existing?.weakNodeHp ?? 3}</span></span>
+            <input id="ed-weaknodes-hp-${id}" type="range" min="1" max="10" step="1" value="${existing?.weakNodeHp ?? 3}" style="flex:1;">
+          </div>
         </div>
         <div id="ed-summon-wrap-${id}" style="margin-top:4px;display:${existing?.summon ? 'block' : 'none'};">
           <div style="display:flex;gap:6px;align-items:center;">
@@ -2665,6 +2679,19 @@ function addEnemyForm(existing?: DesignedEnemy): void {
   })
   summonNodesInput.addEventListener('input', () => { summonNodesVal.textContent = summonNodesInput.value })
 
+  // ── Weak Nodes ──
+  const weakNodesCheckbox = body.querySelector(`#ed-weaknodes-${id}`) as HTMLInputElement
+  const weakNodesWrap = body.querySelector(`#ed-weaknodes-wrap-${id}`) as HTMLDivElement
+  const weakNodesCountInput = body.querySelector(`#ed-weaknodes-count-${id}`) as HTMLInputElement
+  const weakNodesCountVal = body.querySelector(`#ed-weaknodes-count-val-${id}`) as HTMLSpanElement
+  const weakNodesHpInput = body.querySelector(`#ed-weaknodes-hp-${id}`) as HTMLInputElement
+  const weakNodesHpVal = body.querySelector(`#ed-weaknodes-hp-val-${id}`) as HTMLSpanElement
+  weakNodesCheckbox.addEventListener('change', () => {
+    weakNodesWrap.style.display = weakNodesCheckbox.checked ? 'block' : 'none'
+  })
+  weakNodesCountInput.addEventListener('input', () => { weakNodesCountVal.textContent = weakNodesCountInput.value })
+  weakNodesHpInput.addEventListener('input', () => { weakNodesHpVal.textContent = weakNodesHpInput.value })
+
   function renumberPhases(): void {
     const rows = summonPhasesDiv.querySelectorAll('.ed-phase-row')
     rows.forEach((row, i) => {
@@ -2902,6 +2929,9 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       }).filter(s => s.enemyName)
       if (spawns.length > 0) summonPhases.push({ spawns })
     })
+    const weakNodes = (div.querySelector(`#ed-weaknodes-${id}`) as HTMLInputElement).checked
+    const weakNodeCount = parseInt((div.querySelector(`#ed-weaknodes-count-${id}`) as HTMLInputElement).value) || 3
+    const weakNodeHp = parseInt((div.querySelector(`#ed-weaknodes-hp-${id}`) as HTMLInputElement).value) || 3
     const isShrine = (div.querySelector(`#ed-shrine-${id}`) as HTMLInputElement).checked
     const shrinePhaseInputs = div.querySelectorAll(`#ed-shrine-phases-${id} .ed-shrine-phase-input`) as NodeListOf<HTMLInputElement>
     const shrinePhases: ShrinePhase[] = []
@@ -2923,7 +2953,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
     const finalHp = isShrine && shrinePhases.length > 0 ? shrinePhases.length : hp
-    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, volatileHeal, revenge, revengeRings, revengeRadius, pusher, pusherBeats, pusherPhase, pusherStrength, dodge, dodgeCharges, dodgeChargeTime, dodgeDistance, dodgeSpeed, shield, shieldRechargeTime, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
+    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, volatileHeal, revenge, revengeRings, revengeRadius, pusher, pusherBeats, pusherPhase, pusherStrength, dodge, dodgeCharges, dodgeChargeTime, dodgeDistance, dodgeSpeed, shield, shieldRechargeTime, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, weakNodes, weakNodeCount, weakNodeHp, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
   }
 
 
