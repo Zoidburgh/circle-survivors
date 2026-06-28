@@ -1,6 +1,7 @@
 export type MovePattern = 'pursue' | 'orbit' | 'zigzag' | 'stationary' | 'bounce' | 'lunge' | 'immovable'
 // Weak-node movement patterns (see boss_nodes_plan.md). All evaluated by Enemy.nodeWorldPos().
-export type WeakNodePattern = 'orbit' | 'breathe' | 'multiRadius' | 'figure8' | 'beatHop'
+// 'breathe' / 'pulse' / 'beatHop' move ON the beat; 'orbit' / 'multiRadius' / 'figure8' flow freely.
+export type WeakNodePattern = 'orbit' | 'breathe' | 'multiRadius' | 'figure8' | 'beatHop' | 'pulse'
 
 export type RangedPattern = 'aimed' | 'surround_player' | 'radial' | 'spread_cone' | 'rotating'
 export type RangedRotationMode = 'turret' | 'player_anchored' | 'oscillate'

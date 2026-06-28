@@ -273,6 +273,13 @@ export interface PreviewEnemy {
   shrineXpCount: number
   shrineHpCount: number
   shrinePhases: import('../entities/EnemyTypes.ts').ShrinePhase[]
+  weakNodes: boolean
+  weakNodeCount: number
+  weakNodePattern: import('../entities/EnemyTypes.ts').WeakNodePattern
+  weakNodeSpeed: number
+  weakNodeAmp: number
+  weakNodeOrbitFrac: number
+  weakNodeSizeFrac: number
 }
 let previewEnemy: PreviewEnemy | null = null
 
@@ -2050,6 +2057,33 @@ function addEnemyForm(existing?: DesignedEnemy): void {
             <span style="color:#7FE6FF;font:10px monospace;">HP each: <span id="ed-weaknodes-hp-val-${id}">${existing?.weakNodeHp ?? 3}</span></span>
             <input id="ed-weaknodes-hp-${id}" type="range" min="1" max="10" step="1" value="${existing?.weakNodeHp ?? 3}" style="flex:1;">
           </div>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:2px;">
+            <span style="color:#7FE6FF;font:10px monospace;">Pattern</span>
+            <select id="ed-weaknodes-pattern-${id}" style="flex:1;padding:2px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:10px monospace;border-radius:3px;">
+              <option value="orbit">Orbit</option>
+              <option value="breathe">Breathe (beat)</option>
+              <option value="pulse">Pulse (beat)</option>
+              <option value="beatHop">Beat Hop (beat)</option>
+              <option value="multiRadius">Multi-Radius</option>
+              <option value="figure8">Figure-8</option>
+            </select>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:2px;">
+            <span style="color:#7FE6FF;font:10px monospace;">Speed: <span id="ed-weaknodes-speed-val-${id}">${existing?.weakNodeSpeed ?? 1}</span></span>
+            <input id="ed-weaknodes-speed-${id}" type="range" min="0.2" max="3" step="0.1" value="${existing?.weakNodeSpeed ?? 1}" style="flex:1;">
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:2px;">
+            <span style="color:#7FE6FF;font:10px monospace;">Amp: <span id="ed-weaknodes-amp-val-${id}">${existing?.weakNodeAmp ?? 0.3}</span></span>
+            <input id="ed-weaknodes-amp-${id}" type="range" min="0" max="0.6" step="0.05" value="${existing?.weakNodeAmp ?? 0.3}" style="flex:1;">
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:2px;">
+            <span style="color:#7FE6FF;font:10px monospace;">Orbit%: <span id="ed-weaknodes-orbit-val-${id}">${existing?.weakNodeOrbitFrac ?? 0.55}</span></span>
+            <input id="ed-weaknodes-orbit-${id}" type="range" min="0.2" max="0.9" step="0.05" value="${existing?.weakNodeOrbitFrac ?? 0.55}" style="flex:1;">
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:2px;">
+            <span style="color:#7FE6FF;font:10px monospace;">Size%: <span id="ed-weaknodes-size-val-${id}">${existing?.weakNodeSizeFrac ?? 0.3}</span></span>
+            <input id="ed-weaknodes-size-${id}" type="range" min="0.15" max="0.5" step="0.05" value="${existing?.weakNodeSizeFrac ?? 0.3}" style="flex:1;">
+          </div>
         </div>
         <div id="ed-summon-wrap-${id}" style="margin-top:4px;display:${existing?.summon ? 'block' : 'none'};">
           <div style="display:flex;gap:6px;align-items:center;">
@@ -2691,6 +2725,14 @@ function addEnemyForm(existing?: DesignedEnemy): void {
   })
   weakNodesCountInput.addEventListener('input', () => { weakNodesCountVal.textContent = weakNodesCountInput.value })
   weakNodesHpInput.addEventListener('input', () => { weakNodesHpVal.textContent = weakNodesHpInput.value })
+  const weakNodesPattern = body.querySelector(`#ed-weaknodes-pattern-${id}`) as HTMLSelectElement
+  weakNodesPattern.value = existing?.weakNodePattern ?? 'orbit'
+  const wnBind = (slider: string, val: string) => {
+    const s = body.querySelector(`#ed-weaknodes-${slider}-${id}`) as HTMLInputElement
+    const v = body.querySelector(`#ed-weaknodes-${val}-${id}`) as HTMLSpanElement
+    s.addEventListener('input', () => { v.textContent = s.value })
+  }
+  wnBind('speed', 'speed-val'); wnBind('amp', 'amp-val'); wnBind('orbit', 'orbit-val'); wnBind('size', 'size-val')
 
   function renumberPhases(): void {
     const rows = summonPhasesDiv.querySelectorAll('.ed-phase-row')
@@ -2863,6 +2905,13 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       shrineXpCount: form.shrineXpCount ?? 0,
       shrineHpCount: form.shrineHpCount ?? 0,
       shrinePhases: form.shrinePhases ?? [],
+      weakNodes: form.weakNodes ?? false,
+      weakNodeCount: form.weakNodeCount ?? 3,
+      weakNodePattern: form.weakNodePattern ?? 'orbit',
+      weakNodeSpeed: form.weakNodeSpeed ?? 1,
+      weakNodeAmp: form.weakNodeAmp ?? 0.3,
+      weakNodeOrbitFrac: form.weakNodeOrbitFrac ?? 0.55,
+      weakNodeSizeFrac: form.weakNodeSizeFrac ?? 0.3,
     }
   }
 
@@ -2932,6 +2981,11 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const weakNodes = (div.querySelector(`#ed-weaknodes-${id}`) as HTMLInputElement).checked
     const weakNodeCount = parseInt((div.querySelector(`#ed-weaknodes-count-${id}`) as HTMLInputElement).value) || 3
     const weakNodeHp = parseInt((div.querySelector(`#ed-weaknodes-hp-${id}`) as HTMLInputElement).value) || 3
+    const weakNodePattern = (div.querySelector(`#ed-weaknodes-pattern-${id}`) as HTMLSelectElement).value as import('../entities/EnemyTypes.ts').WeakNodePattern
+    const weakNodeSpeed = parseFloat((div.querySelector(`#ed-weaknodes-speed-${id}`) as HTMLInputElement).value) || 1
+    const weakNodeAmp = parseFloat((div.querySelector(`#ed-weaknodes-amp-${id}`) as HTMLInputElement).value)
+    const weakNodeOrbitFrac = parseFloat((div.querySelector(`#ed-weaknodes-orbit-${id}`) as HTMLInputElement).value) || 0.55
+    const weakNodeSizeFrac = parseFloat((div.querySelector(`#ed-weaknodes-size-${id}`) as HTMLInputElement).value) || 0.3
     const isShrine = (div.querySelector(`#ed-shrine-${id}`) as HTMLInputElement).checked
     const shrinePhaseInputs = div.querySelectorAll(`#ed-shrine-phases-${id} .ed-shrine-phase-input`) as NodeListOf<HTMLInputElement>
     const shrinePhases: ShrinePhase[] = []
@@ -2953,7 +3007,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
     const finalHp = isShrine && shrinePhases.length > 0 ? shrinePhases.length : hp
-    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, volatileHeal, revenge, revengeRings, revengeRadius, pusher, pusherBeats, pusherPhase, pusherStrength, dodge, dodgeCharges, dodgeChargeTime, dodgeDistance, dodgeSpeed, shield, shieldRechargeTime, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, weakNodes, weakNodeCount, weakNodeHp, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
+    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, volatileHeal, revenge, revengeRings, revengeRadius, pusher, pusherBeats, pusherPhase, pusherStrength, dodge, dodgeCharges, dodgeChargeTime, dodgeDistance, dodgeSpeed, shield, shieldRechargeTime, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, weakNodes, weakNodeCount, weakNodeHp, weakNodePattern, weakNodeSpeed, weakNodeAmp, weakNodeOrbitFrac, weakNodeSizeFrac, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
   }
 
 

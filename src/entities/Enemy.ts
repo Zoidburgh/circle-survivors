@@ -1281,11 +1281,21 @@ export function nodeWorldPos(enemy: Enemy, i: number, t: number): { x: number; y
   const base = enemy.nodeSeed + (i / n) * NODE_TAU
   const R = enemy.radius * enemy.nodeOrbitFrac
   const spd = t * enemy.nodeSpeed
+  // Beat phase 0→1 each beat + a sharp on-beat pop (spikes at the downbeat, decays to 0). Computed
+  // from the shared clock so sim + render agree. Used by the beat-synced patterns.
+  const beatPhase = (t % BEAT_SEC) / BEAT_SEC
+  const beatPop = Math.pow(1 - beatPhase, 2.5)
   let a: number, r: number
   switch (enemy.nodePattern) {
     case 'breathe':
+      // Breathe ON the beat — orbit slowly while popping outward on each downbeat.
       a = base + spd
-      r = R * (1 + enemy.nodeAmp * Math.sin(spd * 1.7 + base))
+      r = R * (1 + enemy.nodeAmp * beatPop)
+      break
+    case 'pulse':
+      // Heartbeat — tight cluster that punches out on the beat then settles back in.
+      a = base + spd
+      r = R * (0.78 + enemy.nodeAmp * 1.6 * beatPop)
       break
     case 'multiRadius':
       a = base + spd * (0.6 + 0.5 * (i % 3))
@@ -1295,10 +1305,16 @@ export function nodeWorldPos(enemy: Enemy, i: number, t: number): { x: number; y
       const p = spd + base
       return { x: enemy.x + Math.sin(p) * R, y: enemy.y + Math.sin(2 * p) * R * (0.6 + enemy.nodeAmp) }
     }
-    case 'beatHop':
-      a = base + Math.floor(t / BEAT_SEC) * (NODE_TAU / n) * 0.5
+    case 'beatHop': {
+      // Snap to a new orientation each beat, but EASE into it over the first ~20% of the beat so it
+      // reads as a rhythmic hop rather than a teleport.
+      const step = (NODE_TAU / n) * 0.5
+      const ePh = Math.min(1, beatPhase / 0.2)
+      const ease = ePh * ePh * (3 - 2 * ePh)                 // smoothstep
+      a = base + (Math.floor(t / BEAT_SEC) - 1 + ease) * step
       r = R
       break
+    }
     case 'orbit':
     default:
       a = base + spd

@@ -12257,6 +12257,33 @@ function drawDesignerPreview(player: Player): void {
     ctx.restore()
   }
 
+  // Weak-node preview — all-live glowing nodes moving on the chosen pattern (uses the SAME
+  // nodeWorldPos as the real enemy, so what you tune here is exactly what you'll play).
+  if (preview.weakNodes) {
+    const t = gameTimeMs / 1000
+    const stub = {
+      x: worldX, y: worldY, radius: preview.radius,
+      nodeHp: new Array(Math.max(1, preview.weakNodeCount)).fill(1),
+      nodeSeed: 0,
+      nodeOrbitFrac: preview.weakNodeOrbitFrac,
+      nodeSizeFrac: preview.weakNodeSizeFrac,
+      nodePattern: preview.weakNodePattern,
+      nodeSpeed: preview.weakNodeSpeed,
+      nodeAmp: preview.weakNodeAmp,
+    } as unknown as Enemy
+    const nr = nodeRadius(stub)
+    for (let i = 0; i < stub.nodeHp.length; i++) {
+      const p = nodeWorldPos(stub, i, t)
+      const nx = p.x - camX, ny = p.y - camY
+      ctx.beginPath(); ctx.arc(nx, ny, nr, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(120, 230, 255, 0.8)'
+      ctx.fill()
+      ctx.strokeStyle = 'rgba(235, 252, 255, 0.9)'
+      ctx.lineWidth = 2
+      ctx.stroke()
+    }
+  }
+
   // Labels
   ctx.fillStyle = preview.color
   ctx.font = '11px monospace'
