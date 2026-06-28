@@ -16,11 +16,12 @@ export function tickLeaveToastCD(dt: number): void {
 export function resetLeaveToastCD(): void { leaveToastGlobalCD = 0; revengeToastGlobalCD = 0 }
 import { clampToArena, resolveWallCollision, getArenaShape, ARENA_CX, ARENA_CY } from '../game/Arena.ts'
 import { emit } from '../core/EventBus.ts'
-import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC, SHIELD_BREAK_FLASH, HEAVY_YIELD } from '../utils/constants.ts'
+import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC, SHIELD_BREAK_FLASH, HEAVY_YIELD, WEAK_NODE_BEAT_OFFSET } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import type { Player } from './Player.ts'
 import type { EnemyType, MovePattern, SummonPhase, ShrinePhase, RangedPattern, RangedRotationMode, TetherTopology, ClusterLayer, WeakNodePattern } from './EnemyTypes.ts'
 import { getEnemyType } from './EnemyTypes.ts'
+import { getAbsoluteBeats } from '../audio/PatternClock.ts'   // music-anchored beat clock (same one every rhythmic system uses)
 import { SpatialGrid } from '../core/SpatialGrid.ts'
 import { getChillRank } from '../game/UpgradeManager.ts'
 
@@ -185,9 +186,11 @@ export interface Enemy {
   nodesAlive: number              // live-node counter; reaches 0 → enemy dies
   nodeFlash: number[]             // per-node hit/break FX timer (seconds)
   nodeJustBroke: boolean[]        // transient — set on break, Renderer spawns the shatter + clears it
+  nodeBeatDashHit: boolean[]      // transient — set when beat-dash hits a node, Renderer spawns lightning AT the node
+  nodeJustRevived: boolean[]      // transient — set when a heal revives a husk, Renderer pops a gold burst
   nodeSeed: number                // phase offset so clones desync (index-derived, deterministic)
   nodePattern: WeakNodePattern    // movement pattern
-  nodeOrbitFrac: number; nodeSizeFrac: number; nodeSpeed: number; nodeAmp: number
+  nodeOrbitFrac: number; nodeSizeFrac: number; nodeSpeed: number; nodeBeatDiv: number; nodeAmp: number
   isShrine: boolean
   shrineSpawnEnemy: string        // LEGACY — use shrinePhases
   shrineXpCount: number           // LEGACY
@@ -464,11 +467,14 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     nodesAlive: Math.max(1, type.weakNodeCount ?? 3),
     nodeFlash: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(0),
     nodeJustBroke: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(false),
+    nodeBeatDashHit: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(false),
+    nodeJustRevived: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(false),
     nodeSeed: (x * 0.013 + y * 0.017) % (Math.PI * 2),   // deterministic per-spawn phase so clones desync
     nodePattern: type.weakNodePattern ?? 'orbit',
     nodeOrbitFrac: type.weakNodeOrbitFrac ?? 0.55,   // inside the body (orbit + node radius < enemy.radius)
     nodeSizeFrac: type.weakNodeSizeFrac ?? 0.30,
     nodeSpeed: type.weakNodeSpeed ?? 1,
+    nodeBeatDiv: Math.max(0.25, type.weakNodeBeatDiv ?? 1),
     nodeAmp: type.weakNodeAmp ?? 0.3,
     isShrine: type.isShrine ?? false,
     shrineSpawnEnemy: type.shrineSpawnEnemy ?? '',
@@ -1281,46 +1287,124 @@ export function nodeWorldPos(enemy: Enemy, i: number, t: number): { x: number; y
   const base = enemy.nodeSeed + (i / n) * NODE_TAU
   const R = enemy.radius * enemy.nodeOrbitFrac
   const spd = t * enemy.nodeSpeed
-  // Beat phase 0→1 each beat + a sharp on-beat pop (spikes at the downbeat, decays to 0). Computed
-  // from the shared clock so sim + render agree. Used by the beat-synced patterns.
-  const beatPhase = (t % BEAT_SEC) / BEAT_SEC
-  const beatPop = Math.pow(1 - beatPhase, 2.5)
+  // Two independent knobs: SPIN (nodeSpeed, rad/s — used as `spd` for rotation) and BEAT ÷ (D =
+  // nodeBeatDiv — beats per beat-event/cycle). `beatPop` is a smooth bump that fires every D beats
+  // (smoothstep attack just after the event, smoothstep decay over the rest of the cycle → jerk-free,
+  // continuous at the boundary). The beat-LOCKED smooth patterns cycle every D beats too.
+  const beatT = getAbsoluteBeats() + WEAK_NODE_BEAT_OFFSET   // music-locked + felt-beat sync offset
+  const D = enemy.nodeBeatDiv
+  const cb = beatT % D                          // beats since the last event (0 → D)
+  const ATK = Math.min(0.15, D * 0.4)           // attack window in BEATS
+  let beatPop: number
+  if (cb < ATK) {
+    const e = cb / ATK
+    beatPop = e * e * (3 - 2 * e)
+  } else {
+    const e = (cb - ATK) / Math.max(0.001, D - ATK)
+    beatPop = 1 - e * e * (3 - 2 * e)
+  }
   let a: number, r: number
   switch (enemy.nodePattern) {
     case 'breathe':
-      // Breathe ON the beat — orbit slowly while popping outward on each downbeat.
+      // Spin freely; pop outward every D beats.
       a = base + spd
       r = R * (1 + enemy.nodeAmp * beatPop)
       break
     case 'pulse':
-      // Heartbeat — tight cluster that punches out on the beat then settles back in.
+      // Heartbeat — tight cluster that punches out every D beats then settles in.
       a = base + spd
       r = R * (0.78 + enemy.nodeAmp * 1.6 * beatPop)
       break
-    case 'multiRadius':
-      a = base + spd * (0.6 + 0.5 * (i % 3))
-      r = R * (0.55 + 0.45 * ((i * 7) % 5) / 4)
+    case 'sway':
+      // Whole ring rocks back and forth, reversing direction every D beats. Spin adds a slow drift.
+      a = base + spd * 0.3 + (0.4 + enemy.nodeAmp * 0.9) * Math.sin(beatT * (Math.PI / D))
+      r = R
       break
-    case 'figure8': {
-      const p = spd + base
-      return { x: enemy.x + Math.sin(p) * R, y: enemy.y + Math.sin(2 * p) * R * (0.6 + enemy.nodeAmp) }
+    case 'ripple':
+      // Radial wave traveling around the ring, one bob cycle per D beats. Spin drifts the ring.
+      a = base + spd * 0.4
+      r = R * (1 + enemy.nodeAmp * 0.6 * Math.sin(base * 2 - beatT * (NODE_TAU / D)))
+      break
+    case 'vortex':
+      // Whirlpool — fast spin + a synchronized spiral that blooms out every D beats.
+      a = base + spd * 1.6
+      r = R * (0.45 + 0.55 * beatPop)
+      break
+    case 'starPulse':
+      // Every D beats alternate nodes punch OUT and the rest pull IN → a rotating circle↔star.
+      a = base + spd
+      r = R * (0.72 + enemy.nodeAmp * beatPop * (i % 2 === 0 ? 1 : -0.45))
+      break
+    case 'twirl': {
+      // Spin rotates the ring; each node loops its own small circle once per D beats.
+      const sa = base + spd * 0.5
+      const slotX = enemy.x + Math.cos(sa) * R
+      const slotY = enemy.y + Math.sin(sa) * R
+      const loop = base + beatT * (NODE_TAU / D)
+      const smallR = R * (0.12 + enemy.nodeAmp * 0.3)
+      return { x: slotX + Math.cos(loop) * smallR, y: slotY + Math.sin(loop) * smallR }
     }
     case 'beatHop': {
-      // Snap to a new orientation each beat, but EASE into it over the first ~20% of the beat so it
-      // reads as a rhythmic hop rather than a teleport.
+      // Snap to a new orientation every D beats, eased over the first part of the cycle (hop, not jump).
       const step = (NODE_TAU / n) * 0.5
-      const ePh = Math.min(1, beatPhase / 0.2)
-      const ease = ePh * ePh * (3 - 2 * ePh)                 // smoothstep
-      a = base + (Math.floor(t / BEAT_SEC) - 1 + ease) * step
+      const ePh = Math.min(1, cb / Math.min(0.3, D * 0.5))
+      const ease = ePh * ePh * (3 - 2 * ePh)
+      a = base + (Math.floor(beatT / D) - 1 + ease) * step
       r = R
       break
     }
+    case 'rosette': {
+      // Nodes ride a flattened ELLIPSE whose orientation slowly precesses → traces a flower/rosette.
+      const ea = base + spd
+      const lx = Math.cos(ea) * R
+      const ly = Math.sin(ea) * R * 0.5
+      const prec = beatT * (NODE_TAU / (D * 6))   // slow beat-locked precession (one turn per 6·D beats)
+      const cs = Math.cos(prec), sn = Math.sin(prec)
+      return { x: enemy.x + lx * cs - ly * sn, y: enemy.y + lx * sn + ly * cs }
+    }
+    case 'iris':
+      // Aperture — every D beats the ring twists inward + contracts (closes), then untwists + blooms.
+      a = base + spd + (0.5 + enemy.nodeAmp) * beatPop
+      r = R * (0.35 + 0.65 * (1 - beatPop))
+      break
+    case 'pendulumWave': {
+      // Each node bobs radially with a slightly different period by index → traveling waves that
+      // phase apart and periodically RE-SYNC into one ring (pendulum-wave demo).
+      const freq = (NODE_TAU / D) * (1 + i * 0.06)
+      a = base + spd * 0.2
+      r = R * (1 + enemy.nodeAmp * 0.5 * Math.sin(beatT * freq))
+      break
+    }
+    case 'cascade': {
+      // Chase lights — the lit node STEPS one slot each Beat ÷, so every pop lands on a beat. The
+      // active node pops (beatPop envelope: attack then decay across the cycle), then the next.
+      a = base + spd * 0.3
+      const active = ((Math.floor(beatT / D) % n) + n) % n
+      r = R * (1 + enemy.nodeAmp * (i === active ? beatPop : 0))
+      break
+    }
+    case 'tumble':
+      // Faux-3D coin flip — the ring squashes to a flat line and expands back every D beats while
+      // spinning. (A depth-size cue is applied in the renderer via nodeDrawScale.)
+      a = base + spd
+      r = R
+      return { x: enemy.x + Math.cos(a) * R, y: enemy.y + Math.sin(a) * R * Math.cos(beatT * (Math.PI / D)) }
     case 'orbit':
     default:
       a = base + spd
       r = R
   }
   return { x: enemy.x + Math.cos(a) * r, y: enemy.y + Math.sin(a) * r }
+}
+
+/** Per-node DRAW size multiplier (visual only — hit radius stays nodeRadius). Used by 'tumble' to fake
+ * depth (front nodes bigger, back smaller) so the flip reads as 3D. 1 for every other pattern. */
+export function nodeDrawScale(enemy: Enemy, i: number, t: number): number {
+  if (enemy.nodePattern !== 'tumble') return 1
+  const n = enemy.nodeHp.length
+  const a = enemy.nodeSeed + (i / n) * NODE_TAU + t * enemy.nodeSpeed
+  const z = Math.sin(a) * Math.sin((getAbsoluteBeats() + WEAK_NODE_BEAT_OFFSET) * (Math.PI / enemy.nodeBeatDiv))   // -1 (back) .. 1 (front)
+  return 0.7 + 0.3 * (z + 1)
 }
 
 /** Hit/draw radius of an enemy's weak-nodes. */
@@ -1353,6 +1437,21 @@ export function damageNode(enemy: Enemy, i: number, amount: number): void {
       emit('enemy:killed', enemy)
     }
   }
+}
+
+/** Heal weak-node `i` — tops it up and can REVIVE a broken husk back to a live node (nodesAlive++).
+ * Returns the HP restored. No-op on a dying enemy (it's already gone). */
+export function healNode(enemy: Enemy, i: number, amount: number): number {
+  const hp = enemy.nodeHp[i]
+  if (enemy.dying || hp === undefined || hp >= enemy.nodeMaxHp) return 0
+  const wasBroken = hp <= 0
+  enemy.nodeHp[i] = Math.min(enemy.nodeMaxHp, hp + amount)
+  enemy.nodeFlash[i] = HIT_FLASH_DURATION
+  if (wasBroken && enemy.nodeHp[i]! > 0) {
+    enemy.nodesAlive++                 // husk revived back to life
+    enemy.nodeJustRevived[i] = true    // Renderer pops a gold revive burst
+  }
+  return enemy.nodeHp[i]! - hp
 }
 
 export function damageEnemy(enemy: Enemy, amount: number): void {

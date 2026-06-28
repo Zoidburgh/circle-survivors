@@ -1,7 +1,8 @@
 export type MovePattern = 'pursue' | 'orbit' | 'zigzag' | 'stationary' | 'bounce' | 'lunge' | 'immovable'
 // Weak-node movement patterns (see boss_nodes_plan.md). All evaluated by Enemy.nodeWorldPos().
 // 'breathe' / 'pulse' / 'beatHop' move ON the beat; 'orbit' / 'multiRadius' / 'figure8' flow freely.
-export type WeakNodePattern = 'orbit' | 'breathe' | 'multiRadius' | 'figure8' | 'beatHop' | 'pulse'
+export type WeakNodePattern = 'orbit' | 'breathe' | 'beatHop' | 'pulse' | 'sway' | 'ripple' | 'vortex' | 'starPulse' | 'twirl'
+  | 'rosette' | 'iris' | 'pendulumWave' | 'cascade' | 'tumble'
 
 export type RangedPattern = 'aimed' | 'surround_player' | 'radial' | 'spread_cone' | 'rotating'
 export type RangedRotationMode = 'turret' | 'player_anchored' | 'oscillate'
@@ -165,8 +166,9 @@ export interface EnemyType {
   weakNodeOrbitFrac?: number        // orbit radius ÷ enemy.radius (default 0.55 — inside the body)
   weakNodeSizeFrac?: number         // node radius ÷ enemy.radius (default 0.30)
   weakNodePattern?: WeakNodePattern // movement pattern (default 'orbit')
-  weakNodeSpeed?: number            // pattern speed multiplier (default 1)
-  weakNodeAmp?: number              // breathe / figure8 amplitude (default 0.3)
+  weakNodeSpeed?: number            // SPIN — ring rotation rate, rad/s (default 1)
+  weakNodeBeatDiv?: number          // BEAT ÷ — beats per beat-event/cycle (pop/hop/sway/etc). 1 = every beat (default 1)
+  weakNodeAmp?: number              // movement amplitude (default 0.3)
   summon?: boolean                  // has orbiting ritual nodes, phased spawning
   summonNodes?: number              // how many nodes (3 = triangle, 5 = pentagon, default 3)
   summonPhases?: SummonPhase[]      // each phase = one completed sequence, spawns enemies

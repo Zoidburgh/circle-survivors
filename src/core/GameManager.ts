@@ -2,7 +2,7 @@ import * as Input from '../game/InputManager.ts'
 import * as Renderer from '../render/Renderer.ts'
 import { updatePlayer, hurtPlayer, healPlayer, resetDashCDToast, RECALL_DURATION } from '../entities/Player.ts'
 import type { Player } from '../entities/Player.ts'
-import { createEnemy, updateEnemy, updateDeath, damageEnemy, healEnemy, spawnDrops, tickLeaveToastCD, resetLeaveToastCD } from '../entities/Enemy.ts'
+import { createEnemy, updateEnemy, updateDeath, damageEnemy, healEnemy, spawnDrops, tickLeaveToastCD, resetLeaveToastCD, nodeWorldPos, nodeRadius, damageNode, healNode } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { advanceGlobalTime } from './RhythmClock.ts'
 import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
@@ -221,6 +221,26 @@ function processVolatileExplosions(player: ReturnType<typeof getPlayer>, enemies
       const vfxB = exp.heal ? 110 : exp.b
       for (const enemy of enemies) {
         if (!enemy.alive || enemy.dying || enemy.summon) continue
+        // Weak-node enemy: the blast disc hits NODES, not the body — damage breaks them, heal REVIVES
+        // husks. Per-node containment test so only the nodes actually inside the disc are affected.
+        if (enemy.weakNodes) {
+          const tn = Renderer.getGameTimeMs() / 1000
+          const nodeR = nodeRadius(enemy)
+          for (let i = 0; i < enemy.nodeHp.length; i++) {
+            const np = nodeWorldPos(enemy, i, tn)
+            const ndx = np.x - exp.x, ndy = np.y - exp.y
+            const nr = exp.range + nodeR
+            if (ndx * ndx + ndy * ndy > nr * nr) continue
+            if (exp.heal) {
+              healNode(enemy, i, 1)
+            } else {
+              const wasDying = enemy.dying
+              damageNode(enemy, i, 1)
+              if (enemy.dying && !wasDying) { spawnDrops(enemy, 1, spawnOrb); explosionKillTimes.push(challengeElapsed) }
+            }
+          }
+          continue
+        }
         const dx = enemy.x - exp.x
         const dy = enemy.y - exp.y
         const hitRange = exp.range + enemy.radius
@@ -1663,6 +1683,31 @@ function applyBeatDashImpact(x: number, y: number, radius: number, damage: numbe
       if (!enemy.alive || enemy.dying) continue
       if (enemy.isShrine || enemy.summon) continue  // handled at placement; skip here so a delayed
                                                     // detonation can't double-tag a shrine/node
+      // Weak-node enemy: the AOE disc damages the NODES it covers (body invulnerable). Lightning is
+      // flagged per-node (nodeBeatDashHit) so it strikes the node, not the whole enemy.
+      if (enemy.weakNodes) {
+        const tn = Renderer.getGameTimeMs() / 1000
+        const nodeR = nodeRadius(enemy)
+        const wasDying = enemy.dying
+        let hitAny = false
+        for (let i = 0; i < enemy.nodeHp.length; i++) {
+          if (enemy.nodeHp[i]! <= 0) continue
+          const np = nodeWorldPos(enemy, i, tn)
+          const ndx = np.x - x, ndy = np.y - y
+          const nr = radius + nodeR
+          if (ndx * ndx + ndy * ndy <= nr * nr) {
+            damageNode(enemy, i, damage)
+            enemy.nodeBeatDashHit[i] = true
+            hitAny = true
+          }
+        }
+        if (hitAny) {
+          beatDashHitCount++
+          if (!isRunTimerActive() && !isRunComplete()) startRunTimer()
+          if (enemy.dying && !wasDying) spawnDrops(enemy, 1, spawnOrb)
+        }
+        continue
+      }
       const dx = enemy.x - x
       const dy = enemy.y - y
       const hitRange = radius + enemy.radius

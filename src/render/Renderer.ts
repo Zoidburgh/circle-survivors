@@ -1,7 +1,7 @@
 import type { Player } from '../entities/Player.ts'
 import { getEffectiveRadius, getBodyRadius, SPEED_BOOST_DURATION } from '../entities/Player.ts'
 import type { Enemy } from '../entities/Enemy.ts'
-import { getRingOrigins, nodeWorldPos, nodeRadius } from '../entities/Enemy.ts'
+import { getRingOrigins, nodeWorldPos, nodeRadius, nodeDrawScale } from '../entities/Enemy.ts'
 import type { Ring } from '../entities/Ring.ts'
 import { getRingExpansion, getRingAlpha, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { ENEMY_TYPES, getEnemyType } from '../entities/EnemyTypes.ts'
@@ -722,6 +722,7 @@ const MAX_RIPPLES = 30
 // AOE-center burst, which is anchored to where the player was at dash time).
 interface LightningBolt {
   enemy: Enemy | null
+  nodeIndex: number    // -1 = follow enemy body; >=0 = follow this weak-node's live position
   pts: { x: number; y: number }[]
   lastX: number; lastY: number
   timer: number; lifetime: number; scale: number
@@ -759,7 +760,7 @@ function buildBoltPoints(angle: number, length: number): { x: number; y: number 
 function spawnLightningBolt(enemy: Enemy, angle: number, length: number, scale: number): void {
   if (lightningBolts.length >= MAX_BOLTS) return
   lightningBolts.push({
-    enemy, pts: buildBoltPoints(angle, length),
+    enemy, nodeIndex: -1, pts: buildBoltPoints(angle, length),
     lastX: enemy.x, lastY: enemy.y,
     // Longer life than the AOE-center bolts so the lightning lingers + fades slower ON the enemies
     // that got hit (was 0.29–0.36s).
@@ -775,8 +776,23 @@ function spawnLightningBolt(enemy: Enemy, angle: number, length: number, scale: 
 function spawnStaticLightningBolt(x: number, y: number, angle: number, length: number, scale: number, lifetime: number): void {
   if (lightningBolts.length >= MAX_BOLTS) return
   lightningBolts.push({
-    enemy: null, pts: buildBoltPoints(angle, length),
+    enemy: null, nodeIndex: -1, pts: buildBoltPoints(angle, length),
     lastX: x, lastY: y,
+    timer: 0, lifetime, scale,
+    fadeOffset: -0.05 + Math.random() * 0.30,
+    flickerSeed: Math.random() * 100,
+    angularVel: (Math.random() - 0.5) * 11,
+  })
+}
+
+// Node-anchored variant — the bolt follows weak-node `nodeIndex`'s LIVE position as it moves on its
+// pattern, so the lightning rides the node instead of staying pinned where it was hit.
+function spawnNodeLightningBolt(enemy: Enemy, nodeIndex: number, angle: number, length: number, scale: number, lifetime: number): void {
+  if (lightningBolts.length >= MAX_BOLTS) return
+  const p = nodeWorldPos(enemy, nodeIndex, gameTimeMs / 1000)
+  lightningBolts.push({
+    enemy, nodeIndex, pts: buildBoltPoints(angle, length),
+    lastX: p.x, lastY: p.y,
     timer: 0, lifetime, scale,
     fadeOffset: -0.05 + Math.random() * 0.30,
     flickerSeed: Math.random() * 100,
@@ -817,7 +833,14 @@ function updateAndDrawLightningBolts(dt: number): void {
     }
     // Anchor to the enemy's current world position; fall back to last-seen if dead/dying.
     // Static-origin bolts (enemy = null) keep their initial lastX/lastY untouched.
-    if (b.enemy && b.enemy.alive && !b.enemy.dying) { b.lastX = b.enemy.x; b.lastY = b.enemy.y }
+    if (b.enemy && b.enemy.alive && !b.enemy.dying) {
+      if (b.nodeIndex >= 0) {
+        const np = nodeWorldPos(b.enemy, b.nodeIndex, gameTimeMs / 1000)   // ride the node's live position
+        b.lastX = np.x; b.lastY = np.y
+      } else {
+        b.lastX = b.enemy.x; b.lastY = b.enemy.y
+      }
+    }
     const ax = b.lastX, ay = b.lastY
     // Rotate the bolt around its anchor — its own angularVel PLUS the shared global swirl, so each
     // strand spins individually while the whole burst rotates together.
@@ -9771,30 +9794,52 @@ function spawnNodeShatter(x: number, y: number, nodeR: number): void {
   spawnParticle(x, y, 0, 0, 230, 250, 255, 0.10, nodeR * 1.25, 0, 200, 240, 255)  // core flash
 }
 
+// Gold burst when a heal revives a broken node (husk → live).
+function spawnNodeRevive(x: number, y: number, nodeR: number): void {
+  const n = lodCount(12)
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2
+    const sp = 60 + Math.random() * 130
+    spawnParticle(x, y, Math.cos(a) * sp, Math.sin(a) * sp - 20,
+      255, 235, 170, 0.30 + Math.random() * 0.2, nodeR * 0.2 + Math.random() * nodeR * 0.22,
+      0, 255, 225, 160)   // pale-gold glow tint
+  }
+  spawnParticle(x, y, 0, 0, 255, 245, 200, 0.12, nodeR * 1.3, 0, 255, 230, 170)  // gold flash
+}
+
 // Weak-node enemies (see boss_nodes_plan.md). Live nodes glow + crack with each hit; broken nodes
 // stay in the pattern as dark husks; the body is dimmed/armored to read as "not the target".
 function drawWeakNodes(enemy: Enemy): void {
   const t = gameTimeMs / 1000
   const nodeR = nodeRadius(enemy)
-  // Break shatter — fires for any node that just broke (and all husks on death). Runs even while
-  // dying so the death animation includes the shards.
+  // Per-node transient FX (break shatter / beat-dash lightning AT the node / heal revive). Runs even
+  // while dying so the death animation includes the shards.
   for (let i = 0; i < enemy.nodeJustBroke.length; i++) {
-    if (!enemy.nodeJustBroke[i]) continue
-    enemy.nodeJustBroke[i] = false
+    if (!enemy.nodeJustBroke[i] && !enemy.nodeBeatDashHit[i] && !enemy.nodeJustRevived[i]) continue
     const p = nodeWorldPos(enemy, i, t)
-    spawnNodeShatter(p.x, p.y, nodeR)
+    if (enemy.nodeBeatDashHit[i]) {
+      enemy.nodeBeatDashHit[i] = false
+      const bolts = 4
+      for (let b = 0; b < bolts; b++) {
+        const a = (b / bolts) * Math.PI * 2 + Math.random() * 0.6
+        spawnNodeLightningBolt(enemy, i, a, nodeR * (1.5 + Math.random() * 0.8), 1.1, 0.30 + Math.random() * 0.06)
+      }
+    }
+    if (enemy.nodeJustBroke[i]) { enemy.nodeJustBroke[i] = false; spawnNodeShatter(p.x, p.y, nodeR) }
+    if (enemy.nodeJustRevived[i]) { enemy.nodeJustRevived[i] = false; spawnNodeRevive(p.x, p.y, nodeR) }
   }
   if (enemy.dying) return   // body dissolve handles the rest (armored body drawn in drawEnemy)
 
   for (let i = 0; i < enemy.nodeHp.length; i++) {
     const p = nodeWorldPos(enemy, i, t)
     const sx = p.x - camX, sy = p.y - camY
+    const dr = nodeR * nodeDrawScale(enemy, i, t)   // visual depth cue (tumble); = nodeR otherwise
     const hp = enemy.nodeHp[i]!
     if (hp > 0) {
       const hpFrac = hp / enemy.nodeMaxHp
       const flashT = Math.min(1, Math.max(0, enemy.nodeFlash[i]!) / 0.2)
       // Glowing orb — brighter at full HP and on a fresh hit
-      ctx.beginPath(); ctx.arc(sx, sy, nodeR, 0, Math.PI * 2)
+      ctx.beginPath(); ctx.arc(sx, sy, dr, 0, Math.PI * 2)
       ctx.fillStyle = `rgba(${Math.floor(120 + 135 * flashT)}, 230, 255, ${0.5 + 0.35 * hpFrac + 0.15 * flashT})`
       ctx.fill()
       ctx.strokeStyle = `rgba(235, 252, 255, ${0.85 + 0.15 * flashT})`
@@ -9809,13 +9854,13 @@ function drawWeakNodes(enemy: Enemy): void {
           const ca = (c / enemy.nodeMaxHp) * Math.PI * 2 + i * 1.7
           ctx.beginPath()
           ctx.moveTo(sx, sy)
-          ctx.lineTo(sx + Math.cos(ca) * nodeR * 0.9, sy + Math.sin(ca) * nodeR * 0.9)
+          ctx.lineTo(sx + Math.cos(ca) * dr * 0.9, sy + Math.sin(ca) * dr * 0.9)
           ctx.stroke()
         }
       }
     } else {
       // Husk — dark, inert, cracked, smaller; clearly DEAD (no glow) but still riding the pattern
-      const hr = nodeR * 0.78
+      const hr = dr * 0.78
       ctx.beginPath(); ctx.arc(sx, sy, hr, 0, Math.PI * 2)
       ctx.fillStyle = 'rgba(50, 50, 62, 0.62)'
       ctx.fill()
@@ -12269,13 +12314,14 @@ function drawDesignerPreview(player: Player): void {
       nodeSizeFrac: preview.weakNodeSizeFrac,
       nodePattern: preview.weakNodePattern,
       nodeSpeed: preview.weakNodeSpeed,
+      nodeBeatDiv: preview.weakNodeBeatDiv,
       nodeAmp: preview.weakNodeAmp,
     } as unknown as Enemy
     const nr = nodeRadius(stub)
     for (let i = 0; i < stub.nodeHp.length; i++) {
       const p = nodeWorldPos(stub, i, t)
       const nx = p.x - camX, ny = p.y - camY
-      ctx.beginPath(); ctx.arc(nx, ny, nr, 0, Math.PI * 2)
+      ctx.beginPath(); ctx.arc(nx, ny, nr * nodeDrawScale(stub, i, t), 0, Math.PI * 2)
       ctx.fillStyle = 'rgba(120, 230, 255, 0.8)'
       ctx.fill()
       ctx.strokeStyle = 'rgba(235, 252, 255, 0.9)'

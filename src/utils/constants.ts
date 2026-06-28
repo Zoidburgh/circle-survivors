@@ -44,6 +44,10 @@ export const PARTICLE_CAP = 1800
 export const PARTICLE_LOD_SOFT = 400
 export const PARTICLE_LOD_HARD = 1500
 export const PARTICLE_LOD_FLOOR = 0.25
+// Weak-node beat pops happen on getAbsoluteBeats(), the raw scheduling beat. The FELT beat lands a
+// touch earlier (audio latency + the game's ~50ms calibration), so shift the node beat forward by
+// this many beats so pops sit on the felt beat. Tune to taste (+ = pop earlier).
+export const WEAK_NODE_BEAT_OFFSET = 0.05
 export const CAMERA_LEAD_AMOUNT = 80
 // ── Camera smoothing ── (anti-jitter: lead only engages on SUSTAINED movement, not taps)
 export const CAMERA_LEAD_GATE_K = 3.5        // low-pass rate for the speed gate (higher = reacts faster)
