@@ -1102,7 +1102,7 @@ export function spawnHealExplosionParticles(cx: number, cy: number, range: numbe
     emitG(px, py,
       Math.cos(outAngle) * speed, Math.sin(outAngle) * speed - 55,   // upward lift = benevolent rise
       255, 242 + Math.floor(tint * 13), 205 + Math.floor(tint * 40),  // white-gold body
-      0.38 + Math.random() * 0.26, 5 + Math.random() * 5,
+      0.30 + Math.random() * 0.2, 5 + Math.random() * 5,              // fade a bit faster (was 0.38–0.64s)
       (Math.random() < 0.5 ? 1 : -1) * (4 + Math.random() * 6),
       255, 232, 180)                                       // pale-gold glow tint → white-gold bloom
   }
@@ -1113,16 +1113,16 @@ export function spawnHealExplosionParticles(cx: number, cy: number, range: numbe
   const starN = lodCount(Math.round(Math.min(18, Math.round(Math.sqrt(range) * 1.4)) * countMul))
   for (let i = 0; i < starN; i++) {
     const a = (i / starN) * Math.PI * 2 + Math.random() * 0.5
-    const sp = 280 + Math.random() * 260                   // faster launch so they actually reach the rim
+    const sp = 235 + Math.random() * 215                   // reach the rim without overshooting much past it
     const dist = range * (0.35 + Math.random() * 0.5)      // start further out (not bunched at center)
     starGlints.push({
       x: cx + Math.cos(a) * dist, y: cy + Math.sin(a) * dist,
       vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
       size: 18 + Math.random() * 14,                       // bigger than the boost stars (18–32px)
       rot: Math.random() * Math.PI, rotSpeed: (Math.random() - 0.5) * 6,
-      life: 0, maxLife: 0.32 + Math.random() * 0.18,       // quick pop
+      life: 0, maxLife: 0.26 + Math.random() * 0.14,       // quick pop + faster fade
       parent: starParent, lastPX: starParent.x, lastPY: starParent.y, lastRot: starParent.rot ?? 0,
-      shrink: true, friction: 0.95,                        // coast farther than boost stars
+      shrink: true, friction: 0.93,                        // coast a bit less so they settle near the rim
     })
   }
   // White-gold twinkle highlights rising from the center — the bright "sparkle" core
@@ -1133,7 +1133,7 @@ export function spawnHealExplosionParticles(cx: number, cy: number, range: numbe
     emitG(cx, cy,
       Math.cos(angle) * speed, Math.sin(angle) * speed - 45,
       255, 252, 238,
-      0.3 + Math.random() * 0.2, 3 + Math.random() * 2.5,
+      0.24 + Math.random() * 0.16, 3 + Math.random() * 2.5,
       0, 255, 242, 205)
   }
 }
@@ -1422,6 +1422,27 @@ function updateAndDrawVolatileEffects(dt: number): void {
     ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.4})`
     ctx.lineWidth = 1.5
     ctx.stroke()
+
+    // Telegraph fade-out — the buildup telegraph is instant-removed the frame the blast fires, which
+    // made the expanding danger zone pop out of existence. Re-draw it at full range here, fading out
+    // FAST, so it resolves smoothly and the hitbox stays clearly readable as the blast activates.
+    // Skipped on wall bursts (ex.parent) — those already have a permanent visible wall hitbox.
+    if (!ex.parent) {
+      const tgFade = Math.max(0, 1 - ex.timer / 0.23)
+      if (tgFade > 0.01) {
+        // Dim "claimed zone" fill so the whole shape fades, not just the rim
+        ctx.beginPath()
+        ctx.arc(sx, sy, ex.range, 0, Math.PI * 2)
+        ctx.fillStyle = `rgba(${erR}, ${erG}, ${erB}, ${tgFade * 0.10})`
+        ctx.fill()
+        // Bold danger ring at the exact hitbox edge
+        ctx.beginPath()
+        ctx.arc(sx, sy, ex.range, 0, Math.PI * 2)
+        ctx.strokeStyle = `rgba(${erR}, ${erG}, ${erB}, ${tgFade * 0.6})`
+        ctx.lineWidth = 2.5 + tgFade * 6
+        ctx.stroke()
+      }
+    }
 
     // Expanding ripples — shoot outward from blast edge
     for (let rip = 0; rip < 2; rip++) {
