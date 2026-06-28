@@ -222,6 +222,7 @@ export function screenToCanvas(screenX: number, screenY: number): { x: number; y
 let outerPulseIntensity = 0
 let dashReadyFlash: { slotIndex: number; timer: number; duration: number }[] = []
 let dashSweepIntensity = 0
+let dashSweepFlash = 0   // hot-white impact flash on the dash-sweep rings; spikes on trigger, decays fast
 let beatDashFlash = 0       // countdown for beat dash shockwave visual
 let dashFailFlash = 0       // >0 = brief red flash on the recharging pies when dash attempted with no charge
 export function triggerDashFailFlash(): void { dashFailFlash = 0.25 }
@@ -733,7 +734,7 @@ const MAX_BOLTS = 90
 // Shared spin applied to EVERY beat-dash bolt so the whole burst rotates together (layered ON TOP
 // of each strand's individual angularVel). One module clock → all live bolts read the same global
 // angle, so they swirl in unison rather than each doing its own thing.
-const LIGHTNING_GLOBAL_SPIN = 4.0   // rad/s — collective swirl rate
+const LIGHTNING_GLOBAL_SPIN = 9.5   // rad/s — collective swirl rate (faster)
 let lightningSpinClock = 0
 
 function buildBoltPoints(angle: number, length: number): { x: number; y: number }[] {
@@ -1261,10 +1262,12 @@ function updateAndDrawVolatileEffects(dt: number): void {
       rb = Math.floor(p.b * (1 - redBlend * 0.8))
     }
 
-    // Dark fill inside swept area — "claimed" zone, intensifies smoothly
+    // Claimed-zone fill — the spreading circle visibly TINTS whatever it covers (it's drawn over the
+    // player + enemies), so it reads as the danger zone consuming them as it grows. Stronger than the
+    // old faint 0.12 so the "consuming" is clearly visible.
     ctx.beginPath()
     ctx.arc(sx, sy, ringR, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(${rr}, ${rg}, ${rb}, ${progress * progress * 0.12})`
+    ctx.fillStyle = `rgba(${rr}, ${rg}, ${rb}, ${progress * progress * 0.26})`
     ctx.fill()
 
     // Outer glow — gets wider and brighter smoothly
@@ -5055,21 +5058,21 @@ export function triggerBeatDashFlash(x: number, y: number, radius: number): void
   // Lightning at the AOE center — reads as the source radiating outward. Two layers:
   // a tight inner cluster of short bolts (the "core arc"), and a longer outer ring that
   // reaches roughly to where enemy bolts will spawn so the spread visually connects.
-  const innerCount = 9
-  const innerScale = 2.1   // thicker AOE-center "player" lightning (was 1.4)
+  const innerCount = 8     // fewer strands again
+  const innerScale = 2.3   // a bit thinner than 2.7
   const innerLen = radius * 0.74
-  const innerLife = 0.36
+  const innerLife = 0.40   // fade a touch slower
   for (let i = 0; i < innerCount; i++) {
     const a = (i / innerCount) * Math.PI * 2 + Math.random() * 0.5
     spawnStaticLightningBolt(x, y, a, innerLen * (0.75 + Math.random() * 0.5), innerScale, innerLife + Math.random() * 0.06)
   }
-  const outerCount = 6
-  const outerScale = 1.65   // thicker AOE-center "player" lightning (was 1.1)
+  const outerCount = 5     // fewer strands again
+  const outerScale = 1.8   // a bit thinner than 2.1
   const outerLen = radius * 1.37
-  const outerLife = 0.30
+  const outerLife = 0.34   // fade a touch slower
   for (let i = 0; i < outerCount; i++) {
     const a = (i / outerCount) * Math.PI * 2 + Math.random() * 0.8
-    spawnStaticLightningBolt(x, y, a, outerLen * (0.8 + Math.random() * 0.35), outerScale, outerLife + Math.random() * 0.06)
+    spawnStaticLightningBolt(x, y, a, outerLen * (0.8 + Math.random() * 0.16), outerScale, outerLife + Math.random() * 0.06)   // tighter max (1.15→0.96), min unchanged
   }
 }
 
@@ -5710,6 +5713,7 @@ export function resetRenderer(): void {
   globalBeatPulse = 0
   outerPulseIntensity = 0
   dashSweepIntensity = 0
+  dashSweepFlash = 0
   dashSweepPath = []
   shieldDisplayProgress = 0
   gameTimeMs = 0
@@ -5856,7 +5860,8 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfEnd('arena')
   perfStart('ripples')
   updateAndDrawDeathRipples(lastDt)
-  updateAndDrawLightningBolts(lastDt)
+  // Lightning is drawn LATER (just before the player) so the bolts read ON TOP of enemy bodies —
+  // including totems — instead of being buried under them. (Was here, under the entities.)
   perfEnd('ripples')
 
   // NOTE: the arena-bounds clip was removed so ALL animations (rings, orbs, the main particle
@@ -5978,6 +5983,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
 
     if (player.dashTimer >= 0 && anyPeak) {
       dashSweepIntensity = 1
+      dashSweepFlash = 1   // pop a hot-white flash at the impact frame
       dashSweepRadius = getEffectiveRadius(player) * 1.0  // full radius at peak
       const capStart = Math.floor(player.dashPath.length * 0.7)
       dashSweepPath = player.dashPath.slice(capStart).map(p => ({ x: p.x, y: p.y }))
@@ -5988,6 +5994,8 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       // longer on any framerate dip. Anchoring to lastDt keeps the real-time fade identical at any fps.
       dashSweepIntensity *= Math.pow(0.8, lastDt * 60)   // fade speed (0.8 @ 60fps)
       if (dashSweepIntensity < 0.01) dashSweepIntensity = 0
+      dashSweepFlash *= Math.pow(0.4, lastDt * 60)        // hot-white flash dies in ~2-3 frames
+      if (dashSweepFlash < 0.02) dashSweepFlash = 0
 
       // Disintegration particles as the sweep fades
       if (dashSweepIntensity > 0.05 && dashSweepPath.length > 1) {
@@ -6079,6 +6087,20 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       ctx.strokeStyle = `rgba(255, 255, 255, ${0.72 * fade})`
       ctx.lineWidth = 2
       ctx.stroke()
+
+      // Impact flash — a fat hot-white ring over every smear position for the first ~2-3 frames,
+      // drawn LAST so it blows out the color and sells the moment of impact.
+      if (dashSweepFlash > 0.02) {
+        ctx.beginPath()
+        for (const pt of dashSweepPath) {
+          const sx = pt.x - camX, sy = pt.y - camY
+          ctx.moveTo(sx + dashSweepRadius, sy)
+          ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
+        }
+        ctx.strokeStyle = `rgba(255, 190, 175, ${0.95 * dashSweepFlash})`   // hot white tinted red
+        ctx.lineWidth = grace * 1.6
+        ctx.stroke()
+      }
     }
   }
   perfEnd('dash_sweep')
@@ -6291,6 +6313,10 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     ctx.globalCompositeOperation = prevComp
   }
   perfEnd('shockpush')
+
+  // Lightning bolts (beat-dash AOE-center + enemy-hit + shield-break) — drawn here, AFTER all enemy
+  // bodies/totems/effects but BEFORE the player, so the bolts read on top of the enemies they hit.
+  perfStart('bolts'); updateAndDrawLightningBolts(lastDt); perfEnd('bolts')
 
   perfStart('player')
   drawPlayer(player)   // (boost star burst is drawn inside, under the dash dots so they stay readable)

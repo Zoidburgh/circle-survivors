@@ -12,23 +12,70 @@ let arenaShape: ArenaShape = 'rect'
 let polygonSides = 8
 export function getPolygonSides(): number { return polygonSides }
 export function setPolygonSides(n: number): void { polygonSides = Math.max(3, Math.min(12, Math.round(n))) }
-export const ARENA_W = 1700
-export const ARENA_H = 1100
-export const ARENA_RADIUS = 1000  // for circle mode
-export const ARENA_CX = ARENA_W / 2  // center X (used by both modes)
-export const ARENA_CY = ARENA_H / 2  // center Y (used by both modes)
 
-// ── Pill geometry ──
-// Horizontal stadium: two semicircles (radius PILL_R) connected by straight top/bottom edges
-export const PILL_R = 550       // cap radius
-export const PILL_HALF_W = 500  // half-length of straight section
-// Total width = PILL_HALF_W * 2 + PILL_R * 2 = 2100, height = PILL_R * 2 = 1100
+// ── Board dimensions ──
+// All arena dimensions scale off a single `arenaScale`. They're LIVE bindings (`let`) so the ~200
+// places that import them pick up a new scale automatically (ES-module live bindings) — only the
+// recompute in setArenaScale lives here. Bases are the scale-1.0 values.
+const ARENA_W_BASE = 1700, ARENA_H_BASE = 1100, ARENA_RADIUS_BASE = 1000
+const PILL_R_BASE = 550, PILL_HALF_W_BASE = 500
+const CROSS_HW_BASE = 350, CROSS_HE_BASE = 1000
+export const ARENA_SCALE_MIN = 0.5, ARENA_SCALE_MAX = 2.0
 
-// ── Cross geometry ──
-// Plus/cross shape: two overlapping rectangles centered on ARENA_CX/CY
-export const CROSS_HW = 350   // half-width of each arm
-export const CROSS_HE = 1000  // half-extent from center to arm tip
-// Total: 2000x2000, arm width 700px
+let arenaScale = 1
+export let ARENA_W = ARENA_W_BASE
+export let ARENA_H = ARENA_H_BASE
+export let ARENA_RADIUS = ARENA_RADIUS_BASE  // for circle / hex / polygon
+export let ARENA_CX = ARENA_W / 2            // center X (used by all modes)
+export let ARENA_CY = ARENA_H / 2            // center Y (used by all modes)
+
+// ── Pill geometry ── horizontal stadium: two semicircles (radius PILL_R) + straight top/bottom
+export let PILL_R = PILL_R_BASE              // cap radius
+export let PILL_HALF_W = PILL_HALF_W_BASE    // half-length of straight section
+
+// ── Cross geometry ── two overlapping rectangles centered on ARENA_CX/CY
+export let CROSS_HW = CROSS_HW_BASE   // half-width of each arm
+export let CROSS_HE = CROSS_HE_BASE   // half-extent from center to arm tip
+
+export function getArenaScale(): number { return arenaScale }
+/** Resize the whole board. Recomputes every dimension = base × scale (origin-anchored). */
+export function setArenaScale(s: number): void {
+  arenaScale = Math.max(ARENA_SCALE_MIN, Math.min(ARENA_SCALE_MAX, s))
+  ARENA_W = ARENA_W_BASE * arenaScale
+  ARENA_H = ARENA_H_BASE * arenaScale
+  ARENA_RADIUS = ARENA_RADIUS_BASE * arenaScale
+  ARENA_CX = ARENA_W / 2
+  ARENA_CY = ARENA_H / 2
+  PILL_R = PILL_R_BASE * arenaScale
+  PILL_HALF_W = PILL_HALF_W_BASE * arenaScale
+  CROSS_HW = CROSS_HW_BASE * arenaScale
+  CROSS_HE = CROSS_HE_BASE * arenaScale
+}
+
+/** Scale a wall list's spatial fields by `ratio` (origin-anchored) so a design stays proportional
+ * when the board is resized. Mutates in place. Angular/time/fraction fields (beats, rotation speed,
+ * fade minSize) are intentionally left alone. */
+export function scaleWalls(walls: Wall[], ratio: number): void {
+  if (ratio === 1 || !isFinite(ratio)) return
+  for (const w of walls) {
+    w.ax *= ratio; w.ay *= ratio; w.bx *= ratio; w.by *= ratio; w.radius *= ratio
+    if (w.bend !== undefined) w.bend *= ratio
+    if (w.restAx !== undefined) w.restAx *= ratio
+    if (w.restAy !== undefined) w.restAy *= ratio
+    if (w.restBx !== undefined) w.restBx *= ratio
+    if (w.restBy !== undefined) w.restBy *= ratio
+    if (w.restBend !== undefined) w.restBend *= ratio
+    if (w.groupCenterX !== undefined) w.groupCenterX *= ratio
+    if (w.groupCenterY !== undefined) w.groupCenterY *= ratio
+    if (w.motion) {
+      if (w.motion.pivotOffsetX !== undefined) w.motion.pivotOffsetX *= ratio
+      if (w.motion.pivotOffsetY !== undefined) w.motion.pivotOffsetY *= ratio
+    }
+    if (w.translation?.amplitude !== undefined) w.translation.amplitude *= ratio
+    if (w.spring) w.spring.strength *= ratio
+    if (w.zone) w.zone.range *= ratio
+  }
+}
 
 /** Get the 12 vertices of the cross outline (clockwise) */
 export function getCrossVertices(cx: number, cy: number): { x: number; y: number }[] {

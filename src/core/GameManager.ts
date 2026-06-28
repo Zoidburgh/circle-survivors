@@ -1749,7 +1749,7 @@ function applyBeatDashImpact(x: number, y: number, radius: number, damage: numbe
   playBeatDash()
   if (!reverbActive) {
     Renderer.triggerBeatDashFlash(x, y, radius)
-    Renderer.spawnVolatileParticles(x, y, radius, 0, 230, 255)
+    // (Removed the volatile-style rotating-shard burst — the AOE flash is the beat-dash visual.)
   }
   // Background ripple — fires for BOTH paths (normal gold flash AND Reverb cyan push) so the
   // floor wave reads on every beat-blast regardless of which AOE visual is showing.

@@ -3,7 +3,7 @@
 import { ENEMY_TYPES } from '../entities/EnemyTypes.ts'
 import type { EnemyType } from '../entities/EnemyTypes.ts'
 import { getCamera, getPhase, getPlayer } from '../core/GameState.ts'
-import { setArenaShape, setPolygonSides, clampToArena, setWalls, ARENA_CX, ARENA_CY, getWallSnapPoints, SNAP_POINT_5_THRESHOLD } from '../game/Arena.ts'
+import { setArenaShape, setPolygonSides, setArenaScale, scaleWalls, clampToArena, setWalls, ARENA_CX, ARENA_CY, getWallSnapPoints, SNAP_POINT_5_THRESHOLD } from '../game/Arena.ts'
 import type { ArenaShape, Camera, Wall, WallMotion, WallTranslation, WallFade, WallSpring, WallZone } from '../game/Arena.ts'
 import { getDesignerZoomFactor } from '../render/Renderer.ts'
 import defaultData from '../../data/enemies.json'
@@ -18,6 +18,7 @@ export interface Challenge {
   name: string
   arenaShape: 'rect' | 'circle' | 'hex' | 'pill' | 'cross' | 'polygon'
   polygonSides?: number   // only meaningful when arenaShape === 'polygon' (3..12); default 8
+  arenaScale?: number     // board size multiplier (0.5..2); default 1. Walls stored at this scale.
   enemies: ChallengeEnemy[]
   walls?: Wall[]   // optional for backwards-compat with pre-walls challenges
   order?: number   // lower = earlier in list, default 999
@@ -41,6 +42,7 @@ let selectedPlacementIdx = -1
 let challengeName = 'new_challenge'
 let challengeArena: Challenge['arenaShape'] = 'circle'
 let challengePolygonSides = 8
+let challengeArenaScale = 1
 
 // Wall-drag transient state — set on mouse-down, updated on mouse-move, committed on
 // mouse-up. Tracked in WORLD coordinates so the snap math stays simple and the ghost
@@ -1053,6 +1055,23 @@ export function setChallengePolygonSides(n: number): void {
   }
 }
 
+export function getChallengeArenaScale(): number { return challengeArenaScale }
+/** Resize the whole board (0.5×–2×). Scales placed walls by the same ratio so the design stays
+ * proportional, and applies live in the designer. */
+export function setChallengeArenaScale(s: number): void {
+  const next = Math.max(0.5, Math.min(2, s))
+  const ratio = next / challengeArenaScale
+  challengeArenaScale = next
+  scaleWalls(placingWalls, ratio)   // keep the design proportional to the new board
+  if (getPhase() === 'designer') {
+    setArenaScale(next)
+    syncWallsToArena()
+    const p = getPlayer()
+    const c = clampToArena(p.x, p.y, p.hitRadius)
+    p.x = c.x; p.y = c.y
+  }
+}
+
 export function placeEnemy(screenX: number, screenY: number): void {
   // Use screenToWorld so designer zoom-out is correctly inverted (otherwise the cursor
   // and the placed enemy were misaligned when zoomed out).
@@ -1102,6 +1121,7 @@ export function saveChallenge(): void {
     name: challengeName,
     arenaShape: challengeArena,
     polygonSides: challengePolygonSides,
+    arenaScale: challengeArenaScale,
     enemies: [...placingEnemies],
     walls: placingWalls.map(w => ({ ...w })),
   }
@@ -1117,6 +1137,8 @@ export function loadChallenge(name: string): void {
   activeChallenge = c
   challengeName = c.name
   challengePolygonSides = c.polygonSides ?? 8
+  challengeArenaScale = c.arenaScale ?? 1
+  if (getPhase() === 'designer') setArenaScale(challengeArenaScale)   // board size (walls already stored at this scale)
   setChallengeArena(c.arenaShape)
   placingEnemies = c.enemies.map(e => ({ ...e }))
   placingWalls = (c.walls ?? []).map(w => ({ ...w }))

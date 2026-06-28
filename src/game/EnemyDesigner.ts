@@ -617,6 +617,11 @@ export function initDesigner(): void {
         </select>
         <input id="ed-ch-poly-sides" type="number" min="3" max="12" value="8" title="Polygon sides (3-12)" style="width:46px;padding:4px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);color:#eee;font:11px monospace;border-radius:3px;display:none;">
       </div>
+      <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+        <span style="color:#aaa;font:10px monospace;">Board size</span>
+        <input id="ed-ch-scale" type="range" min="0.5" max="2" step="0.05" value="1" title="Board size (0.5×–2×)" style="flex:1;">
+        <span id="ed-ch-scale-val" style="color:#eee;font:10px monospace;min-width:34px;text-align:right;">1.00×</span>
+      </div>
       <div style="margin-bottom:6px;">
         <span style="color:#aaa;font:10px monospace;">Pick a type → click arena to place. Click an existing ghost to select; drag to move; Delete to remove.</span>
       </div>
@@ -858,10 +863,15 @@ export function initDesigner(): void {
   const chNameInput = panel.querySelector('#ed-ch-name') as HTMLInputElement
   const chArenaSelect = panel.querySelector('#ed-ch-arena') as HTMLSelectElement
   const chPolySides = panel.querySelector('#ed-ch-poly-sides') as HTMLInputElement
-  // Show the sides box only for the polygon shape, and keep it in sync with the live value.
+  const chScale = panel.querySelector('#ed-ch-scale') as HTMLInputElement
+  const chScaleVal = panel.querySelector('#ed-ch-scale-val') as HTMLSpanElement
+  // Show the sides box only for the polygon shape, and keep both controls in sync with live values.
   const syncPolySidesUI = () => {
     chPolySides.style.display = chArenaSelect.value === 'polygon' ? '' : 'none'
     chPolySides.value = String(ChallengeBuilder.getChallengePolygonSides())
+    const s = ChallengeBuilder.getChallengeArenaScale()
+    chScale.value = String(s)
+    chScaleVal.textContent = s.toFixed(2) + '×'
   }
 
   function rebuildChTypeButtons(): void {
@@ -946,6 +956,11 @@ export function initDesigner(): void {
   })
   chPolySides.addEventListener('input', () => {
     ChallengeBuilder.setChallengePolygonSides(parseInt(chPolySides.value, 10) || 8)
+  })
+  chScale.addEventListener('input', () => {
+    const s = parseFloat(chScale.value) || 1
+    ChallengeBuilder.setChallengeArenaScale(s)
+    chScaleVal.textContent = s.toFixed(2) + '×'
   })
 
   panel.querySelector('#ed-ch-save')!.addEventListener('click', () => {
