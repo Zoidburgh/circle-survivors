@@ -2,7 +2,7 @@ import { on, emit } from '../core/EventBus.ts'
 import { probe } from '../audio/TimingProbe.ts'
 import { getPlayer, getGrid, getEnemies } from '../core/GameState.ts'
 import { getEffectiveRadius, hurtPlayer, healPlayer } from '../entities/Player.ts'
-import { damageEnemy, healEnemy, getRingOrigins, spawnDrops } from '../entities/Enemy.ts'
+import { damageEnemy, healEnemy, getRingOrigins, spawnDrops, nodeWorldPos, nodeRadius, damageNode } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { getRingExpansion, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { distance } from '../utils/math.ts'
@@ -79,6 +79,27 @@ export function initHitDetection(): void {
         const enemy = entity as Enemy
         if (!enemy.alive || hitEnemies.has(enemy)) continue
         if (enemy.summon) continue  // summoners only interact via their nodes
+        // Weak-node enemies: the BODY is invulnerable — the ring damages the moving nodes it crosses.
+        // One pulse can break several nodes. Mark the enemy hit once any node is struck so the dash-
+        // sweep's extra ring positions don't re-hit the same nodes this beat.
+        if (enemy.weakNodes) {
+          const t = getGameTimeMs() / 1000
+          const nodeR = nodeRadius(enemy)
+          let hitAny = false
+          for (let i = 0; i < enemy.nodeHp.length; i++) {
+            if (enemy.nodeHp[i]! <= 0) continue
+            const np = nodeWorldPos(enemy, i, t)
+            const nd = distance({ x: sx, y: sy }, np)
+            if (Math.abs(nd - ringRadius) < nodeR + grace) {
+              const wasDying = enemy.dying
+              damageNode(enemy, i, player.damage * player.modifiers.damageMult)
+              hitAny = true
+              if (enemy.dying && !wasDying) killedEnemies.push(enemy)
+            }
+          }
+          if (hitAny) hitEnemies.add(enemy)
+          continue
+        }
         const dist = distance({ x: sx, y: sy }, { x: enemy.x, y: enemy.y })
         // Also check blink destination if mid-phase
         let hitAtDest = false

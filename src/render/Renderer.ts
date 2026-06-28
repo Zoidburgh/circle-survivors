@@ -9757,32 +9757,77 @@ function drawShrine(enemy: Enemy, player: Player): void {
   }
 }
 
-// Weak-node enemies (see boss_nodes_plan.md). Phase 1: draw the orbiting nodes — live nodes glow,
-// husks (HP 0) read dark/inert. Hit detection + break visuals come in later phases.
+// Cyan-white shatter burst when a weak-node breaks (and for every husk on enemy death).
+function spawnNodeShatter(x: number, y: number, nodeR: number): void {
+  const n = lodCount(14)
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2
+    const sp = 120 + Math.random() * 280
+    spawnParticle(x, y, Math.cos(a) * sp, Math.sin(a) * sp,
+      150 + Math.floor(Math.random() * 60), 235, 255,
+      0.20 + Math.random() * 0.18, nodeR * 0.22 + Math.random() * nodeR * 0.28,
+      0, 150, 230, 255)   // cyan glow tint → additive bloom (not a grey fade)
+  }
+  spawnParticle(x, y, 0, 0, 230, 250, 255, 0.10, nodeR * 1.25, 0, 200, 240, 255)  // core flash
+}
+
+// Weak-node enemies (see boss_nodes_plan.md). Live nodes glow + crack with each hit; broken nodes
+// stay in the pattern as dark husks; the body is dimmed/armored to read as "not the target".
 function drawWeakNodes(enemy: Enemy): void {
-  if (enemy.dying) return
   const t = gameTimeMs / 1000
   const nodeR = nodeRadius(enemy)
+  // Break shatter — fires for any node that just broke (and all husks on death). Runs even while
+  // dying so the death animation includes the shards.
+  for (let i = 0; i < enemy.nodeJustBroke.length; i++) {
+    if (!enemy.nodeJustBroke[i]) continue
+    enemy.nodeJustBroke[i] = false
+    const p = nodeWorldPos(enemy, i, t)
+    spawnNodeShatter(p.x, p.y, nodeR)
+  }
+  if (enemy.dying) return   // body dissolve handles the rest (armored body drawn in drawEnemy)
+
   for (let i = 0; i < enemy.nodeHp.length; i++) {
     const p = nodeWorldPos(enemy, i, t)
     const sx = p.x - camX, sy = p.y - camY
-    if (enemy.nodeHp[i]! > 0) {
-      // Live node — glowing orb (brighter at full HP)
-      const hpFrac = enemy.nodeHp[i]! / enemy.nodeMaxHp
+    const hp = enemy.nodeHp[i]!
+    if (hp > 0) {
+      const hpFrac = hp / enemy.nodeMaxHp
+      const flashT = Math.min(1, Math.max(0, enemy.nodeFlash[i]!) / 0.2)
+      // Glowing orb — brighter at full HP and on a fresh hit
       ctx.beginPath(); ctx.arc(sx, sy, nodeR, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(120, 230, 255, ${0.45 + 0.4 * hpFrac})`
+      ctx.fillStyle = `rgba(${Math.floor(120 + 135 * flashT)}, 230, 255, ${0.5 + 0.35 * hpFrac + 0.15 * flashT})`
       ctx.fill()
-      ctx.strokeStyle = 'rgba(225, 250, 255, 0.9)'
+      ctx.strokeStyle = `rgba(235, 252, 255, ${0.85 + 0.15 * flashT})`
       ctx.lineWidth = 2
       ctx.stroke()
+      // Cracks — one per hit taken, radiating from center, darker as HP drops
+      const hitsTaken = enemy.nodeMaxHp - hp
+      if (hitsTaken > 0) {
+        ctx.strokeStyle = `rgba(18, 48, 68, ${0.45 + 0.45 * (hitsTaken / enemy.nodeMaxHp)})`
+        ctx.lineWidth = 1.5
+        for (let c = 0; c < hitsTaken; c++) {
+          const ca = (c / enemy.nodeMaxHp) * Math.PI * 2 + i * 1.7
+          ctx.beginPath()
+          ctx.moveTo(sx, sy)
+          ctx.lineTo(sx + Math.cos(ca) * nodeR * 0.9, sy + Math.sin(ca) * nodeR * 0.9)
+          ctx.stroke()
+        }
+      }
     } else {
-      // Husk — dark, inert, still riding the pattern (no glow)
-      ctx.beginPath(); ctx.arc(sx, sy, nodeR * 0.8, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(58, 58, 70, 0.7)'
+      // Husk — dark, inert, cracked, smaller; clearly DEAD (no glow) but still riding the pattern
+      const hr = nodeR * 0.78
+      ctx.beginPath(); ctx.arc(sx, sy, hr, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(50, 50, 62, 0.62)'
       ctx.fill()
-      ctx.strokeStyle = 'rgba(28, 28, 38, 0.85)'
+      ctx.strokeStyle = 'rgba(24, 24, 34, 0.85)'
       ctx.lineWidth = 1.5
       ctx.stroke()
+      ctx.strokeStyle = 'rgba(18, 18, 26, 0.7)'
+      ctx.lineWidth = 1
+      for (let c = 0; c < 3; c++) {
+        const ca = (c / 3) * Math.PI * 2 + i
+        ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + Math.cos(ca) * hr * 0.9, sy + Math.sin(ca) * hr * 0.9); ctx.stroke()
+      }
     }
   }
 }
@@ -9917,6 +9962,19 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       ctx.stroke()
       ctx.globalAlpha = 1
     }
+    return
+  }
+
+  // Weak-node enemy — armored, invulnerable body (dim disc + colored rim). No HP pie: the orbiting
+  // node ring (drawn in drawWeakNodes) IS the health read. Body flicker on a node hit (enemy.hitFlash).
+  if (enemy.weakNodes) {
+    const flash = Math.min(1, enemy.hitFlash / HIT_FLASH_DURATION)
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2)
+    ctx.fillStyle = `rgba(${Math.floor(enemy.cr * (0.35 + 0.4 * flash))}, ${Math.floor(enemy.cg * (0.35 + 0.4 * flash))}, ${Math.floor(enemy.cb * (0.35 + 0.4 * flash))}, 0.9)`
+    ctx.fill()
+    ctx.strokeStyle = `rgba(${enemy.cr}, ${enemy.cg}, ${enemy.cb}, ${0.45 + 0.4 * flash})`
+    ctx.lineWidth = 3
+    ctx.stroke()
     return
   }
 

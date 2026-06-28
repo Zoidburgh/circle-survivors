@@ -184,6 +184,7 @@ export interface Enemy {
   nodeMaxHp: number               // for crack-stage fraction
   nodesAlive: number              // live-node counter; reaches 0 → enemy dies
   nodeFlash: number[]             // per-node hit/break FX timer (seconds)
+  nodeJustBroke: boolean[]        // transient — set on break, Renderer spawns the shatter + clears it
   nodeSeed: number                // phase offset so clones desync (index-derived, deterministic)
   nodePattern: WeakNodePattern    // movement pattern
   nodeOrbitFrac: number; nodeSizeFrac: number; nodeSpeed: number; nodeAmp: number
@@ -462,6 +463,7 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     nodeMaxHp: type.weakNodeHp ?? 3,
     nodesAlive: Math.max(1, type.weakNodeCount ?? 3),
     nodeFlash: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(0),
+    nodeJustBroke: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(false),
     nodeSeed: (x * 0.013 + y * 0.017) % (Math.PI * 2),   // deterministic per-spawn phase so clones desync
     nodePattern: type.weakNodePattern ?? 'orbit',
     nodeOrbitFrac: type.weakNodeOrbitFrac ?? 0.55,   // inside the body (orbit + node radius < enemy.radius)
@@ -659,6 +661,7 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   }
 
   if (enemy.hitFlash > 0) enemy.hitFlash -= dt
+  if (enemy.weakNodes) { for (let i = 0; i < enemy.nodeFlash.length; i++) if (enemy.nodeFlash[i]! > 0) enemy.nodeFlash[i]! -= dt }
   if (enemy.beatDashFlash > 0) enemy.beatDashFlash -= dt
   if (enemy.isShrine && enemy.shrineSummonTimer > 0) enemy.shrineSummonTimer -= dt
   if (enemy.immobileTimer > 0) {
@@ -1309,8 +1312,36 @@ export function nodeRadius(enemy: Enemy): number {
   return Math.max(6, enemy.radius * enemy.nodeSizeFrac)
 }
 
+/** Damage weak-node `i`. Breaks it at 0 HP; when ALL nodes break the enemy dies via the normal path
+ * (drops/score/audio fire). The body itself is invulnerable (see damageEnemy guard below). */
+export function damageNode(enemy: Enemy, i: number, amount: number): void {
+  const hp = enemy.nodeHp[i]
+  if (enemy.dying || hp === undefined || hp <= 0) return
+  if (!isRunTimerActive() && !isRunComplete() && getPhase() === 'playing') startRunTimer()
+  const next = hp - amount
+  enemy.nodeHp[i] = Math.max(0, next)
+  enemy.nodeFlash[i] = HIT_FLASH_DURATION
+  enemy.hitFlash = HIT_FLASH_DURATION   // body flicker so the hit still reads on the silhouette
+  if (next <= 0) {
+    enemy.nodesAlive--
+    enemy.nodeFlash[i] = 0.35           // stronger break pop
+    enemy.nodeJustBroke[i] = true       // Renderer spawns the shatter burst next frame
+    if (enemy.nodesAlive <= 0) {
+      // All nodes broken — mirror damageEnemy's death so loot/economy behave identically.
+      // Flag every node so the husks shatter together in the death animation.
+      for (let k = 0; k < enemy.nodeJustBroke.length; k++) enemy.nodeJustBroke[k] = true
+      enemy.dying = true
+      enemy.deathTimer = 0
+      enemy.deathX = enemy.x
+      enemy.deathY = enemy.y
+      emit('enemy:killed', enemy)
+    }
+  }
+}
+
 export function damageEnemy(enemy: Enemy, amount: number): void {
   if (enemy.dying || enemy.isShrine) return
+  if (enemy.weakNodes) return   // body is invulnerable — only damageNode (the ring hitting a node) kills it
   if (!isRunTimerActive() && !isRunComplete() && getPhase() === 'playing') startRunTimer()
   // Track hits on stationary or revenge enemies
   if (enemy.immovable || enemy.revenge) {

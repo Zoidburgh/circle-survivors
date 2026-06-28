@@ -2436,7 +2436,7 @@
       "summonNodes": 3,
       "summonPhases": [],
       "weakNodes": true,
-      "weakNodeCount": 3,
+      "weakNodeCount": 5,
       "weakNodeHp": 3,
       "isShrine": false,
       "shrineSpawnEnemy": "",
