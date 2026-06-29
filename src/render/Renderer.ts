@@ -9781,17 +9781,19 @@ function drawShrine(enemy: Enemy, player: Player): void {
 }
 
 // Cyan-white shatter burst when a weak-node breaks (and for every husk on enemy death).
-function spawnNodeShatter(x: number, y: number, nodeR: number): void {
+function spawnNodeShatter(x: number, y: number, nodeR: number, th: MetalTheme): void {
   const n = lodCount(14)
   for (let i = 0; i < n; i++) {
     const a = Math.random() * Math.PI * 2
     const sp = 120 + Math.random() * 280
+    // Mix hot sparks (drain color) with metal debris (fill color) so a break reads as struck metal.
+    const c = Math.random() < 0.6 ? th.drain : th.fill
     spawnParticle(x, y, Math.cos(a) * sp, Math.sin(a) * sp,
-      150 + Math.floor(Math.random() * 60), 235, 255,
-      0.20 + Math.random() * 0.18, nodeR * 0.22 + Math.random() * nodeR * 0.28,
-      0, 150, 230, 255)   // cyan glow tint → additive bloom (not a grey fade)
+      c[0], c[1], c[2],
+      0.18 + Math.random() * 0.18, nodeR * 0.20 + Math.random() * nodeR * 0.26,
+      0, c[0], c[1], c[2])   // glow tint → additive bloom
   }
-  spawnParticle(x, y, 0, 0, 230, 250, 255, 0.10, nodeR * 1.25, 0, 200, 240, 255)  // core flash
+  spawnParticle(x, y, 0, 0, 255, 240, 210, 0.10, nodeR * 1.25, 0, 255, 220, 160)  // white-hot strike flash
 }
 
 // Gold burst when a heal revives a broken node (husk → live).
@@ -9807,11 +9809,121 @@ function spawnNodeRevive(x: number, y: number, nodeR: number): void {
   spawnParticle(x, y, 0, 0, 255, 245, 200, 0.12, nodeR * 1.3, 0, 255, 230, 170)  // gold flash
 }
 
-// Weak-node enemies (see boss_nodes_plan.md). Live nodes glow + crack with each hit; broken nodes
-// stay in the pattern as dark husks; the body is dimmed/armored to read as "not the target".
+// ── Metal "pie" node theming ──────────────────────────────────────────────────
+// Each node renders as its own HP pie (reusing the enemy pie structure) themed as a metal plate.
+// Selectable per boss for variety.
+interface MetalTheme {
+  fill: [number, number, number]      // HP wedge metal color (bright inner / dark outer derived)
+  bg: [number, number, number]        // recessed background plate
+  drain: [number, number, number]     // drain wedge — hot/damaged metal
+  rimLight: [number, number, number]  // bevel highlight (top)
+  rimDark: [number, number, number]   // bevel shadow (bottom)
+  glint: [number, number, number]     // specular glint
+  husk: [number, number, number]      // broken slug
+}
+const METAL_THEMES: Record<string, MetalTheme> = {
+  chrome:   { fill: [200, 212, 224], bg: [26, 30, 36], drain: [255, 140, 50], rimLight: [240, 248, 255], rimDark: [40, 46, 56], glint: [220, 240, 255], husk: [54, 58, 66] },
+  brass:    { fill: [210, 170, 90],  bg: [38, 28, 14], drain: [255, 90, 40],  rimLight: [255, 232, 160], rimDark: [60, 44, 18], glint: [255, 244, 200], husk: [70, 56, 30] },
+  gunmetal: { fill: [96, 104, 118],  bg: [14, 16, 20], drain: [255, 110, 40], rimLight: [180, 196, 214], rimDark: [22, 24, 30], glint: [235, 245, 255], husk: [34, 36, 42] },
+  molten:   { fill: [184, 84, 42],   bg: [24, 12, 8],  drain: [255, 180, 40], rimLight: [255, 150, 70],  rimDark: [50, 18, 10], glint: [255, 230, 120], husk: [50, 26, 18] },
+}
+function metalTheme(name: string): MetalTheme { return METAL_THEMES[name] ?? METAL_THEMES.chrome! }
+// rgba string with depth-brightness applied + clamp
+function mc(c: [number, number, number], bri: number, a: number): string {
+  return `rgba(${Math.min(255, Math.floor(c[0] * bri))}, ${Math.min(255, Math.floor(c[1] * bri))}, ${Math.min(255, Math.floor(c[2] * bri))}, ${a})`
+}
+
+/** One weak-node as a metal HP pie — reuses the enemy pie structure (bg → drain wedge → HP wedge →
+ * segment etches → beveled rim → specular glint), themed metal. Always shown (full HP = full plate).
+ * displayFrac ≥ actualFrac (the gap is the hot drain wedge). depthBri/depthA carry the 3D depth cue. */
+function drawNodePie(sx: number, sy: number, r: number, displayFrac: number, actualFrac: number, segs: number, th: MetalTheme, flashT: number, depthBri: number, depthA: number): void {
+  const start = -Math.PI / 2
+  const TAU = Math.PI * 2
+  // Recessed dark background plate
+  const bg = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
+  bg.addColorStop(0, mc(th.bg, depthBri, 0.85 * depthA))
+  bg.addColorStop(1, mc([th.bg[0] * 0.4, th.bg[1] * 0.4, th.bg[2] * 0.4], depthBri, 0.92 * depthA))
+  ctx.beginPath(); ctx.arc(sx, sy, r, 0, TAU); ctx.fillStyle = bg; ctx.fill()
+  // Drain wedge — display HP catching down to actual (hot metal)
+  if (displayFrac - actualFrac > 0.001) {
+    ctx.beginPath(); ctx.moveTo(sx, sy)
+    ctx.arc(sx, sy, r, start + actualFrac * TAU, start + displayFrac * TAU); ctx.closePath()
+    ctx.fillStyle = mc(th.drain, depthBri, 0.6 * depthA); ctx.fill()
+  }
+  // HP wedge — metal fill, bright inner → dark outer
+  if (actualFrac > 0) {
+    const bri = depthBri * (1 + 0.5 * flashT)   // hit flash brightens the plate
+    const fg = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
+    fg.addColorStop(0, mc([th.fill[0] + 40, th.fill[1] + 40, th.fill[2] + 40], bri, 0.95 * depthA))
+    fg.addColorStop(0.7, mc(th.fill, bri, 0.92 * depthA))
+    fg.addColorStop(1, mc([th.fill[0] * 0.5, th.fill[1] * 0.5, th.fill[2] * 0.5], bri, 0.92 * depthA))
+    ctx.beginPath(); ctx.moveTo(sx, sy)
+    ctx.arc(sx, sy, r, start, start + actualFrac * TAU); ctx.closePath()
+    ctx.fillStyle = fg; ctx.fill()
+  }
+  // Segment etches — one per HP point, reads as a multi-plate pie
+  if (segs > 1) {
+    ctx.strokeStyle = mc(th.rimDark, depthBri, 0.55 * depthA); ctx.lineWidth = 1
+    for (let s = 0; s < segs; s++) {
+      const ang = start + (s / segs) * TAU
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + Math.cos(ang) * r, sy + Math.sin(ang) * r); ctx.stroke()
+    }
+  }
+  // Bright metal rim — full, uniform all the way around
+  ctx.lineWidth = 2
+  ctx.strokeStyle = mc(th.rimLight, depthBri, 0.9 * depthA)
+  ctx.beginPath(); ctx.arc(sx, sy, r, 0, TAU); ctx.stroke()
+  // Specular glint — CLIPPED to the filled metal wedge, so it never glows over the drained (black) area
+  if (actualFrac > 0) {
+    ctx.save()
+    ctx.beginPath(); ctx.moveTo(sx, sy); ctx.arc(sx, sy, r, start, start + actualFrac * TAU); ctx.closePath(); ctx.clip()
+    const gx = sx - r * 0.4, gy = sy - r * 0.4
+    const gl = ctx.createRadialGradient(gx, gy, 0, gx, gy, r * 0.55)
+    gl.addColorStop(0, mc(th.glint, depthBri, (0.45 + 0.45 * flashT) * depthA))
+    gl.addColorStop(1, mc(th.glint, depthBri, 0))
+    ctx.beginPath(); ctx.arc(gx, gy, r * 0.55, 0, TAU); ctx.fillStyle = gl; ctx.fill()
+    ctx.restore()
+  }
+}
+
+/** The weak-node body: dark metal hub + an enemy-colored CHAMBER (lit sphere + beat core) so it reads
+ * as a 3D ball the nodes orbit, + a full metal rim. `aura` scales the chamber (0 = plain hub). Shared
+ * by the live enemy (drawEnemy) and the designer preview so they match. */
+function drawNodeBody(sx: number, sy: number, r: number, th: MetalTheme, cr: number, cg: number, cb: number, aura: number, flash: number): void {
+  const TAU = Math.PI * 2
+  // Dark metal hub base
+  const hub = ctx.createRadialGradient(sx, sy, 0, sx, sy, r)
+  hub.addColorStop(0, mc(th.bg, 1 + 0.6 * flash, 0.95))
+  hub.addColorStop(1, mc([th.bg[0] * 0.5, th.bg[1] * 0.5, th.bg[2] * 0.5], 1, 0.95))
+  ctx.beginPath(); ctx.arc(sx, sy, r, 0, TAU); ctx.fillStyle = hub; ctx.fill()
+  // Chamber — lit sphere (highlight offset top-left) + beat-pulsing core
+  if (aura > 0.001) {
+    ctx.save(); ctx.beginPath(); ctx.arc(sx, sy, r, 0, TAU); ctx.clip()
+    const lx = sx - r * 0.36, ly = sy - r * 0.36
+    const sph = ctx.createRadialGradient(lx, ly, r * 0.08, sx + r * 0.18, sy + r * 0.18, r * 1.25)
+    sph.addColorStop(0, `rgba(${Math.min(255, cr + 70)}, ${Math.min(255, cg + 70)}, ${Math.min(255, cb + 70)}, ${0.5 * aura})`)
+    sph.addColorStop(0.5, `rgba(${cr}, ${cg}, ${cb}, ${0.26 * aura})`)
+    sph.addColorStop(1, `rgba(${Math.floor(cr * 0.3)}, ${Math.floor(cg * 0.3)}, ${Math.floor(cb * 0.3)}, 0)`)
+    ctx.beginPath(); ctx.arc(sx, sy, r, 0, TAU); ctx.fillStyle = sph; ctx.fill()
+    const coreR = r * (0.34 + 0.12 * globalBeatPulse)
+    const core = ctx.createRadialGradient(sx, sy, 0, sx, sy, coreR)
+    core.addColorStop(0, `rgba(${Math.min(255, cr + 90)}, ${Math.min(255, cg + 90)}, ${Math.min(255, cb + 90)}, ${(0.35 + 0.3 * globalBeatPulse) * aura})`)
+    core.addColorStop(1, `rgba(${cr}, ${cg}, ${cb}, 0)`)
+    ctx.beginPath(); ctx.arc(sx, sy, coreR, 0, TAU); ctx.fillStyle = core; ctx.fill()
+    ctx.restore()
+  }
+  // Full metal rim
+  ctx.lineWidth = 2.5
+  ctx.strokeStyle = mc(th.rimLight, 1 + 0.4 * flash, 0.85)
+  ctx.beginPath(); ctx.arc(sx, sy, r, 0, TAU); ctx.stroke()
+}
+
+// Weak-node enemies (see boss_nodes_plan.md). Each node is a metal HP pie; broken nodes stay in the
+// pattern as dark slugs; the body is a metal hub with an enemy-colored chamber.
 function drawWeakNodes(enemy: Enemy): void {
   const t = gameTimeMs / 1000
   const nodeR = nodeRadius(enemy)
+  const th = metalTheme(enemy.nodeMetal)
   // Per-node transient FX (break shatter / beat-dash lightning AT the node / heal revive). Runs even
   // while dying so the death animation includes the shards.
   for (let i = 0; i < enemy.nodeJustBroke.length; i++) {
@@ -9825,28 +9937,28 @@ function drawWeakNodes(enemy: Enemy): void {
         spawnNodeLightningBolt(enemy, i, a, nodeR * (1.5 + Math.random() * 0.8), 1.1, 0.30 + Math.random() * 0.06)
       }
     }
-    if (enemy.nodeJustBroke[i]) { enemy.nodeJustBroke[i] = false; spawnNodeShatter(p.x, p.y, nodeR) }
+    if (enemy.nodeJustBroke[i]) { enemy.nodeJustBroke[i] = false; spawnNodeShatter(p.x, p.y, nodeR, th) }
     if (enemy.nodeJustRevived[i]) { enemy.nodeJustRevived[i] = false; spawnNodeRevive(p.x, p.y, nodeR) }
   }
   if (enemy.dying) return   // body dissolve handles the rest (armored body drawn in drawEnemy)
 
-  // Constellation — glowing links between adjacent LIVE nodes (a broken node frays its two links so
-  // the web tears apart). Two-pass stroke = cheap glow; dims as the linked nodes take damage; a faint
-  // beat shimmer ties it to the rhythm. Drawn UNDER the orbs.
+  // Constellation — metal STRUTS between adjacent LIVE nodes (a broken node frays its two links so the
+  // web tears apart). Dark base + bright highlight edge = a beveled bar; a faint beat shimmer on the
+  // highlight ties it to the rhythm. Drawn UNDER the pies.
   const nLink = enemy.nodeHp.length
   if (nLink >= 2) {
-    const beatGlow = globalBeatPulse * 0.35
-    const lim = nLink === 2 ? 1 : nLink   // 2 nodes share a single link; 3+ form a polygon
+    const beatGlow = globalBeatPulse * 0.3
+    const lim = nLink === 2 ? 1 : nLink   // 2 nodes share a single strut; 3+ form a frame
     for (let i = 0; i < lim; i++) {
       const j = (i + 1) % nLink
       if (enemy.nodeHp[i]! <= 0 || enemy.nodeHp[j]! <= 0) continue   // frayed — an end is a husk
       const pa = nodeWorldPos(enemy, i, t), pb = nodeWorldPos(enemy, j, t)
       const ax = pa.x - camX, ay = pa.y - camY, bx = pb.x - camX, by = pb.y - camY
       const str = Math.min(enemy.nodeHp[i]!, enemy.nodeHp[j]!) / enemy.nodeMaxHp
-      ctx.strokeStyle = `rgba(120, 220, 255, ${0.05 + 0.10 * str + beatGlow * 0.5})`
+      ctx.strokeStyle = mc(th.rimDark, 1, 0.35 + 0.25 * str)
       ctx.lineWidth = 5
       ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke()
-      ctx.strokeStyle = `rgba(195, 246, 255, ${0.22 + 0.30 * str + beatGlow})`
+      ctx.strokeStyle = mc(th.rimLight, 1, 0.3 + 0.35 * str + beatGlow)
       ctx.lineWidth = 1.5
       ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke()
     }
@@ -9858,6 +9970,7 @@ function drawWeakNodes(enemy: Enemy): void {
   const zs: number[] = []
   for (let i = 0; i < nNodes; i++) zs.push(nodeDepth(enemy, i, t))
   const order = zs.map((_, i) => i).sort((p, q) => zs[p]! - zs[q]!)
+  const aura = enemy.nodeAura
   for (const i of order) {
     const z = zs[i]!
     const depthBri = 1 + 0.4 * z               // back darker, front brighter
@@ -9867,43 +9980,34 @@ function drawWeakNodes(enemy: Enemy): void {
     const dr = nodeR * (0.7 + 0.3 * (z + 1))
     const hp = enemy.nodeHp[i]!
     if (hp > 0) {
-      const hpFrac = hp / enemy.nodeMaxHp
       const flashT = Math.min(1, Math.max(0, enemy.nodeFlash[i]!) / 0.2)
-      // Glowing orb — brighter at full HP and on a fresh hit, dimmed/faded by depth
-      ctx.beginPath(); ctx.arc(sx, sy, dr, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${Math.floor((120 + 135 * flashT) * depthBri)}, ${Math.floor(230 * depthBri)}, ${Math.floor(255 * depthBri)}, ${(0.5 + 0.35 * hpFrac + 0.15 * flashT) * depthA})`
-      ctx.fill()
-      ctx.strokeStyle = `rgba(235, 252, 255, ${(0.85 + 0.15 * flashT) * depthA})`
-      ctx.lineWidth = 2
-      ctx.stroke()
-      // Cracks — one per hit taken, radiating from center, darker as HP drops
-      const hitsTaken = enemy.nodeMaxHp - hp
-      if (hitsTaken > 0) {
-        ctx.strokeStyle = `rgba(18, 48, 68, ${(0.45 + 0.45 * (hitsTaken / enemy.nodeMaxHp)) * depthA})`
-        ctx.lineWidth = 1.5
-        for (let c = 0; c < hitsTaken; c++) {
-          const ca = (c / enemy.nodeMaxHp) * Math.PI * 2 + i * 1.7
-          ctx.beginPath()
-          ctx.moveTo(sx, sy)
-          ctx.lineTo(sx + Math.cos(ca) * dr * 0.9, sy + Math.sin(ca) * dr * 0.9)
-          ctx.stroke()
-        }
-      }
+      const actualFrac = hp / enemy.nodeMaxHp
+      const displayFrac = Math.max(actualFrac, enemy.nodeDisplayHp[i]! / enemy.nodeMaxHp)
+      drawNodePie(sx, sy, dr, displayFrac, actualFrac, enemy.nodeMaxHp, th, flashT, depthBri, depthA)
     } else {
-      // Husk — dark, inert, cracked, smaller; clearly DEAD (no glow) but still riding the pattern
-      const hr = dr * 0.78
+      // Broken slug — dark burnt metal, smaller, inert (no glint); still rides the pattern
+      const hr = dr * 0.74
       ctx.beginPath(); ctx.arc(sx, sy, hr, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${Math.floor(50 * depthBri)}, ${Math.floor(50 * depthBri)}, ${Math.floor(62 * depthBri)}, ${0.62 * depthA})`
+      ctx.fillStyle = mc([th.husk[0], th.husk[1], th.husk[2]], depthBri, 0.66 * depthA)
       ctx.fill()
-      ctx.strokeStyle = `rgba(24, 24, 34, ${0.85 * depthA})`
+      ctx.strokeStyle = mc(th.rimDark, depthBri, 0.85 * depthA)
       ctx.lineWidth = 1.5
       ctx.stroke()
-      ctx.strokeStyle = `rgba(18, 18, 26, ${0.7 * depthA})`
+      ctx.strokeStyle = mc([th.husk[0] * 0.5, th.husk[1] * 0.5, th.husk[2] * 0.5], depthBri, 0.7 * depthA)
       ctx.lineWidth = 1
       for (let c = 0; c < 3; c++) {
         const ca = (c / 3) * Math.PI * 2 + i
         ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(sx + Math.cos(ca) * hr * 0.9, sy + Math.sin(ca) * hr * 0.9); ctx.stroke()
       }
+    }
+    // Depth haze — back nodes sink into the enemy-colored chamber atmosphere (soft colored veil that
+    // grows the further back the node is). Front nodes (z ≥ 0) stay crisp metal.
+    const hazeT = Math.max(0, -z)
+    if (hazeT > 0.02 && aura > 0.001) {
+      const hz = ctx.createRadialGradient(sx, sy, 0, sx, sy, dr * 1.35)
+      hz.addColorStop(0, `rgba(${enemy.cr}, ${enemy.cg}, ${enemy.cb}, ${0.5 * hazeT * aura * depthA})`)
+      hz.addColorStop(1, `rgba(${enemy.cr}, ${enemy.cg}, ${enemy.cb}, 0)`)
+      ctx.beginPath(); ctx.arc(sx, sy, dr * 1.35, 0, Math.PI * 2); ctx.fillStyle = hz; ctx.fill()
     }
   }
 }
@@ -10045,12 +10149,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
   // node ring (drawn in drawWeakNodes) IS the health read. Body flicker on a node hit (enemy.hitFlash).
   if (enemy.weakNodes) {
     const flash = Math.min(1, enemy.hitFlash / HIT_FLASH_DURATION)
-    ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2)
-    ctx.fillStyle = `rgba(${Math.floor(enemy.cr * (0.35 + 0.4 * flash))}, ${Math.floor(enemy.cg * (0.35 + 0.4 * flash))}, ${Math.floor(enemy.cb * (0.35 + 0.4 * flash))}, 0.9)`
-    ctx.fill()
-    ctx.strokeStyle = `rgba(${enemy.cr}, ${enemy.cg}, ${enemy.cb}, ${0.45 + 0.4 * flash})`
-    ctx.lineWidth = 3
-    ctx.stroke()
+    drawNodeBody(sx, sy, r, metalTheme(enemy.nodeMetal), enemy.cr, enemy.cg, enemy.cb, enemy.nodeAura, flash)
     return
   }
 
@@ -12337,9 +12436,14 @@ function drawDesignerPreview(player: Player): void {
   // nodeWorldPos as the real enemy, so what you tune here is exactly what you'll play).
   if (preview.weakNodes) {
     const t = gameTimeMs / 1000
+    const pMaxHp = Math.max(1, preview.weakNodeHp)
     const stub = {
       x: worldX, y: worldY, radius: preview.radius,
-      nodeHp: new Array(Math.max(1, preview.weakNodeCount)).fill(1),
+      nodeHp: new Array(Math.max(1, preview.weakNodeCount)).fill(pMaxHp),
+      nodeDisplayHp: new Array(Math.max(1, preview.weakNodeCount)).fill(pMaxHp),
+      nodeMaxHp: pMaxHp,
+      nodeMetal: preview.weakNodeMetal,
+      nodeAura: preview.weakNodeAura,
       nodeSeed: 0,
       nodeOrbitFrac: preview.weakNodeOrbitFrac,
       nodeSizeFrac: preview.weakNodeSizeFrac,
@@ -12350,6 +12454,12 @@ function drawDesignerPreview(player: Player): void {
       nodeAmp: preview.weakNodeAmp,
     } as unknown as Enemy
     const nr = nodeRadius(stub)
+    const th = metalTheme(stub.nodeMetal)
+    // Body chamber (same as in-game) — parse the #rrggbb color to RGB for the enemy-colored aura.
+    const pcr = parseInt(preview.color.slice(1, 3), 16) || 0
+    const pcg = parseInt(preview.color.slice(3, 5), 16) || 0
+    const pcb = parseInt(preview.color.slice(5, 7), 16) || 0
+    drawNodeBody(worldX - camX, worldY - camY, preview.radius, th, pcr, pcg, pcb, preview.weakNodeAura, 0)
     const nLinkP = stub.nodeHp.length
     if (nLinkP >= 2) {
       const limP = nLinkP === 2 ? 1 : nLinkP
@@ -12357,11 +12467,9 @@ function drawDesignerPreview(player: Player): void {
         const j = (i + 1) % nLinkP
         const pa = nodeWorldPos(stub, i, t), pb = nodeWorldPos(stub, j, t)
         const ax = pa.x - camX, ay = pa.y - camY, bx = pb.x - camX, by = pb.y - camY
-        ctx.strokeStyle = 'rgba(120, 220, 255, 0.13)'
-        ctx.lineWidth = 5
+        ctx.strokeStyle = mc(th.rimDark, 1, 0.55); ctx.lineWidth = 4
         ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke()
-        ctx.strokeStyle = 'rgba(195, 246, 255, 0.5)'
-        ctx.lineWidth = 1.5
+        ctx.strokeStyle = mc(th.rimLight, 1, 0.5); ctx.lineWidth = 1.5
         ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke()
       }
     }
@@ -12375,12 +12483,15 @@ function drawDesignerPreview(player: Player): void {
       const depthA = Math.min(1, 1 + 0.35 * z)
       const p = nodeWorldPos(stub, i, t)
       const nx = p.x - camX, ny = p.y - camY
-      ctx.beginPath(); ctx.arc(nx, ny, nr * (0.7 + 0.3 * (z + 1)), 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${Math.floor(120 * depthBri)}, ${Math.floor(230 * depthBri)}, ${Math.floor(255 * depthBri)}, ${0.8 * depthA})`
-      ctx.fill()
-      ctx.strokeStyle = `rgba(235, 252, 255, ${0.9 * depthA})`
-      ctx.lineWidth = 2
-      ctx.stroke()
+      const pdr = nr * (0.7 + 0.3 * (z + 1))
+      drawNodePie(nx, ny, pdr, 1, 1, pMaxHp, th, 0, depthBri, depthA)
+      const hazeT = Math.max(0, -z)
+      if (hazeT > 0.02 && preview.weakNodeAura > 0.001) {
+        const hz = ctx.createRadialGradient(nx, ny, 0, nx, ny, pdr * 1.35)
+        hz.addColorStop(0, `rgba(${pcr}, ${pcg}, ${pcb}, ${0.5 * hazeT * preview.weakNodeAura * depthA})`)
+        hz.addColorStop(1, `rgba(${pcr}, ${pcg}, ${pcb}, 0)`)
+        ctx.beginPath(); ctx.arc(nx, ny, pdr * 1.35, 0, Math.PI * 2); ctx.fillStyle = hz; ctx.fill()
+      }
     }
   }
 

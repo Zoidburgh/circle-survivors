@@ -19,7 +19,7 @@ import { emit } from '../core/EventBus.ts'
 import { PLAYER_RADIUS, HIT_FLASH_DURATION, SPAWN_ANIM_DURATION, HP_DRAIN_SPEED, CHILL_SLOW_PER_STACK, CHILL_STACK_DECAY_TIME, MAGNET_RANGE, BEAT_SEC, SHIELD_BREAK_FLASH, HEAVY_YIELD, WEAK_NODE_BEAT_OFFSET } from '../utils/constants.ts'
 import { hexToRgba } from '../utils/math.ts'
 import type { Player } from './Player.ts'
-import type { EnemyType, MovePattern, SummonPhase, ShrinePhase, RangedPattern, RangedRotationMode, TetherTopology, ClusterLayer, WeakNodePattern } from './EnemyTypes.ts'
+import type { EnemyType, MovePattern, SummonPhase, ShrinePhase, RangedPattern, RangedRotationMode, TetherTopology, ClusterLayer, WeakNodePattern, WeakNodeMetal } from './EnemyTypes.ts'
 import { getEnemyType } from './EnemyTypes.ts'
 import { getAbsoluteBeats } from '../audio/PatternClock.ts'   // music-anchored beat clock (same one every rhythmic system uses)
 import { playNodeNote } from '../audio/MusicalSFX.ts'        // nodes-are-notes SFX (scale-locked, voice-capped)
@@ -183,7 +183,10 @@ export interface Enemy {
   // Weak-node trait — body is invulnerable; break all moving nodes to kill (see boss_nodes_plan.md)
   weakNodes: boolean
   nodeHp: number[]                // per-node remaining HP (0 = broken husk, still drawn but inert)
+  nodeDisplayHp: number[]         // smooth-draining display HP per node (drives the red drain wedge, like enemy.displayHp)
   nodeMaxHp: number               // for crack-stage fraction
+  nodeMetal: WeakNodeMetal        // metal finish theme for the pie visuals
+  nodeAura: number                // body-chamber intensity (enemy-colored lit-sphere + haze + core)
   nodesAlive: number              // live-node counter; reaches 0 → enemy dies
   nodeFlash: number[]             // per-node hit/break FX timer (seconds)
   nodeJustBroke: boolean[]        // transient — set on break, Renderer spawns the shatter + clears it
@@ -464,7 +467,10 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     // Weak-node trait — init per-node HP arrays from the type config
     weakNodes: type.weakNodes ?? false,
     nodeHp: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(type.weakNodeHp ?? 3),
+    nodeDisplayHp: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(type.weakNodeHp ?? 3),
     nodeMaxHp: type.weakNodeHp ?? 3,
+    nodeMetal: type.weakNodeMetal ?? 'chrome',
+    nodeAura: type.weakNodeAura ?? 0.8,
     nodesAlive: Math.max(1, type.weakNodeCount ?? 3),
     nodeFlash: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(0),
     nodeJustBroke: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(false),
@@ -669,7 +675,19 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
   }
 
   if (enemy.hitFlash > 0) enemy.hitFlash -= dt
-  if (enemy.weakNodes) { for (let i = 0; i < enemy.nodeFlash.length; i++) if (enemy.nodeFlash[i]! > 0) enemy.nodeFlash[i]! -= dt }
+  if (enemy.weakNodes) {
+    for (let i = 0; i < enemy.nodeFlash.length; i++) {
+      if (enemy.nodeFlash[i]! > 0) enemy.nodeFlash[i]! -= dt
+      // Smooth-drain each node's display HP toward actual (drives the red drain wedge, like enemy.displayHp)
+      const dHp = enemy.nodeDisplayHp[i]!, hp = enemy.nodeHp[i]!
+      if (dHp > hp) {
+        const next = dHp - (dHp - hp) * HP_DRAIN_SPEED * dt
+        enemy.nodeDisplayHp[i] = (next - hp < 0.02) ? hp : next
+      } else if (dHp < hp) {
+        enemy.nodeDisplayHp[i] = hp   // heal/revive snaps up instantly
+      }
+    }
+  }
   if (enemy.beatDashFlash > 0) enemy.beatDashFlash -= dt
   if (enemy.isShrine && enemy.shrineSummonTimer > 0) enemy.shrineSummonTimer -= dt
   if (enemy.immobileTimer > 0) {

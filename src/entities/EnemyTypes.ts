@@ -5,6 +5,9 @@ export type WeakNodePattern = 'orbit' | 'breathe' | 'beatHop' | 'pulse' | 'sway'
   | 'rosette' | 'iris' | 'pendulumWave' | 'cascade' | 'tumble' | 'formationDance'
   | 'tiltedOrbit' | 'carousel' | 'orbSphere'
 
+// Metal finish for the weak-node "metal pie" visuals. Selectable per boss for variety.
+export type WeakNodeMetal = 'chrome' | 'brass' | 'gunmetal' | 'molten'
+
 export type RangedPattern = 'aimed' | 'surround_player' | 'radial' | 'spread_cone' | 'rotating'
 export type RangedRotationMode = 'turret' | 'player_anchored' | 'oscillate'
 export type TetherTopology = 'off' | 'closed' | 'open' | 'pairs' | 'star' | 'all'
@@ -171,6 +174,8 @@ export interface EnemyType {
   weakNodeWorldSpin?: number        // WORLD SPIN — rigid rotation of the WHOLE formation about the vertical axis, rad/s (default 0). 3D.
   weakNodeBeatDiv?: number          // BEAT ÷ — beats per beat-event/cycle (pop/hop/sway/etc). 1 = every beat (default 1)
   weakNodeAmp?: number              // movement amplitude (default 0.3)
+  weakNodeMetal?: WeakNodeMetal     // metal finish for the node pies (default 'chrome')
+  weakNodeAura?: number             // body-chamber intensity: enemy-colored lit-sphere + depth haze + beat core. 0 = off (default 0.8)
   summon?: boolean                  // has orbiting ritual nodes, phased spawning
   summonNodes?: number              // how many nodes (3 = triangle, 5 = pentagon, default 3)
   summonPhases?: SummonPhase[]      // each phase = one completed sequence, spawns enemies
