@@ -219,5 +219,76 @@ export function playAttackNoteForEnemy(enemyType: string, sound: string, harmony
   if (harmony >= 3) playAttackNote({ timbre: sound, register: t.register, degree: degree + 4, velocity: 0.65 })
 }
 
+// Inharmonic partial ratios → struck-metal / bell timbre (NOT a clean sine). The non-integer overtones
+// are what make it read as metallic. Break adds the top partial for extra clang.
+const NODE_PARTIALS_HIT = [1, 2.76, 5.18]
+const NODE_PARTIALS_BREAK = [1, 2.76, 5.18, 8.93]
+
+/** Weak-node hit → a METALLIC strike (for the metal-piece nodes): inharmonic partials that ring, a
+ *  band-passed noise "ting" transient, and reverb tail (dest = reverbInput). `degree` is the node
+ *  index, so breaking a formation walks an ascending run / spreads into an arpeggio when a sweep hits
+ *  several at once. Break rings longer/brighter + an octave sparkle. Scale-locked, voice-capped,
+ *  per-pitch deduped (a swarm stays a chord, not mud). */
+export function playNodeNote(degree: number, broke: boolean): void {
+  if (!ctx || !dest || !music) return
+  const c = ctx
+  const when = c.currentTime
+  const f0 = degreeToFreq(music, degree, REGISTER_OCT.high)
+
+  // Per-pitch dedupe — many simultaneous same-degree hits collapse to one strike.
+  const key = Math.round(f0)
+  if (when - (lastByPitch.get(key) ?? -1) < DEDUPE_WINDOW) return
+  lastByPitch.set(key, when)
+  // Voice cap — drop chips past the cap (breaks always ring so destruction is never silent).
+  if (activeVoices >= MAX_VOICES && !broke) return
+
+  bumpAttackEnergy()
+  activeVoices++
+  let freed = false
+  const free = (): void => { if (!freed) { freed = true; activeVoices = Math.max(0, activeVoices - 1) } }
+
+  const dur = broke ? 0.55 : 0.3
+  const baseV = (broke ? 0.42 : 0.3) * (1 - (activeVoices / MAX_VOICES) * 0.3)
+  const partials = broke ? NODE_PARTIALS_BREAK : NODE_PARTIALS_HIT
+  partials.forEach((ratio, idx) => {
+    const osc = c.createOscillator(); const g = c.createGain()
+    osc.type = 'sine'
+    osc.frequency.value = f0 * ratio * (0.998 + Math.random() * 0.004)   // tiny per-partial detune = shimmer
+    const pdur = idx === 0 ? dur : dur * 0.5                              // overtones ring shorter than the fundamental
+    const pv = idx === 0 ? baseV : baseV * (0.45 / idx)                  // and quieter
+    g.gain.setValueAtTime(0.0001, when)
+    g.gain.linearRampToValueAtTime(pv, when + 0.002)
+    g.gain.exponentialRampToValueAtTime(0.0006, when + pdur)
+    osc.connect(g); g.connect(dest!)
+    osc.start(when); osc.stop(when + pdur + 0.02)
+    if (idx === 0) osc.onended = free
+  })
+
+  // Strike transient — short band-passed noise "ting" for the metal impact.
+  if (noiseBuffer) {
+    const src = c.createBufferSource(); src.buffer = noiseBuffer
+    const bp = c.createBiquadFilter(); bp.type = 'bandpass'
+    bp.frequency.value = Math.min(9000, f0 * 5); bp.Q.value = 1.4
+    const ng = c.createGain()
+    const ndur = 0.035
+    ng.gain.setValueAtTime(baseV * 0.6, when)
+    ng.gain.exponentialRampToValueAtTime(0.0004, when + ndur)
+    src.connect(bp); bp.connect(ng); ng.connect(dest!)
+    src.start(when); src.stop(when + ndur + 0.01)
+  }
+
+  // Octave-up sparkle on break — destruction resolves brighter.
+  if (broke) {
+    const s = c.createOscillator(); const sg = c.createGain()
+    s.type = 'sine'
+    s.frequency.value = f0 * 2 * (1 + Math.random() * 0.003)
+    sg.gain.setValueAtTime(0.0001, when + 0.012)
+    sg.gain.linearRampToValueAtTime(baseV * 0.5, when + 0.024)
+    sg.gain.exponentialRampToValueAtTime(0.0005, when + 0.5)
+    s.connect(sg); sg.connect(dest!)
+    s.start(when + 0.012); s.stop(when + 0.54)
+  }
+}
+
 /** All timbre names (for the Sound Lab UI). */
 export function timbreNames(): string[] { return Object.keys(TIMBRES) }

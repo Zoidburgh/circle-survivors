@@ -263,7 +263,11 @@ export function initHitDetection(): void {
     }
 
     playMiss()
-    if (hitEnemies.size > 0) {
+    // Generic hit thunk — but weak-node enemies sing their own per-node notes (playNodeNote), so
+    // only fire it when a NON-weak-node enemy was hit, else the notes carry the frame cleanly.
+    let anyNormalHit = false
+    for (const e of hitEnemies) { if (!e.weakNodes) { anyNormalHit = true; break } }
+    if (anyNormalHit) {
       playHit()
     }
   })

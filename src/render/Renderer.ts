@@ -1,7 +1,7 @@
 import type { Player } from '../entities/Player.ts'
 import { getEffectiveRadius, getBodyRadius, SPEED_BOOST_DURATION } from '../entities/Player.ts'
 import type { Enemy } from '../entities/Enemy.ts'
-import { getRingOrigins, nodeWorldPos, nodeRadius, nodeDrawScale } from '../entities/Enemy.ts'
+import { getRingOrigins, nodeWorldPos, nodeRadius, nodeDepth } from '../entities/Enemy.ts'
 import type { Ring } from '../entities/Ring.ts'
 import { getRingExpansion, getRingAlpha, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { ENEMY_TYPES, getEnemyType } from '../entities/EnemyTypes.ts'
@@ -9830,25 +9830,56 @@ function drawWeakNodes(enemy: Enemy): void {
   }
   if (enemy.dying) return   // body dissolve handles the rest (armored body drawn in drawEnemy)
 
-  for (let i = 0; i < enemy.nodeHp.length; i++) {
+  // Constellation — glowing links between adjacent LIVE nodes (a broken node frays its two links so
+  // the web tears apart). Two-pass stroke = cheap glow; dims as the linked nodes take damage; a faint
+  // beat shimmer ties it to the rhythm. Drawn UNDER the orbs.
+  const nLink = enemy.nodeHp.length
+  if (nLink >= 2) {
+    const beatGlow = globalBeatPulse * 0.35
+    const lim = nLink === 2 ? 1 : nLink   // 2 nodes share a single link; 3+ form a polygon
+    for (let i = 0; i < lim; i++) {
+      const j = (i + 1) % nLink
+      if (enemy.nodeHp[i]! <= 0 || enemy.nodeHp[j]! <= 0) continue   // frayed — an end is a husk
+      const pa = nodeWorldPos(enemy, i, t), pb = nodeWorldPos(enemy, j, t)
+      const ax = pa.x - camX, ay = pa.y - camY, bx = pb.x - camX, by = pb.y - camY
+      const str = Math.min(enemy.nodeHp[i]!, enemy.nodeHp[j]!) / enemy.nodeMaxHp
+      ctx.strokeStyle = `rgba(120, 220, 255, ${0.05 + 0.10 * str + beatGlow * 0.5})`
+      ctx.lineWidth = 5
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke()
+      ctx.strokeStyle = `rgba(195, 246, 255, ${0.22 + 0.30 * str + beatGlow})`
+      ctx.lineWidth = 1.5
+      ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke()
+    }
+  }
+
+  // Depth sort + shading (sells the 3D tumble): draw BACK-TO-FRONT so near nodes occlude far ones,
+  // and dim/fade the far ones (atmospheric depth). z is 0 for flat patterns → no-op except tumble.
+  const nNodes = enemy.nodeHp.length
+  const zs: number[] = []
+  for (let i = 0; i < nNodes; i++) zs.push(nodeDepth(enemy, i, t))
+  const order = zs.map((_, i) => i).sort((p, q) => zs[p]! - zs[q]!)
+  for (const i of order) {
+    const z = zs[i]!
+    const depthBri = 1 + 0.4 * z               // back darker, front brighter
+    const depthA = Math.min(1, 1 + 0.35 * z)   // back fades out
     const p = nodeWorldPos(enemy, i, t)
     const sx = p.x - camX, sy = p.y - camY
-    const dr = nodeR * nodeDrawScale(enemy, i, t)   // visual depth cue (tumble); = nodeR otherwise
+    const dr = nodeR * (0.7 + 0.3 * (z + 1))
     const hp = enemy.nodeHp[i]!
     if (hp > 0) {
       const hpFrac = hp / enemy.nodeMaxHp
       const flashT = Math.min(1, Math.max(0, enemy.nodeFlash[i]!) / 0.2)
-      // Glowing orb — brighter at full HP and on a fresh hit
+      // Glowing orb — brighter at full HP and on a fresh hit, dimmed/faded by depth
       ctx.beginPath(); ctx.arc(sx, sy, dr, 0, Math.PI * 2)
-      ctx.fillStyle = `rgba(${Math.floor(120 + 135 * flashT)}, 230, 255, ${0.5 + 0.35 * hpFrac + 0.15 * flashT})`
+      ctx.fillStyle = `rgba(${Math.floor((120 + 135 * flashT) * depthBri)}, ${Math.floor(230 * depthBri)}, ${Math.floor(255 * depthBri)}, ${(0.5 + 0.35 * hpFrac + 0.15 * flashT) * depthA})`
       ctx.fill()
-      ctx.strokeStyle = `rgba(235, 252, 255, ${0.85 + 0.15 * flashT})`
+      ctx.strokeStyle = `rgba(235, 252, 255, ${(0.85 + 0.15 * flashT) * depthA})`
       ctx.lineWidth = 2
       ctx.stroke()
       // Cracks — one per hit taken, radiating from center, darker as HP drops
       const hitsTaken = enemy.nodeMaxHp - hp
       if (hitsTaken > 0) {
-        ctx.strokeStyle = `rgba(18, 48, 68, ${0.45 + 0.45 * (hitsTaken / enemy.nodeMaxHp)})`
+        ctx.strokeStyle = `rgba(18, 48, 68, ${(0.45 + 0.45 * (hitsTaken / enemy.nodeMaxHp)) * depthA})`
         ctx.lineWidth = 1.5
         for (let c = 0; c < hitsTaken; c++) {
           const ca = (c / enemy.nodeMaxHp) * Math.PI * 2 + i * 1.7
@@ -9862,12 +9893,12 @@ function drawWeakNodes(enemy: Enemy): void {
       // Husk — dark, inert, cracked, smaller; clearly DEAD (no glow) but still riding the pattern
       const hr = dr * 0.78
       ctx.beginPath(); ctx.arc(sx, sy, hr, 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(50, 50, 62, 0.62)'
+      ctx.fillStyle = `rgba(${Math.floor(50 * depthBri)}, ${Math.floor(50 * depthBri)}, ${Math.floor(62 * depthBri)}, ${0.62 * depthA})`
       ctx.fill()
-      ctx.strokeStyle = 'rgba(24, 24, 34, 0.85)'
+      ctx.strokeStyle = `rgba(24, 24, 34, ${0.85 * depthA})`
       ctx.lineWidth = 1.5
       ctx.stroke()
-      ctx.strokeStyle = 'rgba(18, 18, 26, 0.7)'
+      ctx.strokeStyle = `rgba(18, 18, 26, ${0.7 * depthA})`
       ctx.lineWidth = 1
       for (let c = 0; c < 3; c++) {
         const ca = (c / 3) * Math.PI * 2 + i
@@ -12314,17 +12345,40 @@ function drawDesignerPreview(player: Player): void {
       nodeSizeFrac: preview.weakNodeSizeFrac,
       nodePattern: preview.weakNodePattern,
       nodeSpeed: preview.weakNodeSpeed,
+      nodeWorldSpin: preview.weakNodeWorldSpin,
       nodeBeatDiv: preview.weakNodeBeatDiv,
       nodeAmp: preview.weakNodeAmp,
     } as unknown as Enemy
     const nr = nodeRadius(stub)
-    for (let i = 0; i < stub.nodeHp.length; i++) {
+    const nLinkP = stub.nodeHp.length
+    if (nLinkP >= 2) {
+      const limP = nLinkP === 2 ? 1 : nLinkP
+      for (let i = 0; i < limP; i++) {
+        const j = (i + 1) % nLinkP
+        const pa = nodeWorldPos(stub, i, t), pb = nodeWorldPos(stub, j, t)
+        const ax = pa.x - camX, ay = pa.y - camY, bx = pb.x - camX, by = pb.y - camY
+        ctx.strokeStyle = 'rgba(120, 220, 255, 0.13)'
+        ctx.lineWidth = 5
+        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke()
+        ctx.strokeStyle = 'rgba(195, 246, 255, 0.5)'
+        ctx.lineWidth = 1.5
+        ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke()
+      }
+    }
+    const nP = stub.nodeHp.length
+    const zsP: number[] = []
+    for (let i = 0; i < nP; i++) zsP.push(nodeDepth(stub, i, t))
+    const orderP = zsP.map((_, i) => i).sort((p, q) => zsP[p]! - zsP[q]!)
+    for (const i of orderP) {
+      const z = zsP[i]!
+      const depthBri = 1 + 0.4 * z
+      const depthA = Math.min(1, 1 + 0.35 * z)
       const p = nodeWorldPos(stub, i, t)
       const nx = p.x - camX, ny = p.y - camY
-      ctx.beginPath(); ctx.arc(nx, ny, nr * nodeDrawScale(stub, i, t), 0, Math.PI * 2)
-      ctx.fillStyle = 'rgba(120, 230, 255, 0.8)'
+      ctx.beginPath(); ctx.arc(nx, ny, nr * (0.7 + 0.3 * (z + 1)), 0, Math.PI * 2)
+      ctx.fillStyle = `rgba(${Math.floor(120 * depthBri)}, ${Math.floor(230 * depthBri)}, ${Math.floor(255 * depthBri)}, ${0.8 * depthA})`
       ctx.fill()
-      ctx.strokeStyle = 'rgba(235, 252, 255, 0.9)'
+      ctx.strokeStyle = `rgba(235, 252, 255, ${0.9 * depthA})`
       ctx.lineWidth = 2
       ctx.stroke()
     }

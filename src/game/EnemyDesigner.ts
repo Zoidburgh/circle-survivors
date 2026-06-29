@@ -277,6 +277,7 @@ export interface PreviewEnemy {
   weakNodeCount: number
   weakNodePattern: import('../entities/EnemyTypes.ts').WeakNodePattern
   weakNodeSpeed: number
+  weakNodeWorldSpin: number
   weakNodeBeatDiv: number
   weakNodeAmp: number
   weakNodeOrbitFrac: number
@@ -2075,11 +2076,19 @@ function addEnemyForm(existing?: DesignedEnemy): void {
               <option value="pendulumWave">Pendulum Wave</option>
               <option value="cascade">Cascade (beat)</option>
               <option value="tumble">Tumble (beat)</option>
+              <option value="formationDance">Formation Dance (beat)</option>
+              <option value="tiltedOrbit">Tilted Orbit (3D)</option>
+              <option value="carousel">Carousel (3D)</option>
+              <option value="orbSphere">Orb-Sphere (3D)</option>
             </select>
           </div>
           <div style="display:flex;gap:6px;align-items:center;margin-top:2px;">
             <span style="color:#7FE6FF;font:10px monospace;">Spin: <span id="ed-weaknodes-speed-val-${id}">${existing?.weakNodeSpeed ?? 1}</span></span>
-            <input id="ed-weaknodes-speed-${id}" type="range" min="0" max="3" step="0.1" value="${existing?.weakNodeSpeed ?? 1}" style="flex:1;">
+            <input id="ed-weaknodes-speed-${id}" type="range" min="0" max="12" step="0.1" value="${existing?.weakNodeSpeed ?? 1}" style="flex:1;">
+          </div>
+          <div style="display:flex;gap:6px;align-items:center;margin-top:2px;">
+            <span style="color:#7FE6FF;font:10px monospace;" title="Spins the WHOLE formation rigidly around the vertical axis in 3D (vs Spin = nodes orbit within it). Great on the 3D patterns.">World Spin: <span id="ed-weaknodes-worldspin-val-${id}">${existing?.weakNodeWorldSpin ?? 0}</span></span>
+            <input id="ed-weaknodes-worldspin-${id}" type="range" min="0" max="8" step="0.1" value="${existing?.weakNodeWorldSpin ?? 0}" style="flex:1;">
           </div>
           <div style="display:flex;gap:6px;align-items:center;margin-top:2px;">
             <span style="color:#7FE6FF;font:10px monospace;" title="Beats per pop / cycle / hop. 1 = every beat, 2 = every 2 beats, 0.5 = twice per beat.">Beat ÷: <span id="ed-weaknodes-beatdiv-val-${id}">${existing?.weakNodeBeatDiv ?? 1}</span></span>
@@ -2745,7 +2754,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const v = body.querySelector(`#ed-weaknodes-${val}-${id}`) as HTMLSpanElement
     s.addEventListener('input', () => { v.textContent = s.value })
   }
-  wnBind('speed', 'speed-val'); wnBind('beatdiv', 'beatdiv-val'); wnBind('amp', 'amp-val'); wnBind('orbit', 'orbit-val'); wnBind('size', 'size-val')
+  wnBind('speed', 'speed-val'); wnBind('worldspin', 'worldspin-val'); wnBind('beatdiv', 'beatdiv-val'); wnBind('amp', 'amp-val'); wnBind('orbit', 'orbit-val'); wnBind('size', 'size-val')
 
   function renumberPhases(): void {
     const rows = summonPhasesDiv.querySelectorAll('.ed-phase-row')
@@ -2922,6 +2931,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
       weakNodeCount: form.weakNodeCount ?? 3,
       weakNodePattern: form.weakNodePattern ?? 'orbit',
       weakNodeSpeed: form.weakNodeSpeed ?? 1,
+      weakNodeWorldSpin: form.weakNodeWorldSpin ?? 0,
       weakNodeBeatDiv: form.weakNodeBeatDiv ?? 1,
       weakNodeAmp: form.weakNodeAmp ?? 0.3,
       weakNodeOrbitFrac: form.weakNodeOrbitFrac ?? 0.55,
@@ -2997,6 +3007,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const weakNodeHp = parseInt((div.querySelector(`#ed-weaknodes-hp-${id}`) as HTMLInputElement).value) || 3
     const weakNodePattern = (div.querySelector(`#ed-weaknodes-pattern-${id}`) as HTMLSelectElement).value as import('../entities/EnemyTypes.ts').WeakNodePattern
     const weakNodeSpeed = parseFloat((div.querySelector(`#ed-weaknodes-speed-${id}`) as HTMLInputElement).value)
+    const weakNodeWorldSpin = parseFloat((div.querySelector(`#ed-weaknodes-worldspin-${id}`) as HTMLInputElement).value) || 0
     const weakNodeBeatDiv = parseFloat((div.querySelector(`#ed-weaknodes-beatdiv-${id}`) as HTMLInputElement).value) || 1
     const weakNodeAmp = parseFloat((div.querySelector(`#ed-weaknodes-amp-${id}`) as HTMLInputElement).value)
     const weakNodeOrbitFrac = parseFloat((div.querySelector(`#ed-weaknodes-orbit-${id}`) as HTMLInputElement).value) || 0.55
@@ -3022,7 +3033,7 @@ function addEnemyForm(existing?: DesignedEnemy): void {
     const beats = rings[0]?.beats ?? []
     const ringRadius = rings[0]?.ringRadius ?? 120
     const finalHp = isShrine && shrinePhases.length > 0 ? shrinePhases.length : hp
-    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, volatileHeal, revenge, revengeRings, revengeRadius, pusher, pusherBeats, pusherPhase, pusherStrength, dodge, dodgeCharges, dodgeChargeTime, dodgeDistance, dodgeSpeed, shield, shieldRechargeTime, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, weakNodes, weakNodeCount, weakNodeHp, weakNodePattern, weakNodeSpeed, weakNodeBeatDiv, weakNodeAmp, weakNodeOrbitFrac, weakNodeSizeFrac, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
+    return { name, color, hp: finalHp, moveSpeed: speed, radius, ringRadius, key, role: sound, sound, beats, rings, blocksRings, consume, magnet, magnetRange, blink, blinkBeats, volatile: volatile_, volatileRange, volatileHeal, revenge, revengeRings, revengeRadius, pusher, pusherBeats, pusherPhase, pusherStrength, dodge, dodgeCharges, dodgeChargeTime, dodgeDistance, dodgeSpeed, shield, shieldRechargeTime, movePattern, totemSpawn, dropType, dropXp, dropHp, dropCount, summon, summonNodes, summonPhases, weakNodes, weakNodeCount, weakNodeHp, weakNodePattern, weakNodeSpeed, weakNodeWorldSpin, weakNodeBeatDiv, weakNodeAmp, weakNodeOrbitFrac, weakNodeSizeFrac, isShrine, shrineSpawnEnemy, shrineXpCount, shrineHpCount, shrinePhases }
   }
 
 

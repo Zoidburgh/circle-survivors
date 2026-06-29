@@ -22,6 +22,7 @@ import type { Player } from './Player.ts'
 import type { EnemyType, MovePattern, SummonPhase, ShrinePhase, RangedPattern, RangedRotationMode, TetherTopology, ClusterLayer, WeakNodePattern } from './EnemyTypes.ts'
 import { getEnemyType } from './EnemyTypes.ts'
 import { getAbsoluteBeats } from '../audio/PatternClock.ts'   // music-anchored beat clock (same one every rhythmic system uses)
+import { playNodeNote } from '../audio/MusicalSFX.ts'        // nodes-are-notes SFX (scale-locked, voice-capped)
 import { SpatialGrid } from '../core/SpatialGrid.ts'
 import { getChillRank } from '../game/UpgradeManager.ts'
 
@@ -190,7 +191,7 @@ export interface Enemy {
   nodeJustRevived: boolean[]      // transient — set when a heal revives a husk, Renderer pops a gold burst
   nodeSeed: number                // phase offset so clones desync (index-derived, deterministic)
   nodePattern: WeakNodePattern    // movement pattern
-  nodeOrbitFrac: number; nodeSizeFrac: number; nodeSpeed: number; nodeBeatDiv: number; nodeAmp: number
+  nodeOrbitFrac: number; nodeSizeFrac: number; nodeSpeed: number; nodeWorldSpin: number; nodeBeatDiv: number; nodeAmp: number
   isShrine: boolean
   shrineSpawnEnemy: string        // LEGACY — use shrinePhases
   shrineXpCount: number           // LEGACY
@@ -474,6 +475,7 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     nodeOrbitFrac: type.weakNodeOrbitFrac ?? 0.55,   // inside the body (orbit + node radius < enemy.radius)
     nodeSizeFrac: type.weakNodeSizeFrac ?? 0.30,
     nodeSpeed: type.weakNodeSpeed ?? 1,
+    nodeWorldSpin: type.weakNodeWorldSpin ?? 0,
     nodeBeatDiv: Math.max(0.25, type.weakNodeBeatDiv ?? 1),
     nodeAmp: type.weakNodeAmp ?? 0.3,
     isShrine: type.isShrine ?? false,
@@ -1280,9 +1282,37 @@ export function rollDrop(enemy: Enemy): 'xp' | 'hp' | null {
 // ── Weak-node geometry (see boss_nodes_plan.md) ───────────────────────────────
 const NODE_TAU = Math.PI * 2
 
-/** World position of weak-node `i` at shared time `t` (seconds). SINGLE source of truth for both
- * hit detection (sim) and rendering — callers pass the SAME t, so they can never disagree. */
-export function nodeWorldPos(enemy: Enemy, i: number, t: number): { x: number; y: number } {
+// Formation Dance — the dance steps through a sequence where EVERY OTHER step is a tight stack at
+// center and the steps between are spread formations (ring → line → star → spiral), so the nodes
+// gather to the middle then burst out into a different shape each time.
+const DANCE_SPREADS = 3
+function danceFormAt(step: number, numSpreads: number): number {
+  const period = numSpreads * 2
+  let s = step % period
+  if (s < 0) s += period
+  return s % 2 === 0 ? 0 : 1 + (s - 1) / 2   // 0 = stack; 1..numSpreads = a spread formation
+}
+/** Target offset (dx,dy from enemy center) for node `i` in formation `f`. Only balanced/symmetric
+ * shapes: a ring (even polygon) and evenly-spaced lines at different angles. */
+function formationTarget(f: number, i: number, n: number, R: number, base: number): { dx: number; dy: number } {
+  const u = n > 1 ? (i / (n - 1) - 0.5) * 2 : 0   // -1..1, evenly spaced along a line
+  switch (f) {
+    case 1: return { dx: Math.cos(base) * R, dy: Math.sin(base) * R }   // ring (even polygon)
+    case 2: return { dx: u * R, dy: 0 }                                 // horizontal line
+    case 3: {                                                           // cross (+) — contiguous arms
+      const half = Math.ceil(n / 2)
+      if (i < half) { const uu = half > 1 ? (i / (half - 1) - 0.5) * 2 : 0; return { dx: uu * R, dy: 0 } }
+      const k = i - half, cnt = n - half
+      const uu = cnt > 1 ? (k / (cnt - 1) - 0.5) * 2 : 0
+      return { dx: 0, dy: uu * R }
+    }
+    default: return { dx: Math.cos(base) * R * 0.1, dy: Math.sin(base) * R * 0.1 }   // stack — tight cluster at center
+  }
+}
+
+/** Node `i`'s raw LOCAL 3D offset (before World Spin): x,y are screen-space pixel offsets, z is depth
+ * fraction (-1 back .. 1 front; 0 for flat patterns). */
+function nodeLocalRaw(enemy: Enemy, i: number, t: number): { x: number; y: number; z: number } {
   const n = enemy.nodeHp.length
   const base = enemy.nodeSeed + (i / n) * NODE_TAU
   const R = enemy.radius * enemy.nodeOrbitFrac
@@ -1338,11 +1368,9 @@ export function nodeWorldPos(enemy: Enemy, i: number, t: number): { x: number; y
     case 'twirl': {
       // Spin rotates the ring; each node loops its own small circle once per D beats.
       const sa = base + spd * 0.5
-      const slotX = enemy.x + Math.cos(sa) * R
-      const slotY = enemy.y + Math.sin(sa) * R
       const loop = base + beatT * (NODE_TAU / D)
       const smallR = R * (0.12 + enemy.nodeAmp * 0.3)
-      return { x: slotX + Math.cos(loop) * smallR, y: slotY + Math.sin(loop) * smallR }
+      return { x: Math.cos(sa) * R + Math.cos(loop) * smallR, y: Math.sin(sa) * R + Math.sin(loop) * smallR, z: 0 }
     }
     case 'beatHop': {
       // Snap to a new orientation every D beats, eased over the first part of the cycle (hop, not jump).
@@ -1360,7 +1388,7 @@ export function nodeWorldPos(enemy: Enemy, i: number, t: number): { x: number; y
       const ly = Math.sin(ea) * R * 0.5
       const prec = beatT * (NODE_TAU / (D * 6))   // slow beat-locked precession (one turn per 6·D beats)
       const cs = Math.cos(prec), sn = Math.sin(prec)
-      return { x: enemy.x + lx * cs - ly * sn, y: enemy.y + lx * sn + ly * cs }
+      return { x: lx * cs - ly * sn, y: lx * sn + ly * cs, z: 0 }
     }
     case 'iris':
       // Aperture — every D beats the ring twists inward + contracts (closes), then untwists + blooms.
@@ -1383,28 +1411,90 @@ export function nodeWorldPos(enemy: Enemy, i: number, t: number): { x: number; y
       r = R * (1 + enemy.nodeAmp * (i === active ? beatPop : 0))
       break
     }
-    case 'tumble':
-      // Faux-3D coin flip — the ring squashes to a flat line and expands back every D beats while
-      // spinning. (A depth-size cue is applied in the renderer via nodeDrawScale.)
-      a = base + spd
-      r = R
-      return { x: enemy.x + Math.cos(a) * R, y: enemy.y + Math.sin(a) * R * Math.cos(beatT * (Math.PI / D)) }
+    case 'tumble': {
+      // Coin flip — ring rotates around the horizontal axis over D beats. TRUE 3D: y squashes and z
+      // carries the depth, so the renderer scales/shades/occludes it as a solid ring.
+      const aa = base + spd
+      const tl = beatT * (Math.PI / D)
+      return { x: Math.cos(aa) * R, y: Math.sin(aa) * R * Math.cos(tl), z: Math.sin(aa) * Math.sin(tl) }
+    }
+    case 'formationDance': {
+      // Gather to a stack at center, then burst into a formation — cycling ring → line → star →
+      // spiral, stacking between each. One step per D beats; nodes arrive ~65% in and hold. Spin
+      // rotates the whole dancing formation.
+      const step = Math.floor(beatT / D)
+      const phase = (beatT - step * D) / D
+      const eIn = Math.min(1, phase / 0.65)
+      const ease = eIn * eIn * (3 - 2 * eIn)
+      const fromT = formationTarget(danceFormAt(step - 1, DANCE_SPREADS), i, n, R, base)
+      const toT = formationTarget(danceFormAt(step, DANCE_SPREADS), i, n, R, base)
+      const dx = fromT.dx + (toT.dx - fromT.dx) * ease
+      const dy = fromT.dy + (toT.dy - fromT.dy) * ease
+      const cs = Math.cos(spd), sn = Math.sin(spd)
+      return { x: dx * cs - dy * sn, y: dx * sn + dy * cs, z: 0 }
+    }
+    case 'tiltedOrbit': {
+      // A single ring inclined toward the viewer (Amp = how edge-on), rotating. Near arc forward.
+      const aa = base + spd
+      const tilt = Math.min(1.45, 0.45 + enemy.nodeAmp)
+      return { x: Math.cos(aa) * R, y: Math.sin(aa) * R * Math.cos(tilt), z: Math.sin(aa) * Math.sin(tilt) }
+    }
+    case 'carousel': {
+      // Turntable — a shallow near-horizontal ring spinning; nodes sweep around the back like a platter.
+      const aa = base + spd
+      const tilt = 0.32
+      return { x: Math.cos(aa) * R, y: Math.sin(aa) * R * Math.sin(tilt), z: Math.sin(aa) * Math.cos(tilt) }
+    }
+    case 'orbSphere': {
+      // Nodes spread over a SPHERE (Fibonacci) spinning around the vertical axis, with a gentle pole
+      // tilt so it isn't pole-on. The full 3D cloud.
+      const GA = 2.399963
+      const y0 = n > 1 ? 1 - (i / (n - 1)) * 2 : 0
+      const rad = Math.sqrt(Math.max(0, 1 - y0 * y0))
+      const theta = i * GA + enemy.nodeSeed + spd
+      const sx3 = Math.cos(theta) * rad, sz3 = Math.sin(theta) * rad
+      const ct = 0.921, st = 0.3894   // ~0.4 rad pole tilt
+      return { x: sx3 * R, y: (y0 * ct - sz3 * st) * R, z: y0 * st + sz3 * ct }
+    }
     case 'orbit':
     default:
       a = base + spd
       r = R
   }
-  return { x: enemy.x + Math.cos(a) * r, y: enemy.y + Math.sin(a) * r }
+  return { x: Math.cos(a) * r, y: Math.sin(a) * r, z: 0 }
 }
 
-/** Per-node DRAW size multiplier (visual only — hit radius stays nodeRadius). Used by 'tumble' to fake
- * depth (front nodes bigger, back smaller) so the flip reads as 3D. 1 for every other pattern. */
+/** Node `i`'s LOCAL 3D offset WITH World Spin applied — a rigid rotation of the whole formation about
+ * the vertical (Y) axis. This is the spin that turns the entire 3D shape in space (vs nodeSpeed, which
+ * orbits nodes within the formation). For flat patterns it gives them a real 3D spin too. SINGLE source
+ * of truth — nodeWorldPos and nodeDepth both read it so they can't disagree. */
+function nodeLocal3D(enemy: Enemy, i: number, t: number): { x: number; y: number; z: number } {
+  const L = nodeLocalRaw(enemy, i, t)
+  if (enemy.nodeWorldSpin === 0) return L
+  const R = enemy.radius * enemy.nodeOrbitFrac
+  const phi = t * enemy.nodeWorldSpin
+  const c = Math.cos(phi), s = Math.sin(phi)
+  const zpx = L.z * R                       // depth fraction → pixels so x and z rotate in the same units
+  return { x: L.x * c + zpx * s, y: L.y, z: (-L.x * s + zpx * c) / R }
+}
+
+/** World position of weak-node `i` — projects the local 3D offset to screen. SINGLE source of truth
+ * for hit detection (sim) and rendering. */
+export function nodeWorldPos(enemy: Enemy, i: number, t: number): { x: number; y: number } {
+  const L = nodeLocal3D(enemy, i, t)
+  return { x: enemy.x + L.x, y: enemy.y + L.y }
+}
+
+/** Faux-3D depth of node `i`: -1 (back) .. 1 (front), 0 for flat patterns. Drives size, shading, AND
+ * back-to-front draw order so the 3D patterns read as solid rotating objects. Visual only — hit radius
+ * stays nodeRadius. */
+export function nodeDepth(enemy: Enemy, i: number, t: number): number {
+  return nodeLocal3D(enemy, i, t).z
+}
+
+/** Per-node DRAW size multiplier from depth — front bigger, back smaller (1.0 for flat patterns). */
 export function nodeDrawScale(enemy: Enemy, i: number, t: number): number {
-  if (enemy.nodePattern !== 'tumble') return 1
-  const n = enemy.nodeHp.length
-  const a = enemy.nodeSeed + (i / n) * NODE_TAU + t * enemy.nodeSpeed
-  const z = Math.sin(a) * Math.sin((getAbsoluteBeats() + WEAK_NODE_BEAT_OFFSET) * (Math.PI / enemy.nodeBeatDiv))   // -1 (back) .. 1 (front)
-  return 0.7 + 0.3 * (z + 1)
+  return 0.7 + 0.3 * (nodeDepth(enemy, i, t) + 1)
 }
 
 /** Hit/draw radius of an enemy's weak-nodes. */
@@ -1422,6 +1512,7 @@ export function damageNode(enemy: Enemy, i: number, amount: number): void {
   enemy.nodeHp[i] = Math.max(0, next)
   enemy.nodeFlash[i] = HIT_FLASH_DURATION
   enemy.hitFlash = HIT_FLASH_DURATION   // body flicker so the hit still reads on the silhouette
+  playNodeNote(i, next <= 0)            // nodes are notes — degree = index → ascending run; break rings brighter
   if (next <= 0) {
     enemy.nodesAlive--
     enemy.nodeFlash[i] = 0.35           // stronger break pop
