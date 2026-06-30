@@ -2587,7 +2587,7 @@
       "hp": 2,
       "moveSpeed": 50,
       "radius": 280,
-      "ringRadius": 140,
+      "ringRadius": 400,
       "key": "38",
       "role": "rim",
       "sound": "rim",
@@ -2603,7 +2603,7 @@
       ],
       "rings": [
         {
-          "ringRadius": 140,
+          "ringRadius": 400,
           "sound": "rim",
           "beats": [
             0.5,
@@ -2681,6 +2681,7 @@
       "weakNodeHp": 3,
       "weakNodePattern": "orbSphere",
       "weakNodeMetal": "brass",
+      "weakNodeAura": 0.8,
       "weakNodeSpeed": 4.1,
       "weakNodeWorldSpin": 2.8,
       "weakNodeBeatDiv": 1,

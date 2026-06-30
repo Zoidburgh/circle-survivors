@@ -190,6 +190,8 @@ export interface Enemy {
   nodesAlive: number              // live-node counter; reaches 0 → enemy dies
   nodeFlash: number[]             // per-node hit/break FX timer (seconds)
   nodeJustBroke: boolean[]        // transient — set on break, Renderer spawns the shatter + clears it
+  nodeJustHit: boolean[]          // transient — set on a surviving hit, Renderer spawns the blood burst + clears it
+  nodeDeathStagger: number[]      // death-cascade delay per node (s after death) for a staggered burst; -1 = none
   nodeBeatDashHit: boolean[]      // transient — set when beat-dash hits a node, Renderer spawns lightning AT the node
   nodeJustRevived: boolean[]      // transient — set when a heal revives a husk, Renderer pops a gold burst
   nodeSeed: number                // phase offset so clones desync (index-derived, deterministic)
@@ -474,6 +476,8 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     nodesAlive: Math.max(1, type.weakNodeCount ?? 3),
     nodeFlash: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(0),
     nodeJustBroke: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(false),
+    nodeJustHit: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(false),
+    nodeDeathStagger: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(-1),
     nodeBeatDashHit: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(false),
     nodeJustRevived: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(false),
     nodeSeed: (x * 0.013 + y * 0.017) % (Math.PI * 2),   // deterministic per-spawn phase so clones desync
@@ -684,7 +688,9 @@ export function updateEnemy(enemy: Enemy, player: Player, dt: number, grid: Spat
         const next = dHp - (dHp - hp) * HP_DRAIN_SPEED * dt
         enemy.nodeDisplayHp[i] = (next - hp < 0.02) ? hp : next
       } else if (dHp < hp) {
-        enemy.nodeDisplayHp[i] = hp   // heal/revive snaps up instantly
+        // Heal/revive — fill UP smoothly (drives the gold heal band) instead of snapping
+        const next = dHp + (hp - dHp) * HP_DRAIN_SPEED * dt
+        enemy.nodeDisplayHp[i] = (hp - next < 0.02) ? hp : next
       }
     }
   }
@@ -1531,14 +1537,21 @@ export function damageNode(enemy: Enemy, i: number, amount: number): void {
   enemy.nodeFlash[i] = HIT_FLASH_DURATION
   enemy.hitFlash = HIT_FLASH_DURATION   // body flicker so the hit still reads on the silhouette
   playNodeNote(i, next <= 0)            // nodes are notes — degree = index → ascending run; break rings brighter
+  if (next > 0) enemy.nodeJustHit[i] = true   // surviving hit → blood burst (break has the shatter instead)
   if (next <= 0) {
     enemy.nodesAlive--
     enemy.nodeFlash[i] = 0.35           // stronger break pop
     enemy.nodeJustBroke[i] = true       // Renderer spawns the shatter burst next frame
     if (enemy.nodesAlive <= 0) {
       // All nodes broken — mirror damageEnemy's death so loot/economy behave identically.
-      // Flag every node so the husks shatter together in the death animation.
-      for (let k = 0; k < enemy.nodeJustBroke.length; k++) enemy.nodeJustBroke[k] = true
+      // Staggered death cascade: the hit node already burst this frame; the rest blow outward in a
+      // quick ripple spreading from it by ring distance (Renderer fires each as deathTimer passes it).
+      const cn = enemy.nodeJustBroke.length
+      for (let k = 0; k < cn; k++) {
+        if (k === i) continue
+        const ringDist = Math.min(Math.abs(k - i), cn - Math.abs(k - i))
+        enemy.nodeDeathStagger[k] = ringDist * 0.085
+      }
       enemy.dying = true
       enemy.deathTimer = 0
       enemy.deathX = enemy.x
