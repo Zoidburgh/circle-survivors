@@ -192,6 +192,7 @@ export interface Enemy {
   nodeJustBroke: boolean[]        // transient — set on break, Renderer spawns the shatter + clears it
   nodeJustHit: boolean[]          // transient — set on a surviving hit, Renderer spawns the blood burst + clears it
   nodeDeathStagger: number[]      // death-cascade delay per node (s after death) for a staggered burst; -1 = none
+  killerNode: number              // index of the node whose break triggered death (special burst); -1 = none
   nodeBeatDashHit: boolean[]      // transient — set when beat-dash hits a node, Renderer spawns lightning AT the node
   nodeJustRevived: boolean[]      // transient — set when a heal revives a husk, Renderer pops a gold burst
   nodeSeed: number                // phase offset so clones desync (index-derived, deterministic)
@@ -478,6 +479,7 @@ export function createEnemy(x: number, y: number, type: EnemyType): Enemy {
     nodeJustBroke: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(false),
     nodeJustHit: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(false),
     nodeDeathStagger: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(-1),
+    killerNode: -1,
     nodeBeatDashHit: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(false),
     nodeJustRevived: Array(Math.max(1, type.weakNodeCount ?? 3)).fill(false),
     nodeSeed: (x * 0.013 + y * 0.017) % (Math.PI * 2),   // deterministic per-spawn phase so clones desync
@@ -1546,11 +1548,12 @@ export function damageNode(enemy: Enemy, i: number, amount: number): void {
       // All nodes broken — mirror damageEnemy's death so loot/economy behave identically.
       // Staggered death cascade: the hit node already burst this frame; the rest blow outward in a
       // quick ripple spreading from it by ring distance (Renderer fires each as deathTimer passes it).
+      enemy.killerNode = i   // this node's break triggered death → Renderer gives it the special burst
       const cn = enemy.nodeJustBroke.length
       for (let k = 0; k < cn; k++) {
         if (k === i) continue
         const ringDist = Math.min(Math.abs(k - i), cn - Math.abs(k - i))
-        enemy.nodeDeathStagger[k] = ringDist * 0.085
+        enemy.nodeDeathStagger[k] = ringDist * 0.11
       }
       enemy.dying = true
       enemy.deathTimer = 0

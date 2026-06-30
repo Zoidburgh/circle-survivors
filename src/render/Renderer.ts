@@ -5876,6 +5876,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
 
   perfStart('arena')
   drawArenaBorder(player)
+  drawVoidField()   // parallax + self-drifting motes in the void OUTSIDE the arena — over the buffer fade
   // Arena walls — drawn under all entities (floor layer), above the arena fill
   drawWalls()
   // Chill Zone slow-field — on the arena floor, under enemies/orbs/player
@@ -6174,6 +6175,7 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
 
   // Beat dash AOE flash — drawn BEFORE the player so the player visibly stands on top
   perfStart('beatdash_aoe')
+  updateNodeShockwaves()   // enemy-color death shockwaves (killing-node rupture)
   if (beatDashFlash > 0) {
     beatDashFlash -= lastDt
     const t = beatDashFlash / 0.444  // 1→0
@@ -6558,6 +6560,97 @@ function buildGridTile(cellDev: number, level: number): void {
   gridPattern = ctx.createPattern(tile, 'repeat')
   gridTileLevel = level
   gridTileCellDev = cellDev
+}
+
+// ── Parallax void field — a depth layer in the void OUTSIDE the arena. Motes live in NORMALIZED screen
+// space (so the count is fixed regardless of zoom and each draws ONCE — no wrap multi-draw), SELF-DRIFT
+// (alive even when the camera is still), and respond to camera movement by their DEPTH (parallax). The
+// vignette/buffer fade dims the far ones → free distance haze.
+interface Mote { nx: number; ny: number; depth: number; vx: number; vy: number; ph: number }
+const motes: Mote[] = []
+let moteCamX = 0, moteCamY = 0
+function initMotes(): void {
+  if (motes.length) return
+  // Jittered grid (one mote per cell + small jitter) → uniform spread, no random clumps. ~112 motes.
+  const cols = 14, rows = 8
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const ang = Math.random() * Math.PI * 2
+      const spd = 0.006 + Math.random() * 0.012   // slower drift → stays uniform longer
+      motes.push({
+        nx: (c + 0.5 + (Math.random() - 0.5) * 0.8) / cols,
+        ny: (r + 0.5 + (Math.random() - 0.5) * 0.8) / rows,
+        depth: Math.random(),
+        vx: Math.cos(ang) * spd * 0.6, vy: Math.sin(ang) * spd - 0.006,
+        ph: Math.random() * Math.PI * 2,
+      })
+    }
+  }
+}
+function drawVoidField(): void {
+  initMotes()
+  const zoomNow = (designerZoomedOut && getPhase() === 'designer') ? DESIGNER_ZOOM : cameraZoom
+  const effW = width / zoomNow, effH = height / zoomNow
+  // Camera delta this frame (world px) drives the parallax shift; ignore teleports/phase jumps.
+  let dcx = camX - moteCamX, dcy = camY - moteCamY
+  moteCamX = camX; moteCamY = camY
+  if (Math.abs(dcx) > effW || Math.abs(dcy) > effH) { dcx = 0; dcy = 0 }
+  // Clip to the VOID outside the arena (screen rect MINUS the arena shape, evenodd) so the stars only
+  // fill the surround, never the play floor. Mirrors the buffer-zone shape tracing.
+  const arenaShape = getArenaShape()
+  const acx = ARENA_CX - camX, acy = ARENA_CY - camY
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(0, 0, effW, effH)
+  if (arenaShape === 'cross') crossPath(acx, acy, true)
+  else if (arenaShape === 'pill') pillPath(acx, acy, PILL_HALF_W, PILL_R, true)
+  else if (arenaShape === 'hex' || arenaShape === 'polygon') {
+    const verts = arenaConvexVerts()
+    for (let i = verts.length - 1; i >= 0; i--) {
+      const vx = verts[i]!.x - camX, vy = verts[i]!.y - camY
+      if (i === verts.length - 1) ctx.moveTo(vx, vy); else ctx.lineTo(vx, vy)
+    }
+    ctx.closePath()
+  } else if (arenaShape === 'rect') {
+    ctx.rect(-camX, -camY, ARENA_W, ARENA_H)
+  } else {
+    ctx.arc(acx, acy, ARENA_RADIUS, 0, Math.PI * 2, true)
+  }
+  ctx.clip('evenodd')
+
+  const tnow = gameTimeMs * 0.0011   // slow → gradual twinkle, no fast flashing
+  const beatT = getAbsoluteBeats()   // music clock — drives the radial brightness wave
+  const maxDist = Math.hypot(effW, effH)
+  // Additive so the motes read as a soft glow on the dark void.
+  const prevComp = ctx.globalCompositeOperation
+  ctx.globalCompositeOperation = 'lighter'
+  for (const m of motes) {
+    const pf = 0.15 + m.depth * 0.5             // parallax rate: 0.15 (far) … 0.65 (near)
+    // self-drift + camera parallax (in normalized screen space), then toroidal wrap
+    m.nx += m.vx * lastDt - (dcx * pf) / effW
+    m.ny += m.vy * lastDt - (dcy * pf) / effH
+    m.nx = ((m.nx % 1) + 1) % 1
+    m.ny = ((m.ny % 1) + 1) % 1
+    const mx = m.nx * effW, my = m.ny * effH
+    // Radial brightness WAVE — a pulse that ripples OUTWARD from the arena center each beat (motes
+    // light as the wavefront passes their distance). Organized + coherent, not a random flash.
+    const ddx = mx - acx, ddy = my - acy
+    const d = Math.sqrt(ddx * ddx + ddy * ddy)   // cheaper than hypot
+    // cos peaks ~on the beat at the center; -0.14 sits it ~110ms after the felt beat (per tuning).
+    const wave = Math.max(0, Math.cos((beatT - 0.14 - (d / maxDist)) * Math.PI * 2))
+    const pulse = wave * wave * wave                       // cubed → snappy spike (was a soft squared bump)
+    // Divide by zoom so the device size is CONSTANT at any zoom (no sub-pixel flicker zoomed out).
+    const sz = (1.3 + m.depth * 0.5 + pulse * 0.55) / zoomNow
+    const tw = 0.8 + 0.16 * Math.sin(tnow + m.ph) + pulse * 0.95
+    const alpha = Math.max(0, Math.min(0.9, (0.22 + m.depth * 0.42) * tw))
+    if (alpha < 0.01) continue
+    // Hint of collective breathe — a transient outward nudge as the wave passes (not persistent)
+    const inv = d > 0.5 ? (pulse * (7 + m.depth * 15)) / d : 0
+    ctx.fillStyle = `rgba(150, 205, 255, ${alpha})`   // cyan energy (on-palette, not "star" white)
+    ctx.beginPath(); ctx.arc(mx + ddx * inv, my + ddy * inv, sz, 0, Math.PI * 2); ctx.fill()
+  }
+  ctx.globalCompositeOperation = prevComp
+  ctx.restore()
 }
 
 function drawGrid(player: Player): void {
@@ -9809,23 +9902,96 @@ function spawnNodeShatter(x: number, y: number, nodeR: number, th: MetalTheme, p
   spawnParticleAttached(x, y, 0, 0, 255, 240, 210, 0.12, nodeR * 1.8, 255, 220, 160, parent)  // white-hot strike flash
 }
 
+// ── Enemy-color death shockwave — the SAME expanding ring the player beat-dash uses, recolored to the
+// enemy, spawned when the killing node ruptures. World-pinned to the kill point. ───────────────────
+interface NodeShock { x: number; y: number; maxR: number; timer: number; lifetime: number; cr: number; cg: number; cb: number }
+const nodeShocks: NodeShock[] = []
+function spawnNodeShockwave(x: number, y: number, maxR: number, cr: number, cg: number, cb: number): void {
+  nodeShocks.push({ x, y, maxR, timer: 0, lifetime: 0.6, cr, cg, cb })
+}
+function updateNodeShockwaves(): void {
+  for (let i = nodeShocks.length - 1; i >= 0; i--) {
+    const s = nodeShocks[i]!
+    s.timer += lastDt
+    const prog = s.timer / s.lifetime
+    if (prog >= 1) { nodeShocks.splice(i, 1); continue }
+    const sx = s.x - camX, sy = s.y - camY
+    const shockR = Math.max(2, s.maxR * (1 - (1 - prog) * (1 - prog)))   // easeOut — keeps EXPANDING the whole life
+    const k = (1 - prog) * (1 - prog)             // smooth ease-out fade (no lurch)
+    const cs = `${s.cr}, ${s.cg}, ${s.cb}`
+    const hot = `${Math.min(255, s.cr + 90)}, ${Math.min(255, s.cg + 90)}, ${Math.min(255, s.cb + 90)}`
+    const prevComp = ctx.globalCompositeOperation
+    ctx.globalCompositeOperation = 'lighter'
+    // FILLED soft wave band that FEATHERS to nothing at the rim (no hard edge) → reads as a real
+    // shockwave and fades smoothly.
+    const grad = ctx.createRadialGradient(sx, sy, shockR * 0.35, sx, sy, shockR)
+    grad.addColorStop(0, `rgba(${cs}, 0)`)
+    grad.addColorStop(0.5, `rgba(${cs}, ${k * 0.1})`)
+    grad.addColorStop(0.8, `rgba(${cs}, ${k * 0.42})`)
+    grad.addColorStop(0.92, `rgba(${hot}, ${k * 0.55})`)
+    grad.addColorStop(1, `rgba(${cs}, 0)`)
+    ctx.beginPath(); ctx.arc(sx, sy, shockR, 0, Math.PI * 2)
+    ctx.fillStyle = grad
+    ctx.fill()
+    ctx.globalCompositeOperation = prevComp
+  }
+}
+
+// The KILLING node's rupture — bigger metal shatter + an enemy-color CORE plasma burst + the recolored
+// beat-dash shockwave. Reads as the containment core failing (vs a normal break's metal shatter).
+function spawnNodeKillBurst(x: number, y: number, nodeR: number, bodyR: number, th: MetalTheme, cr: number, cg: number, cb: number, parent: ParticleParent): void {
+  // Bigger metal shatter
+  const n = lodCount(24)
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2
+    const sp = 200 + Math.random() * 480
+    const c = Math.random() < 0.6 ? th.drain : th.fill
+    spawnParticleAttached(x, y, Math.cos(a) * sp, Math.sin(a) * sp, c[0], c[1], c[2],
+      0.24 + Math.random() * 0.24, nodeR * 0.3 + Math.random() * nodeR * 0.44, c[0], c[1], c[2], parent)
+  }
+  // Core rupture — enemy-color plasma (additive glow), bright + fast
+  const m = lodCount(13)
+  for (let i = 0; i < m; i++) {
+    const a = Math.random() * Math.PI * 2
+    const sp = 160 + Math.random() * 340
+    spawnParticleAttached(x, y, Math.cos(a) * sp, Math.sin(a) * sp,
+      Math.min(255, cr + 60), Math.min(255, cg + 60), Math.min(255, cb + 60),
+      0.28 + Math.random() * 0.26, nodeR * 0.26 + Math.random() * nodeR * 0.38,
+      cr, cg, cb, parent)   // glow tint = enemy color → additive plasma
+  }
+  spawnParticleAttached(x, y, 0, 0, 255, 250, 235, 0.13, nodeR * 2.0, 255, 240, 200, parent)   // white-hot core flash
+  spawnNodeShockwave(x, y, bodyR * 2.8, cr, cg, cb)   // enemy-color beat-dash-style shockwave
+}
+
 // Damage burst when a node is hit (and survives) — FEWER but BIGGER blood-red gobs, non-additive so
 // they read as blood (not glow). Parent-ATTACHED to the node so the spray rides it (same as enemy
 // blood riding the body). Gobs are DISTRIBUTED across the losing arc [center±half] of the rim (radius
 // `dr`), each erupting radially outward from its own point so the blood spreads along the perimeter.
-function spawnNodeBlood(cx: number, cy: number, dr: number, center: number, half: number, parent: ParticleParent): void {
+function spawnNodeBlood(cx: number, cy: number, dr: number, center: number, half: number, th: MetalTheme, parent: ParticleParent): void {
   const n = lodCount(9)
   for (let k = 0; k < n; k++) {
     const frac = n > 1 ? k / (n - 1) : 0.5
     const ang = center + (frac - 0.5) * 2 * half + (Math.random() - 0.5) * 0.3   // along the arc + jitter
     const bx = cx + Math.cos(ang) * dr * 0.85
     const by = cy + Math.sin(ang) * dr * 0.85
-    const sp = 80 + Math.random() * 120
-    spawnParticleAttached(bx, by, Math.cos(ang) * sp, Math.sin(ang) * sp,   // straight out from this rim point
-      225 + Math.floor(Math.random() * 30), 30 + Math.floor(Math.random() * 28), 32,
-      0.24 + Math.random() * 0.16, dr * 0.26 + Math.random() * dr * 0.34,
-      -1, 0, 0,   // tintR -1 = non-additive (blood, not glow)
-      parent)
+    if (Math.random() < 0.33) {
+      // Hot metal SPARK — themed drain/hot color, additive glow, smaller + faster: the "struck metal"
+      // texture that makes it read as metal bleeding (Molten = lava, Chrome/Brass = hot orange).
+      const sp = 130 + Math.random() * 160
+      spawnParticleAttached(bx, by, Math.cos(ang) * sp, Math.sin(ang) * sp,
+        th.drain[0], th.drain[1], th.drain[2],
+        0.14 + Math.random() * 0.12, dr * 0.14 + Math.random() * dr * 0.2,
+        th.drain[0], th.drain[1], th.drain[2],   // glow tint → additive metallic spark
+        parent)
+    } else {
+      // Metal blood — solid red, sticks out (non-additive)
+      const sp = 80 + Math.random() * 120
+      spawnParticleAttached(bx, by, Math.cos(ang) * sp, Math.sin(ang) * sp,
+        225 + Math.floor(Math.random() * 30), 30 + Math.floor(Math.random() * 28), 32,
+        0.24 + Math.random() * 0.16, dr * 0.26 + Math.random() * dr * 0.34,
+        -1, 0, 0,   // tintR -1 = non-additive (blood, not glow)
+        parent)
+    }
   }
 }
 
@@ -9922,6 +10088,15 @@ function drawNodePie(sx: number, sy: number, r: number, displayFrac: number, act
     gl.addColorStop(1, mc(th.glint, depthBri, 0))
     ctx.beginPath(); ctx.arc(gx, gy, r * 0.55, 0, TAU); ctx.fillStyle = gl; ctx.fill()
     ctx.restore()
+  }
+  // Quick WHITE hit flash — sharp additive pop over the pie that fades fast (flashT²)
+  if (flashT > 0.01) {
+    const prevComp = ctx.globalCompositeOperation
+    ctx.globalCompositeOperation = 'lighter'
+    ctx.beginPath(); ctx.arc(sx, sy, r * 0.96, 0, TAU)
+    ctx.fillStyle = `rgba(255, 255, 255, ${flashT * flashT * flashT * 0.22 * depthA})`
+    ctx.fill()
+    ctx.globalCompositeOperation = prevComp
   }
 }
 
@@ -10047,7 +10222,7 @@ function drawWeakNodes(enemy: Enemy): void {
       const center = -Math.PI / 2 + ((newFrac + oldFrac) / 2) * Math.PI * 2
       const half = Math.max((oldFrac - newFrac) * Math.PI, 0.5)   // half-width of the spread (≥ ±0.5 rad)
       const dr = nodeR * (0.7 + 0.3 * (nodeDepth(enemy, i, t) + 1))
-      spawnNodeBlood(p.x, p.y, dr, center, half, np)
+      spawnNodeBlood(p.x, p.y, dr, center, half, th, np)
     }
     if (enemy.nodeBeatDashHit[i]) {
       enemy.nodeBeatDashHit[i] = false
@@ -10057,7 +10232,11 @@ function drawWeakNodes(enemy: Enemy): void {
         spawnNodeLightningBolt(enemy, i, a, nodeR * (1.5 + Math.random() * 0.8), 1.1, 0.30 + Math.random() * 0.06)
       }
     }
-    if (enemy.nodeJustBroke[i]) { enemy.nodeJustBroke[i] = false; spawnNodeShatter(p.x, p.y, nodeR, th, np) }
+    if (enemy.nodeJustBroke[i]) {
+      enemy.nodeJustBroke[i] = false
+      if (i === enemy.killerNode) spawnNodeKillBurst(p.x, p.y, nodeR, enemy.radius, th, enemy.cr, enemy.cg, enemy.cb, np)
+      else spawnNodeShatter(p.x, p.y, nodeR, th, np)
+    }
     if (enemy.nodeJustRevived[i]) { enemy.nodeJustRevived[i] = false; spawnNodeRevive(p.x, p.y, nodeR, np) }
   }
   if (enemy.dying) return   // body dissolve handles the rest (armored body drawn in drawEnemy)
@@ -10086,9 +10265,13 @@ function drawWeakNodes(enemy: Enemy): void {
     const hp = enemy.nodeHp[i]!
     if (hp > 0) {
       const flashT = Math.min(1, Math.max(0, enemy.nodeFlash[i]!) / 0.2)
+      // Hit shake — quick positional jitter that pops on hit and dies fast (flashT³)
+      const shake = flashT * flashT * flashT * dr * 0.16
+      const jx = sx + (Math.random() - 0.5) * shake
+      const jy = sy + (Math.random() - 0.5) * shake
       const actualFrac = hp / enemy.nodeMaxHp
       const displayFrac = enemy.nodeDisplayHp[i]! / enemy.nodeMaxHp
-      drawNodePie(sx, sy, dr, displayFrac, actualFrac, enemy.nodeMaxHp, th, flashT, depthBri, depthA)
+      drawNodePie(jx, jy, dr, displayFrac, actualFrac, enemy.nodeMaxHp, th, flashT, depthBri, depthA)
     } else {
       // Dead node — a dull RED slug, SAME size as a live node, obviously inert (no metal sheen/glint).
       // Drawn first (above) so it stacks UNDER the live nodes.
