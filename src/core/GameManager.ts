@@ -2,7 +2,7 @@ import * as Input from '../game/InputManager.ts'
 import * as Renderer from '../render/Renderer.ts'
 import { updatePlayer, hurtPlayer, healPlayer, resetDashCDToast, RECALL_DURATION } from '../entities/Player.ts'
 import type { Player } from '../entities/Player.ts'
-import { createEnemy, updateEnemy, updateDeath, damageEnemy, healEnemy, spawnDrops, tickLeaveToastCD, resetLeaveToastCD, nodeWorldPos, nodeRadius, damageNode, healNode } from '../entities/Enemy.ts'
+import { createEnemy, updateEnemy, updateDeath, damageEnemy, healEnemy, spawnDrops, tickLeaveToastCD, resetLeaveToastCD, nodeWorldPos, nodeRadius, nodeDepth, damageNode, healNode } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { advanceGlobalTime } from './RhythmClock.ts'
 import { updatePreviewEnemy } from '../game/EnemyDesigner.ts'
@@ -229,7 +229,8 @@ function processVolatileExplosions(player: ReturnType<typeof getPlayer>, enemies
           for (let i = 0; i < enemy.nodeHp.length; i++) {
             const np = nodeWorldPos(enemy, i, tn)
             const ndx = np.x - exp.x, ndy = np.y - exp.y
-            const nr = exp.range + nodeR
+            const dr = nodeR * (0.7 + 0.3 * (nodeDepth(enemy, i, tn) + 1))   // match the rendered size
+            const nr = exp.range + dr
             if (ndx * ndx + ndy * ndy > nr * nr) continue
             if (exp.heal) {
               healNode(enemy, i, 1)
@@ -1694,7 +1695,8 @@ function applyBeatDashImpact(x: number, y: number, radius: number, damage: numbe
           if (enemy.nodeHp[i]! <= 0) continue
           const np = nodeWorldPos(enemy, i, tn)
           const ndx = np.x - x, ndy = np.y - y
-          const nr = radius + nodeR
+          const dr = nodeR * (0.7 + 0.3 * (nodeDepth(enemy, i, tn) + 1))   // match the rendered size
+          const nr = radius + dr
           if (ndx * ndx + ndy * ndy <= nr * nr) {
             damageNode(enemy, i, damage)
             enemy.nodeBeatDashHit[i] = true

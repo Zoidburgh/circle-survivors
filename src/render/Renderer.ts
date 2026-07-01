@@ -1,7 +1,7 @@
 import type { Player } from '../entities/Player.ts'
 import { getEffectiveRadius, getBodyRadius, SPEED_BOOST_DURATION } from '../entities/Player.ts'
 import type { Enemy } from '../entities/Enemy.ts'
-import { getRingOrigins, nodeWorldPos, nodeRadius, nodeDepth } from '../entities/Enemy.ts'
+import { getRingOrigins, nodeWorldPos, nodeRadius, nodeDepth, captureNodeFrame } from '../entities/Enemy.ts'
 import type { Ring } from '../entities/Ring.ts'
 import { getRingExpansion, getRingAlpha, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { ENEMY_TYPES, getEnemyType } from '../entities/EnemyTypes.ts'
@@ -203,6 +203,15 @@ export function clearHoverState(): void { lastHoveredBtn = '' }
 let bgPulseSmooth = 0    // smoothed follower for background color
 let gameTimeMs = 0       // accumulated game time in ms (pauses when game pauses)
 export function getGameTimeMs(): number { return gameTimeMs }
+
+// Advance the node clock at the START of each frame (called from GameLoop before the sim runs), so
+// hit-detection and rendering read the SAME gameTimeMs + captured beat this frame — otherwise the
+// time-derived node positions lag ~1 frame between the two and the hitbox trails the drawn node at
+// high spin. dtMs is the real frame elapsed (already ms, capped by the loop).
+export function advanceGameTime(dtMs: number): void {
+  if (getPhase() === 'playing' || getPhase() === 'designer') gameTimeMs += dtMs
+  captureNodeFrame()   // snapshot the beat clock once per frame (sim + render sample identically)
+}
 
 export function getLogicalSize(): { w: number; h: number } { return { w: width, h: height } }
 
@@ -5797,7 +5806,8 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
   perfStart('R_TOTAL')
   lastDt = dt
   frameDt = dt
-  if (getPhase() === 'playing' || getPhase() === 'designer') gameTimeMs += dt * 1000
+  // NOTE: gameTimeMs is now advanced in advanceGameTime() at frame-START (from GameLoop, before the
+  // sim), NOT here — so the hit test and this draw sample the node at the same time. Don't re-add it.
 
   // Designer zoom-out: center the camera on the arena (not the player) and scale down so
   // more of the world fits on screen. `camX/camY` math stays unchanged for downstream draws,
@@ -6636,9 +6646,9 @@ function drawVoidField(): void {
     // light as the wavefront passes their distance). Organized + coherent, not a random flash.
     const ddx = mx - acx, ddy = my - acy
     const d = Math.sqrt(ddx * ddx + ddy * ddy)   // cheaper than hypot
-    // cos peaks ~on the beat at the center; -0.14 sits it ~110ms after the felt beat (per tuning).
-    const wave = Math.max(0, Math.cos((beatT - 0.14 - (d / maxDist)) * Math.PI * 2))
-    const pulse = wave * wave * wave                       // cubed → snappy spike (was a soft squared bump)
+    // cos peaks ~on the beat at the center; -0.12 sits it ~90ms after the felt beat (per tuning).
+    const wave = Math.max(0, Math.cos((beatT - 0.12 - (d / maxDist)) * Math.PI * 2))
+    const w2 = wave * wave; const pulse = w2 * w2          // 4th power → snappier spike
     // Divide by zoom so the device size is CONSTANT at any zoom (no sub-pixel flicker zoomed out).
     const sz = (1.3 + m.depth * 0.5 + pulse * 0.55) / zoomNow
     const tw = 0.8 + 0.16 * Math.sin(tnow + m.ph) + pulse * 0.95
@@ -10197,7 +10207,7 @@ function drawWeakNodes(enemy: Enemy): void {
     for (let k = 0; k < enemy.nodeDeathStagger.length; k++) {
       if (enemy.nodeDeathStagger[k]! >= 0 && enemy.deathTimer >= enemy.nodeDeathStagger[k]!) {
         enemy.nodeDeathStagger[k] = -1
-        enemy.nodeJustBroke[k] = true
+        enemy.nodeJustBroke[k] = true   // the death SOUND is the composed scale run (playBossDeathRun), not per-node blips
       }
     }
   }

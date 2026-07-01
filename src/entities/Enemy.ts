@@ -22,7 +22,8 @@ import type { Player } from './Player.ts'
 import type { EnemyType, MovePattern, SummonPhase, ShrinePhase, RangedPattern, RangedRotationMode, TetherTopology, ClusterLayer, WeakNodePattern, WeakNodeMetal } from './EnemyTypes.ts'
 import { getEnemyType } from './EnemyTypes.ts'
 import { getAbsoluteBeats } from '../audio/PatternClock.ts'   // music-anchored beat clock (same one every rhythmic system uses)
-import { playNodeNote } from '../audio/MusicalSFX.ts'        // nodes-are-notes SFX (scale-locked, voice-capped)
+import { playNodeNote, playBossDeathRun } from '../audio/MusicalSFX.ts'   // nodes-are-notes + boss-death scale run
+import { playBossDeathBoom } from '../audio/AudioEngine.ts'  // dramatic boss-death boom on the killing blow
 import { SpatialGrid } from '../core/SpatialGrid.ts'
 import { getChillRank } from '../game/UpgradeManager.ts'
 
@@ -1308,6 +1309,15 @@ export function rollDrop(enemy: Enemy): 'xp' | 'hp' | null {
 // ── Weak-node geometry (see boss_nodes_plan.md) ───────────────────────────────
 const NODE_TAU = Math.PI * 2
 
+// The node BEAT clock, captured ONCE per frame (before the sim) so hit-detection and rendering sample
+// the exact same value — otherwise the beat component drifts a few ms between the two. Paired with the
+// gameTimeMs advance moving to frame-start (see Renderer.advanceGameTime), this makes the node's hitbox
+// land exactly where it's drawn on the same frame. Call captureNodeFrame() at the top of each frame.
+let frameBeat = 0
+export function captureNodeFrame(): void {
+  frameBeat = getAbsoluteBeats() + WEAK_NODE_BEAT_OFFSET
+}
+
 // Formation Dance — the dance steps through a sequence where EVERY OTHER step is a tight stack at
 // center and the steps between are spread formations (ring → line → star → spiral), so the nodes
 // gather to the middle then burst out into a different shape each time.
@@ -1347,7 +1357,7 @@ function nodeLocalRaw(enemy: Enemy, i: number, t: number): { x: number; y: numbe
   // nodeBeatDiv — beats per beat-event/cycle). `beatPop` is a smooth bump that fires every D beats
   // (smoothstep attack just after the event, smoothstep decay over the rest of the cycle → jerk-free,
   // continuous at the boundary). The beat-LOCKED smooth patterns cycle every D beats too.
-  const beatT = getAbsoluteBeats() + WEAK_NODE_BEAT_OFFSET   // music-locked + felt-beat sync offset
+  const beatT = frameBeat   // captured once per frame (sim + render sample identically) — see captureNodeFrame
   const D = enemy.nodeBeatDiv
   const cb = beatT % D                          // beats since the last event (0 → D)
   const ATK = Math.min(0.15, D * 0.4)           // attack window in BEATS
@@ -1549,6 +1559,8 @@ export function damageNode(enemy: Enemy, i: number, amount: number): void {
       // Staggered death cascade: the hit node already burst this frame; the rest blow outward in a
       // quick ripple spreading from it by ring distance (Renderer fires each as deathTimer passes it).
       enemy.killerNode = i   // this node's break triggered death → Renderer gives it the special burst
+      playBossDeathBoom()    // big dramatic detonation on the killing blow
+      playBossDeathRun()     // + a quick scale run up the scale as the death flourish
       const cn = enemy.nodeJustBroke.length
       for (let k = 0; k < cn; k++) {
         if (k === i) continue

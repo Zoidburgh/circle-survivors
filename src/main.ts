@@ -955,4 +955,6 @@ if (isPortalEntry) {
 }
 
 // ── Start game loop ──
-start(update, render)
+// advanceGameTime runs at frame-start (before the sim) so node hit-detection and rendering sample the
+// same time-derived positions — keeps the boss-node hitbox exactly on the drawn node at any spin.
+start(update, render, Renderer.advanceGameTime)

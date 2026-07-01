@@ -312,6 +312,56 @@ export function playKill(): void {
   osc.stop(t + 0.3)
 }
 
+// Dramatic BOSS DEATH boom — the killing blow on a weak-node boss. Four layers: a deep sub sweeping
+// down (the detonation), a lowpass-swept noise body (the blast), a power-DOWN saw (the boss's energy
+// dying), and a bright metallic crack. The chain arpeggio (playNodeNote) rings on top of this.
+export function playBossDeathBoom(): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime
+  // Deep sub — punchy detonation, sweeping down
+  const sub = c.createOscillator(); const subG = c.createGain()
+  sub.type = 'sine'
+  sub.frequency.setValueAtTime(120, t)
+  sub.frequency.exponentialRampToValueAtTime(36, t + 0.55)
+  subG.gain.setValueAtTime(0.0001, t)
+  subG.gain.linearRampToValueAtTime(1.5, t + 0.015)   // loud, dominant boom under the scale run
+  subG.gain.exponentialRampToValueAtTime(0.001, t + 0.85)
+  sub.connect(subG); subG.connect(master)
+  sub.start(t); sub.stop(t + 0.8)
+  // Explosion body — lowpass-swept noise burst
+  const dur = 0.5
+  const nb = c.createBuffer(1, Math.floor(c.sampleRate * dur), c.sampleRate)
+  const d = nb.getChannelData(0)
+  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1
+  const noise = c.createBufferSource(); noise.buffer = nb
+  const lp = c.createBiquadFilter(); lp.type = 'lowpass'
+  lp.frequency.setValueAtTime(2000, t); lp.frequency.exponentialRampToValueAtTime(280, t + 0.4)
+  const nG = c.createGain()
+  nG.gain.setValueAtTime(0.85, t); nG.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  noise.connect(lp); lp.connect(nG); nG.connect(master)
+  noise.start(t); noise.stop(t + dur)
+  // Power-down — filtered saw sweeping down (energy dying), through reverb
+  const saw = c.createOscillator(); const sawG = c.createGain(); const sawF = c.createBiquadFilter()
+  saw.type = 'sawtooth'
+  saw.frequency.setValueAtTime(440, t); saw.frequency.exponentialRampToValueAtTime(70, t + 0.6)
+  sawF.type = 'lowpass'; sawF.frequency.setValueAtTime(1600, t); sawF.frequency.exponentialRampToValueAtTime(300, t + 0.6)
+  sawG.gain.setValueAtTime(0.0001, t); sawG.gain.linearRampToValueAtTime(0.22, t + 0.03); sawG.gain.exponentialRampToValueAtTime(0.001, t + 0.66)
+  saw.connect(sawF); sawF.connect(sawG); sawG.connect(reverbInput)
+  saw.start(t); saw.stop(t + 0.68)
+  // Metallic crack — bright inharmonic hit on top (reverb tail)
+  const ratios = [1, 2.76, 5.4]
+  for (let i = 0; i < ratios.length; i++) {
+    const o = c.createOscillator(); const g = c.createGain()
+    o.type = 'sine'; o.frequency.value = 520 * ratios[i]!
+    g.gain.setValueAtTime(0.0001, t)
+    g.gain.linearRampToValueAtTime(0.14 / (i + 1), t + 0.004)
+    g.gain.exponentialRampToValueAtTime(0.0006, t + 0.35)
+    o.connect(g); g.connect(reverbInput)
+    o.start(t); o.stop(t + 0.37)
+  }
+}
+
 // Core "shield crash" synthesis — a descending dissonant shatter (ping + sub + noise + moan).
 // Shared by the player damage hit and the shield-break event so the two stay in sync. `speed`
 // scales every envelope time (smaller = quicker/snappier), `pitchMul` shifts all oscillators
@@ -711,7 +761,7 @@ export function playHeal(): void {
     o.type = 'sine'
     o.frequency.setValueAtTime(f, at)
     g.gain.setValueAtTime(0.0001, at)
-    g.gain.linearRampToValueAtTime(rVol(0.17 - i * 0.012), at + 0.012)
+    g.gain.linearRampToValueAtTime(rVol(0.46 - i * 0.03), at + 0.012)   // louder heal chime
     g.gain.exponentialRampToValueAtTime(0.001, at + 0.34)
     o.connect(g); g.connect(master)
     const rs = c.createGain(); rs.gain.value = rVol(0.14); g.connect(rs); rs.connect(reverbInput)
@@ -2376,7 +2426,7 @@ export function playCollect(): void {
   ensureContext()
   const c = ctx!
   const t = c.currentTime
-  // Two-note ascending chime
+  // Two-note ascending chime — the pickup itself (tail extended so it lingers a bit more)
   const osc1 = c.createOscillator()
   const osc2 = c.createOscillator()
   const gain = c.createGain()
@@ -2385,14 +2435,28 @@ export function playCollect(): void {
   osc2.type = 'sine'
   osc2.frequency.value = rPitch(1050)
   gain.gain.setValueAtTime(rVol(0.5), t)
-  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.22)
   osc1.connect(gain)
   osc2.connect(gain)
   gain.connect(reverbInput)
   osc1.start(t)
   osc2.start(t + 0.04)
-  osc1.stop(t + 0.08)
-  osc2.stop(t + 0.15)
+  osc1.stop(t + 0.1)
+  osc2.stop(t + 0.22)
+  // Heal twinkle tail — sparkles on CONSONANT harmonics of the chime's top note (fifth, octave, +an
+  // octave), starting DURING the chime's ring so it fuses into one satisfying "collect + heal" glow
+  // instead of sounding like a separate arpeggio. Quiet, rising, reverb.
+  const twMul = [1.5, 2.0, 3.0]
+  for (let i = 0; i < twMul.length; i++) {
+    const at = t + 0.055 + i * 0.04                 // overlaps the chime's sustain (no gap)
+    const o = c.createOscillator(); const g = c.createGain()
+    o.type = 'sine'; o.frequency.setValueAtTime(rPitch(1050 * twMul[i]!), at)
+    g.gain.setValueAtTime(0.0001, at)
+    g.gain.linearRampToValueAtTime(rVol(0.11 - i * 0.02), at + 0.008)
+    g.gain.exponentialRampToValueAtTime(0.001, at + 0.32)
+    o.connect(g); g.connect(reverbInput)
+    o.start(at); o.stop(at + 0.34)
+  }
 }
 
 // Speed-boost surge — plays the instant an overheal heart grants the boost (with the star burst).
@@ -2417,10 +2481,10 @@ export function playSpeedBoost(count = 1): void {
     o.type = last ? 'triangle' : 'sine'
     o.frequency.setValueAtTime(f, at)
     g.gain.setValueAtTime(0.0001, at)
-    g.gain.linearRampToValueAtTime(rVol((last ? 0.32 : 0.2) * (1 + lvl * 0.25)), at + 0.01)
+    g.gain.linearRampToValueAtTime(rVol((last ? 0.16 : 0.10) * (1 + lvl * 0.25)), at + 0.01)
     g.gain.exponentialRampToValueAtTime(0.001, at + (last ? 0.5 : 0.14))
     o.connect(g); g.connect(master)
-    const rs = c.createGain(); rs.gain.value = rVol(last ? 0.18 : 0.1); g.connect(rs); rs.connect(reverbInput)
+    const rs = c.createGain(); rs.gain.value = rVol(last ? 0.09 : 0.05); g.connect(rs); rs.connect(reverbInput)
     o.start(at); o.stop(at + (last ? 0.54 : 0.16))
   })
   // (2) Glitter cascade — quick high in-key sparkles for the magical fairy shimmer (ties to the
@@ -2434,7 +2498,7 @@ export function playSpeedBoost(count = 1): void {
     const o = c.createOscillator(); const g = c.createGain()
     o.type = 'sine'; o.frequency.setValueAtTime(f, at)
     g.gain.setValueAtTime(0.0001, at)
-    g.gain.linearRampToValueAtTime(rVol(0.1), at + 0.006)
+    g.gain.linearRampToValueAtTime(rVol(0.05), at + 0.006)
     g.gain.exponentialRampToValueAtTime(0.001, at + 0.18)
     o.connect(g); g.connect(reverbInput)
     o.start(at); o.stop(at + 0.2)
@@ -2446,7 +2510,7 @@ export function playSpeedBoost(count = 1): void {
   wo.frequency.exponentialRampToValueAtTime(rPitch(1150), t + 0.2)
   wlp.type = 'lowpass'; wlp.frequency.setValueAtTime(600, t); wlp.frequency.exponentialRampToValueAtTime(3000, t + 0.2)
   wg.gain.setValueAtTime(0.0001, t)
-  wg.gain.linearRampToValueAtTime(rVol(0.14), t + 0.02)
+  wg.gain.linearRampToValueAtTime(rVol(0.07), t + 0.02)
   wg.gain.exponentialRampToValueAtTime(0.001, t + 0.26)
   wo.connect(wlp); wlp.connect(wg); wg.connect(master)
   wo.start(t); wo.stop(t + 0.28)

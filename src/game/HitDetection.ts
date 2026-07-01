@@ -2,7 +2,7 @@ import { on, emit } from '../core/EventBus.ts'
 import { probe } from '../audio/TimingProbe.ts'
 import { getPlayer, getGrid, getEnemies } from '../core/GameState.ts'
 import { getEffectiveRadius, hurtPlayer, healPlayer } from '../entities/Player.ts'
-import { damageEnemy, healEnemy, getRingOrigins, spawnDrops, nodeWorldPos, nodeRadius, damageNode } from '../entities/Enemy.ts'
+import { damageEnemy, healEnemy, getRingOrigins, spawnDrops, nodeWorldPos, nodeRadius, nodeDepth, damageNode } from '../entities/Enemy.ts'
 import type { Enemy } from '../entities/Enemy.ts'
 import { getRingExpansion, ATTACK_EXPAND_TIME } from '../core/PhaseSystem.ts'
 import { distance } from '../utils/math.ts'
@@ -90,7 +90,11 @@ export function initHitDetection(): void {
             if (enemy.nodeHp[i]! <= 0) continue
             const np = nodeWorldPos(enemy, i, t)
             const nd = distance({ x: sx, y: sy }, np)
-            if (Math.abs(nd - ringRadius) < nodeR + grace) {
+            // Match the RENDERED size: nodes on 3D patterns draw depth-scaled (front bigger, back
+            // smaller), so the hit radius must use the same dr, not the flat nodeR. Plus the same grace
+            // buffer enemies get.
+            const dr = nodeR * (0.7 + 0.3 * (nodeDepth(enemy, i, t) + 1))
+            if (Math.abs(nd - ringRadius) < dr + grace) {
               const wasDying = enemy.dying
               damageNode(enemy, i, player.damage * player.modifiers.damageMult)
               hitAny = true
