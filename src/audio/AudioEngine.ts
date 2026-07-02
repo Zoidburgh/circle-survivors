@@ -1,6 +1,7 @@
 import { initSynth, playKick, playBass, playChord, playPluck } from './MusicSynth.ts'
-import { initBeatLoop, startBeatLoop, loadPreset, getCurrentPresetName, setGenerative, setBeatLoopScale } from './BeatLoop.ts'
+import { initBeatLoop, startBeatLoop, loadPreset, getCurrentPresetName, setGenerative, setBeatLoopScale, setPalette } from './BeatLoop.ts'
 import { BEAT_PRESETS } from './BeatPresets.ts'
+import { PALETTES } from './Palettes.ts'
 import { initDrone, startDrone } from './MusicDrone.ts'
 import { generateWaveMusic, pickMelodyNote, pickChordNotes, degreeToFreq } from './MusicScale.ts'
 import type { WaveMusic } from './MusicScale.ts'
@@ -229,6 +230,16 @@ export function getBeatNames(): string[] {
   return BEAT_PRESETS.map(p => p.name)
 }
 
+// ── KIT / palette (voices + pad/bass + swing), orthogonal to the beat preset ──
+let currentPaletteIndex = 0
+export function switchPalette(index: number): void {
+  ensureContext()
+  const p = PALETTES[index]
+  if (p) { currentPaletteIndex = index; setPalette(p) }
+}
+export function getPaletteIndex(): number { return currentPaletteIndex }
+export function getPaletteNames(): string[] { return PALETTES.map(p => p.name) }
+
 /** Get audio context time — single source of truth for all timing */
 export function getAudioTime(): number {
   if (!ctx) return 0
@@ -312,53 +323,157 @@ export function playKill(): void {
   osc.stop(t + 0.3)
 }
 
-// Dramatic BOSS DEATH boom — the killing blow on a weak-node boss. Four layers: a deep sub sweeping
-// down (the detonation), a lowpass-swept noise body (the blast), a power-DOWN saw (the boss's energy
-// dying), and a bright metallic crack. The chain arpeggio (playNodeNote) rings on top of this.
+// Dramatic BOSS DEATH — a loud, punchy, cinematic explosion (NOT a musical scale). A big detonation
+// (deep sub sweep + noise blast + power-down saw), then a DESCENDING cascade of punchy impacts — each
+// an instant-attack pitched thud + sub + noise-click snap, pitch dropping and volume building — that
+// lands on a huge final slam. Routed dry to master for real punch; the master compressor tames peaks.
 export function playBossDeathBoom(): void {
   ensureContext()
   const c = ctx!
   const t = c.currentTime
-  // Deep sub — punchy detonation, sweeping down
+  const makeNoise = (dur: number): AudioBuffer => {
+    const b = c.createBuffer(1, Math.max(1, Math.floor(c.sampleRate * dur)), c.sampleRate)
+    const d = b.getChannelData(0)
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1
+    return b
+  }
+
+  // ── 1. Initial detonation ── the rewarding "hit confirm" PUNCH lands right on the kill
+  // Click snap — bright transient attack (the crack of the impact) so the kill reads as a punch.
+  const snap0 = c.createBufferSource(); snap0.buffer = makeNoise(0.06)
+  const snap0hp = c.createBiquadFilter(); snap0hp.type = 'highpass'; snap0hp.frequency.value = 850
+  const snap0g = c.createGain(); snap0g.gain.setValueAtTime(1.2, t); snap0g.gain.exponentialRampToValueAtTime(0.0004, t + 0.05)
+  snap0.connect(snap0hp); snap0hp.connect(snap0g); snap0g.connect(master)
+  snap0.start(t); snap0.stop(t + 0.06)
+  // Mid crack — bright pitched attack sweeping down; makes the boom SPEAK (the satisfying, rewarding
+  // punch — without it the impact is all low-end thud you feel but don't "hear crack").
+  const crk = c.createOscillator(); const crkG = c.createGain()
+  crk.type = 'triangle'
+  crk.frequency.setValueAtTime(440, t)
+  crk.frequency.exponentialRampToValueAtTime(85, t + 0.14)
+  crkG.gain.setValueAtTime(1.5, t)                                    // instant, punchy
+  crkG.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
+  crk.connect(crkG); crkG.connect(master)
+  crk.start(t); crk.stop(t + 0.16)
+  // Deep sub — instant punch, sweeping down
   const sub = c.createOscillator(); const subG = c.createGain()
   sub.type = 'sine'
-  sub.frequency.setValueAtTime(120, t)
-  sub.frequency.exponentialRampToValueAtTime(36, t + 0.55)
-  subG.gain.setValueAtTime(0.0001, t)
-  subG.gain.linearRampToValueAtTime(1.5, t + 0.015)   // loud, dominant boom under the scale run
-  subG.gain.exponentialRampToValueAtTime(0.001, t + 0.85)
+  sub.frequency.setValueAtTime(150, t)
+  sub.frequency.exponentialRampToValueAtTime(34, t + 0.6)
+  subG.gain.setValueAtTime(1.7, t)                                    // instant punch
+  subG.gain.exponentialRampToValueAtTime(0.001, t + 0.9)
   sub.connect(subG); subG.connect(master)
-  sub.start(t); sub.stop(t + 0.8)
-  // Explosion body — lowpass-swept noise burst
-  const dur = 0.5
-  const nb = c.createBuffer(1, Math.floor(c.sampleRate * dur), c.sampleRate)
-  const d = nb.getChannelData(0)
-  for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1
-  const noise = c.createBufferSource(); noise.buffer = nb
+  sub.start(t); sub.stop(t + 0.92)
+
+  const noise = c.createBufferSource(); noise.buffer = makeNoise(0.55)
   const lp = c.createBiquadFilter(); lp.type = 'lowpass'
-  lp.frequency.setValueAtTime(2000, t); lp.frequency.exponentialRampToValueAtTime(280, t + 0.4)
-  const nG = c.createGain()
-  nG.gain.setValueAtTime(0.85, t); nG.gain.exponentialRampToValueAtTime(0.001, t + dur)
+  lp.frequency.setValueAtTime(2400, t); lp.frequency.exponentialRampToValueAtTime(240, t + 0.45)
+  const nG = c.createGain(); nG.gain.setValueAtTime(1.0, t); nG.gain.exponentialRampToValueAtTime(0.001, t + 0.55)
   noise.connect(lp); lp.connect(nG); nG.connect(master)
-  noise.start(t); noise.stop(t + dur)
-  // Power-down — filtered saw sweeping down (energy dying), through reverb
+  noise.start(t); noise.stop(t + 0.55)
+
   const saw = c.createOscillator(); const sawG = c.createGain(); const sawF = c.createBiquadFilter()
   saw.type = 'sawtooth'
-  saw.frequency.setValueAtTime(440, t); saw.frequency.exponentialRampToValueAtTime(70, t + 0.6)
-  sawF.type = 'lowpass'; sawF.frequency.setValueAtTime(1600, t); sawF.frequency.exponentialRampToValueAtTime(300, t + 0.6)
-  sawG.gain.setValueAtTime(0.0001, t); sawG.gain.linearRampToValueAtTime(0.22, t + 0.03); sawG.gain.exponentialRampToValueAtTime(0.001, t + 0.66)
+  saw.frequency.setValueAtTime(420, t); saw.frequency.exponentialRampToValueAtTime(58, t + 0.6)
+  sawF.type = 'lowpass'; sawF.frequency.setValueAtTime(1500, t); sawF.frequency.exponentialRampToValueAtTime(260, t + 0.6)
+  sawG.gain.setValueAtTime(0.0001, t); sawG.gain.linearRampToValueAtTime(0.3, t + 0.02); sawG.gain.exponentialRampToValueAtTime(0.001, t + 0.66)
   saw.connect(sawF); sawF.connect(sawG); sawG.connect(reverbInput)
   saw.start(t); saw.stop(t + 0.68)
-  // Metallic crack — bright inharmonic hit on top (reverb tail)
-  const ratios = [1, 2.76, 5.4]
-  for (let i = 0; i < ratios.length; i++) {
+
+  // ── 2. Descending punchy impact cascade → huge final slam ──
+  let f = 300
+  const hits = 5
+  for (let k = 0; k < hits; k++) {
+    const last = k === hits - 1
+    const at = t + 0.1 + k * 0.075
+    const vol = last ? 1.7 : 0.7 + k * 0.12                           // builds to the final slam
+    // Body — pitched thud with a fast downward sweep = punch
     const o = c.createOscillator(); const g = c.createGain()
-    o.type = 'sine'; o.frequency.value = 520 * ratios[i]!
-    g.gain.setValueAtTime(0.0001, t)
-    g.gain.linearRampToValueAtTime(0.14 / (i + 1), t + 0.004)
-    g.gain.exponentialRampToValueAtTime(0.0006, t + 0.35)
+    o.type = 'triangle'
+    o.frequency.setValueAtTime(f * 1.6, at)
+    o.frequency.exponentialRampToValueAtTime(f * 0.55, at + 0.1)
+    g.gain.setValueAtTime(vol * 0.55, at)                            // instant attack
+    g.gain.exponentialRampToValueAtTime(0.001, at + (last ? 0.7 : 0.2))
+    o.connect(g); g.connect(master)
+    o.start(at); o.stop(at + (last ? 0.72 : 0.22))
+    // Sub thud
+    const s2 = c.createOscillator(); const sg2 = c.createGain()
+    s2.type = 'sine'
+    s2.frequency.setValueAtTime(f * 0.8, at)
+    s2.frequency.exponentialRampToValueAtTime(f * 0.4, at + 0.12)
+    sg2.gain.setValueAtTime(vol * 0.6, at)
+    sg2.gain.exponentialRampToValueAtTime(0.001, at + (last ? 0.8 : 0.24))
+    s2.connect(sg2); sg2.connect(master)
+    s2.start(at); s2.stop(at + (last ? 0.82 : 0.26))
+    // Click snap — the punch transient
+    const cn = c.createBufferSource(); cn.buffer = makeNoise(0.05)
+    const chp = c.createBiquadFilter(); chp.type = 'highpass'; chp.frequency.value = 1000
+    const cg = c.createGain(); cg.gain.setValueAtTime(vol * 0.4, at); cg.gain.exponentialRampToValueAtTime(0.0004, at + 0.03)
+    cn.connect(chp); chp.connect(cg); cg.connect(master)
+    cn.start(at); cn.stop(at + 0.05)
+    // Reverb throw on the final slam for a big cinematic tail
+    if (last) { const rs = c.createGain(); rs.gain.value = 0.45; g.connect(rs); sg2.connect(rs); rs.connect(reverbInput) }
+    f *= 0.8                                                          // descending collapse
+  }
+}
+
+// Node DESTRUCTION boom — layered UNDER the metallic break note so a single node shattering has real
+// body/weight to match the visual shatter burst, not just a ding. Short punchy sub thump + a lowpassed
+// noise crack. delaySec matches the note's stagger so AOE breaks ring out together on the boom's decay.
+export function playNodeBreak(delaySec = 0): void {
+  ensureContext()
+  const c = ctx!
+  const t = c.currentTime + delaySec
+  // ── Deep boom — the weight (sub + growl harmonics) ──
+  const sub = c.createOscillator(); const subG = c.createGain()
+  sub.type = 'sine'
+  sub.frequency.setValueAtTime(150, t)
+  sub.frequency.exponentialRampToValueAtTime(26, t + 0.2)
+  subG.gain.setValueAtTime(rVol(3.0), t)                             // instant punch, big boom
+  subG.gain.exponentialRampToValueAtTime(0.001, t + 0.46)
+  sub.connect(subG); subG.connect(master)
+  sub.start(t); sub.stop(t + 0.48)
+  const grw = c.createOscillator(); const grwG = c.createGain(); const grwLp = c.createBiquadFilter()
+  grw.type = 'sawtooth'
+  grw.frequency.setValueAtTime(115, t)
+  grw.frequency.exponentialRampToValueAtTime(32, t + 0.18)
+  grwLp.type = 'lowpass'; grwLp.frequency.setValueAtTime(620, t); grwLp.frequency.exponentialRampToValueAtTime(260, t + 0.18)
+  grwG.gain.setValueAtTime(rVol(2.0), t)
+  grwG.gain.exponentialRampToValueAtTime(0.001, t + 0.28)
+  grw.connect(grwLp); grwLp.connect(grwG); grwG.connect(master)
+  grw.start(t); grw.stop(t + 0.3)
+  const rs = c.createGain(); rs.gain.value = 0.5; grwG.connect(rs); rs.connect(reverbInput)   // cinematic tail
+
+  // ── Sharp impact crack — the SNAP that makes it hit (bright noise + a pitched down-sweep) ──
+  const cbuf = c.createBuffer(1, Math.floor(c.sampleRate * 0.06), c.sampleRate)
+  const cd = cbuf.getChannelData(0); for (let i = 0; i < cd.length; i++) cd[i] = Math.random() * 2 - 1
+  const crackN = c.createBufferSource(); crackN.buffer = cbuf
+  const chp = c.createBiquadFilter(); chp.type = 'highpass'; chp.frequency.value = 900
+  const cnG = c.createGain(); cnG.gain.setValueAtTime(rVol(1.3), t); cnG.gain.exponentialRampToValueAtTime(0.0004, t + 0.05)
+  crackN.connect(chp); chp.connect(cnG); cnG.connect(master)
+  crackN.start(t); crackN.stop(t + 0.06)
+  const crk = c.createOscillator(); const crkG = c.createGain()
+  crk.type = 'triangle'
+  crk.frequency.setValueAtTime(360, t)
+  crk.frequency.exponentialRampToValueAtTime(58, t + 0.13)
+  crkG.gain.setValueAtTime(rVol(1.5), t)
+  crkG.gain.exponentialRampToValueAtTime(0.001, t + 0.14)
+  crk.connect(crkG); crkG.connect(master)
+  crk.start(t); crk.stop(t + 0.15)
+
+  // ── Metallic SHATTER debris — bright INHARMONIC pings scattering into the reverb (the drama: the
+  // node exploding into pieces, matching the shatter burst — dissonant ratios = clang, not a chord). ──
+  const ratios = [1, 1.83, 2.61, 3.74, 5.2]
+  for (let k = 0; k < ratios.length; k++) {
+    const o = c.createOscillator(); const g = c.createGain()
+    o.type = 'sine'
+    o.frequency.value = 440 * ratios[k]! * (0.98 + Math.random() * 0.04)
+    const st = t + Math.random() * 0.045                             // scatter timing
+    g.gain.setValueAtTime(0.0001, st)
+    g.gain.linearRampToValueAtTime(rVol(0.55 / (1 + k * 0.4)), st + 0.004)
+    g.gain.exponentialRampToValueAtTime(0.0005, st + 0.4 + Math.random() * 0.2)
     o.connect(g); g.connect(reverbInput)
-    o.start(t); o.stop(t + 0.37)
+    o.start(st); o.stop(st + 0.66)
   }
 }
 
@@ -619,6 +734,30 @@ export function playVolatileExplosion(buildupSec = 1.0): void {
   boomGain.gain.exponentialRampToValueAtTime(0.001, popTime + 0.1)
   boomNoise.connect(boomFilter); boomFilter.connect(boomGain); boomGain.connect(master)
   boomNoise.start(popTime); boomNoise.stop(popTime + 0.1)
+
+  // DETONATION punch — the same chest-hitting weight as the boss-death boom, layered UNDER the in-key
+  // boom on the final impact: a fixed deep sub sweep (below the tuned layers) + a high-passed click
+  // snap for the punch attack. Instant attack = punchy. Modest gain since volatiles fire often — the
+  // master compressor + voice cap keep simultaneous blasts from blowing the budget.
+  const det = c.createOscillator(); const detG = c.createGain()
+  det.type = 'sine'
+  det.frequency.setValueAtTime(140, popTime)
+  det.frequency.exponentialRampToValueAtTime(36, popTime + 0.45)
+  detG.gain.setValueAtTime(rVol(1.6), popTime)                  // instant punch
+  detG.gain.exponentialRampToValueAtTime(0.001, popTime + 0.6)
+  det.connect(detG); detG.connect(master)
+  det.start(popTime); det.stop(popTime + 0.62)
+
+  const snapBuf = c.createBuffer(1, Math.floor(c.sampleRate * 0.05), c.sampleRate)
+  const snapData = snapBuf.getChannelData(0)
+  for (let i = 0; i < snapData.length; i++) snapData[i] = Math.random() * 2 - 1
+  const snap = c.createBufferSource(); snap.buffer = snapBuf
+  const snapHp = c.createBiquadFilter(); snapHp.type = 'highpass'; snapHp.frequency.value = 1100
+  const snapG = c.createGain()
+  snapG.gain.setValueAtTime(rVol(0.7), popTime)
+  snapG.gain.exponentialRampToValueAtTime(0.0004, popTime + 0.03)
+  snap.connect(snapHp); snapHp.connect(snapG); snapG.connect(master)
+  snap.start(popTime); snap.stop(popTime + 0.05)
 }
 
 // Heal-mode explosion — the NOURISH counterpart to playVolatileExplosion. Same buildup→resolve

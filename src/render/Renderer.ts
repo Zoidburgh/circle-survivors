@@ -6016,13 +6016,35 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       if (extraPast >= 0 && extraPast < peakWindow) anyPeak = true
     }
 
-    if (player.dashTimer >= 0 && anyPeak) {
+    // A preserved back-trail (a beat-dash reset the live path mid-expansion) is used for the VISUAL
+    // smear too, so it draws BEHIND you and matches the hit — even if that dash has already ended.
+    const smearSnap = player.pendingSmearPath
+    const useSmearSnap = !!smearSnap && smearSnap.length > 1
+    if ((player.dashTimer >= 0 || useSmearSnap) && anyPeak) {
       dashSweepIntensity = 1
       dashSweepFlash = 1   // pop a hot-white flash at the impact frame
       dashSweepRadius = getEffectiveRadius(player) * 1.0  // full radius at peak
-      const capStart = Math.floor(player.dashPath.length * 0.7)
-      dashSweepPath = player.dashPath.slice(capStart).map(p => ({ x: p.x, y: p.y }))
-      dashSweepPath.push({ x: player.x, y: player.y })
+      const raw: { x: number; y: number }[] = []
+      if (useSmearSnap) {
+        // Chain: last 30% of the back-trail (dash #1) + all of the live path (dash #2) + current pos,
+        // so the drawn streak runs flush from behind you into the ring — matches the hit sweep.
+        const capStart = Math.floor(smearSnap!.length * 0.7)
+        for (let i = capStart; i < smearSnap!.length; i++) raw.push({ x: smearSnap![i]!.x, y: smearSnap![i]!.y })
+        for (const p of player.dashPath) raw.push({ x: p.x, y: p.y })
+      } else {
+        const capStart = Math.floor(player.dashPath.length * 0.7)
+        for (let i = capStart; i < player.dashPath.length; i++) raw.push({ x: player.dashPath[i]!.x, y: player.dashPath[i]!.y })
+      }
+      raw.push({ x: player.x, y: player.y })
+      // Drop near-duplicate consecutive points (the dash1/dash2 join seam + a front dup) so the fade
+      // gradient stays smooth; snap the final kept point to the exact front (the ring position).
+      dashSweepPath = []
+      for (let i = 0; i < raw.length; i++) {
+        const p = raw[i]!
+        const last = dashSweepPath[dashSweepPath.length - 1]
+        if (!last || (p.x - last.x) ** 2 + (p.y - last.y) ** 2 > 9) dashSweepPath.push(p)
+        else if (i === raw.length - 1) { last.x = p.x; last.y = p.y }
+      }
     } else {
       // Frame-rate-INDEPENDENT fade: 0.88 per 1/60s of real time, not per rendered frame. A raw
       // per-frame `*= 0.88` decays half as fast at 30fps as at 60fps, so the smear lingers much
@@ -6053,15 +6075,26 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
       }
     }
 
+    // NOTE: the smear is FROZEN at the peak (its front = player pos at the peak = where the ring freezes,
+    // ringPeakX/Y below). Do NOT push the live player onto it post-peak — that runs the smear ahead of
+    // the frozen ring. Both stay put at the peak position → flush.
     if (dashSweepIntensity > 0.01 && dashSweepPath.length > 1) {
       const fade = dashSweepIntensity
       const grace = 8
+      // Distance-based fade gradient (not index-based) so brightness is spatially even regardless of how
+      // densely each segment is sampled — otherwise the chain smear's uneven point density reads as lumpy.
+      const cum: number[] = [0]
+      for (let s = 1; s < dashSweepPath.length; s++) {
+        const a = dashSweepPath[s - 1]!, b = dashSweepPath[s]!
+        cum[s] = cum[s - 1]! + Math.hypot(b.x - a.x, b.y - a.y)
+      }
+      const totalLen = cum[cum.length - 1]! || 1
       // Draw along curved path — filled zone with bright edges
       for (let s = 0; s < dashSweepPath.length; s++) {
         const pt = dashSweepPath[s]!
         const sx = pt.x - camX
         const sy = pt.y - camY
-        const posT = s / dashSweepPath.length  // 0 = oldest, 1 = newest
+        const posT = cum[s]! / totalLen  // 0 = oldest (back), 1 = newest (front), by distance
         // Bright gold-white fill that fades along the trail
         ctx.beginPath()
         ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
@@ -6075,66 +6108,50 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
         ctx.lineWidth = grace
         ctx.stroke()
       }
-      // Crisp edge rings — gold outer, white inner
-      for (const edgeR of [dashSweepRadius + grace, Math.max(0, dashSweepRadius - grace)]) {
-        ctx.beginPath()
-        for (const pt of dashSweepPath) {
-          const sx = pt.x - camX
-          const sy = pt.y - camY
-          ctx.moveTo(sx + edgeR, sy)
-          ctx.arc(sx, sy, edgeR, 0, Math.PI * 2)
-        }
-        ctx.strokeStyle = `rgba(255, 225, 90, ${1.0 * fade})`
-        ctx.lineWidth = 2
-        ctx.stroke()
-      }
-      // Red danger fill — every position, drawn on top
+      // Crisp OUTLINE rings (gold edges, red edges, white center) taper HARD toward the back (posT^3)
+      // so only the FRONT reads as a ring and the interior is just the soft filled trail. Otherwise
+      // every sampled point drew an equally-bright ring, and a fast/long (Slipstream / double-dash)
+      // smear looked like a CHAIN of separate rings. The wide RED danger BAND keeps the soft gradient
+      // (it's a fill, not a ring). Crisp outlines are skipped once they've faded out (saves strokes).
       for (let s = 0; s < dashSweepPath.length; s++) {
         const pt = dashSweepPath[s]!
         const sx = pt.x - camX
         const sy = pt.y - camY
-        // Red filled band across the sweep zone
+        const posT = cum[s]! / totalLen
+        // Red danger band — wide soft fill along the whole trail (fades toward the back like the gold)
         ctx.beginPath()
         ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 28, 28, ${0.5 * fade})`
+        ctx.strokeStyle = `rgba(255, 28, 28, ${0.5 * fade * (0.3 + posT * 0.7)})`
         ctx.lineWidth = grace * 1.6
         ctx.stroke()
-        // Bright red edges
-        ctx.beginPath()
-        ctx.arc(sx, sy, dashSweepRadius + grace, 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 50, 50, ${0.85 * fade})`
-        ctx.lineWidth = 2
-        ctx.stroke()
-        ctx.beginPath()
-        ctx.arc(sx, sy, Math.max(0, dashSweepRadius - grace), 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 50, 50, ${0.85 * fade})`
-        ctx.lineWidth = 2
-        ctx.stroke()
-      }
-      // Center ring — bright white
-      ctx.beginPath()
-      for (const pt of dashSweepPath) {
-        const sx = pt.x - camX
-        const sy = pt.y - camY
-        ctx.moveTo(sx + dashSweepRadius, sy)
-        ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
-      }
-      ctx.strokeStyle = `rgba(255, 255, 255, ${0.72 * fade})`
-      ctx.lineWidth = 2
-      ctx.stroke()
-
-      // Impact flash — a fat hot-white ring over every smear position for the first ~2-3 frames,
-      // drawn LAST so it blows out the color and sells the moment of impact.
-      if (dashSweepFlash > 0.02) {
-        ctx.beginPath()
-        for (const pt of dashSweepPath) {
-          const sx = pt.x - camX, sy = pt.y - camY
-          ctx.moveTo(sx + dashSweepRadius, sy)
-          ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
+        const crisp = fade * posT * posT * posT   // front-weighted → interior ring outlines vanish
+        if (crisp > 0.02) {
+          for (const edgeR of [dashSweepRadius + grace, Math.max(0, dashSweepRadius - grace)]) {
+            ctx.beginPath(); ctx.arc(sx, sy, edgeR, 0, Math.PI * 2)
+            ctx.strokeStyle = `rgba(255, 225, 90, ${crisp})`; ctx.lineWidth = 2; ctx.stroke()          // gold edge
+            ctx.beginPath(); ctx.arc(sx, sy, edgeR, 0, Math.PI * 2)
+            ctx.strokeStyle = `rgba(255, 50, 50, ${0.85 * crisp})`; ctx.lineWidth = 2; ctx.stroke()    // red edge
+          }
+          ctx.beginPath(); ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
+          ctx.strokeStyle = `rgba(255, 255, 255, ${0.72 * crisp})`; ctx.lineWidth = 2; ctx.stroke()    // white center
         }
-        ctx.strokeStyle = `rgba(255, 190, 175, ${0.95 * dashSweepFlash})`   // hot white tinted red
-        ctx.lineWidth = grace * 1.6
-        ctx.stroke()
+      }
+
+      // Impact flash — front-weighted (posT^2) so it flashes at the leading ring, not as a chain along
+      // the whole smear. Short-lived (~2-3 frames).
+      if (dashSweepFlash > 0.02) {
+        for (let s = 0; s < dashSweepPath.length; s++) {
+          const pt = dashSweepPath[s]!
+          const sx = pt.x - camX, sy = pt.y - camY
+          const posT = cum[s]! / totalLen
+          const fl = 0.95 * dashSweepFlash * posT * posT
+          if (fl < 0.02) continue
+          ctx.beginPath()
+          ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
+          ctx.strokeStyle = `rgba(255, 190, 175, ${fl})`   // hot white tinted red
+          ctx.lineWidth = grace * 1.6
+          ctx.stroke()
+        }
       }
     }
   }

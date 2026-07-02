@@ -6,6 +6,7 @@
 export interface BeatPreset {
   name: string
   bpm: number
+  loopSteps?: number   // master loop length (default 16). Set to 32 for a 4-bar evolving phrase.
   kick:   (0|1)[]
   snare:  (0|1)[]
   hihat:  (0|1)[]
@@ -156,5 +157,37 @@ export const BEAT_PRESETS: BeatPreset[] = [
     melody:         [1,0,0,0, 0,1,0,1, 0,0,1,0, 0,0,0,1],  // whiny synth lead
     bassNotes:      [0,0,0,3, 0,0,0,0, 5,5,5,5, 5,5,3,3],
     melodyNotes:    [7,0,0,0, 0,5,0,3, 0,0,5,0, 0,0,0,7],
+  },
+  {
+    // THE HOOK — a MELODY-led track (vs the drum-led presets). A rising pentatonic riff that climbs to
+    // the octave and resolves back to the root, over a root-fifth bass + backbeat. The drums support
+    // the tune. The riff re-voices per kit, so the same hook becomes gangsa / vibraphone / chip-lead / etc.
+    name: 'The Hook',
+    bpm: 120,
+    //               1 e + a  2 e + a  3 e + a  4 e + a
+    kick:           [1,0,0,0, 1,0,0,0, 1,0,0,1, 1,0,0,0],  // steady, danceable
+    snare:          [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0],  // backbeat
+    hihat:          [1,0,1,1, 1,0,1,0, 1,0,1,1, 1,0,1,0],  // light groove
+    bass:           [1,0,0,0, 1,0,1,0, 1,0,0,0, 1,0,1,0],  // root + fifth pulse
+    melody:         [1,0,1,1, 0,1,0,0, 1,0,1,1, 0,1,0,1],  // the riff (syncopated)
+    bassNotes:      [0,0,0,0, 0,0,3,0, 0,0,0,0, 0,0,3,0],  // root, root, fifth …
+    melodyNotes:    [0,0,2,3, 0,2,0,0, 3,0,4,5, 0,2,0,0],  // 0→4th→5th → climbs to the octave(5), resolves to root
+  },
+  {
+    // UNISON RIFF — bass + melody play the SAME riff an OCTAVE apart (the boss-theme / Seven-Nation-Army
+    // move). A 4-bar (32-step) evolving phrase so it doesn't loop every bar: phrase A is a root-pedal
+    // groove that descends to resolve; phrase B climbs higher (up to the octave) before resolving. Drums
+    // stay 16 (steady groove) under the 32-step riff.
+    name: 'Unison Riff',
+    bpm: 120,
+    loopSteps: 32,
+    kick:   [1,0,0,0, 0,0,1,0, 1,0,0,0, 0,0,1,0],  // driving rock groove (repeats each bar)
+    snare:  [0,0,0,0, 1,0,0,0, 0,0,0,0, 1,0,0,0],  // backbeat
+    hihat:  [1,0,1,0, 1,0,1,0, 1,0,1,0, 1,0,1,0],  // steady eighths
+    //       ── phrase A (root-pedal, resolves down) ──   ── phrase B (climbs to the octave) ──
+    bass:   [1,0,1,1,0,1,0,0, 1,0,1,1,0,1,0,0,  1,0,1,1,0,1,0,0, 1,0,1,1,0,1,0,1],
+    melody: [1,0,1,1,0,1,0,0, 1,0,1,1,0,1,0,0,  1,0,1,1,0,1,0,0, 1,0,1,1,0,1,0,1],
+    bassNotes:   [0,0,0,1,0,0,0,0, 3,0,2,1,0,0,0,0,  0,0,0,1,0,3,0,0, 5,0,4,3,0,2,0,0],
+    melodyNotes: [0,0,0,1,0,0,0,0, 3,0,2,1,0,0,0,0,  0,0,0,1,0,3,0,0, 5,0,4,3,0,2,0,0],
   },
 ]

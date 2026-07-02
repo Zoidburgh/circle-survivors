@@ -23,6 +23,7 @@ import {
   PLAYER_BASE_DAMAGE,
   HP_DRAIN_SPEED,
   HIT_FLASH_DURATION,
+  BEAT_DASH_RETRIGGER_CD,
   SHIELD_MAX_CHARGES,
   SHIELD_RECHARGE_TIME,
   SHIELD_BREAK_FLASH,
@@ -118,6 +119,10 @@ export interface Player {
   dashStartX: number  // position when dash began
   dashStartY: number
   dashPath: { x: number; y: number }[]  // recorded positions along curved dash
+  // Preserved dash trail for a PENDING ring peak. When a new dash starts (e.g. a beat-dash) while the
+  // ring is still expanding, the outgoing trail is frozen here so the peak's back-smear survives the
+  // dashPath reset instead of collapsing to a tiny front smear. Consumed at the peak. See HitDetection.
+  pendingSmearPath: { x: number; y: number }[] | null
   hitRadius: number
   xp: number
   speed: number
@@ -162,6 +167,7 @@ export interface Player {
   // would re-check on-beat at fire time and could miss the window the player actually hit.
   dashBufferTimer: number
   dashBufferOnBeat: boolean
+  beatDashCdTimer: number  // retrigger cooldown — blocks a 2nd beat-dash AOE within one beat window
 }
 export const CHARGE_DURATION = 3
 export const TRAILBLAZE_SEGMENT_LEN = 22   // px between segments — smaller = smoother curve, more walls
@@ -202,6 +208,7 @@ export function createPlayer(x: number, y: number): Player {
     dashStartX: ARENA_W / 2,
     dashStartY: ARENA_H / 2,
     dashPath: [],
+    pendingSmearPath: null,
     hitRadius: PLAYER_RADIUS,
     xp: 0,
     speed: PLAYER_SPEED,
@@ -229,6 +236,7 @@ export function createPlayer(x: number, y: number): Player {
     drawLastY: 0,
     dashBufferTimer: 0,
     dashBufferOnBeat: false,
+    beatDashCdTimer: 0,
   }
 }
 
@@ -258,6 +266,7 @@ export function resetPlayer(player: Player): void {
   player.drawLastX = 0
   player.drawLastY = 0
   player.dashBufferTimer = 0
+  player.beatDashCdTimer = 0
   player.dashBufferOnBeat = false
   clearPlayerWalls()
   player.anchorActive = false
@@ -271,6 +280,7 @@ export function resetPlayer(player: Player): void {
   player.dashStartX = ARENA_W / 2
   player.dashStartY = ARENA_H / 2
   player.dashPath = []
+  player.pendingSmearPath = null
   player.xp = 0
   player.extraRingTimers = [-1, -1, -1, -1]
   player.extraRingCount = 0
@@ -307,8 +317,8 @@ const OVERHEAL_WINDOW = 0.1   // seconds
 // 0 over 2s. Each overheal heart collected within the active window adds to a count (at-once OR
 // chained): 1 → +100%, 2 → +150%, 3+ → +200% (max). The count resets when the boost fully decays.
 export const SPEED_BOOST_DURATION = 2.0   // seconds
-export const SPEED_BOOST_BASE = 1.0       // +100% for the first overheal
-export const SPEED_BOOST_PER_EXTRA = 0.5  // +50% per extra overheal (at once or chained)
+export const SPEED_BOOST_BASE = 0.9        // +90% for the first overheal
+export const SPEED_BOOST_PER_EXTRA = 0.25  // +25% per extra overheal → tiers +90 / +115 / +140%
 export const SPEED_BOOST_MAX_COUNT = 3    // cap → max +200%
 
 export function hurtPlayer(player: Player, amount: number): boolean {
@@ -711,10 +721,12 @@ export function updatePlayer(player: Player, dt: number): void {
     }
     if (player.attackTimer > ATTACK_TOTAL_TIME) {
       player.attackTimer = -1
+      player.pendingSmearPath = null   // safety: a preserved trail never outlives its ring (normally consumed at the peak)
     }
   }
   // Always tick mainRingPeakAge — independent of ring life so late grace can extend past linger death
   player.mainRingPeakAge += dt
+  if (player.beatDashCdTimer > 0) player.beatDashCdTimer -= dt   // beat-dash AOE retrigger cooldown
 
   // Extra ring attacks — separate from base, added by upgrades
   for (let i = 0; i < player.extraRingCount; i++) {
@@ -768,6 +780,11 @@ export function updatePlayer(player: Player, dt: number): void {
   // press itself was on-beat.
   const fireDash = (readySlot: number, onBeatDash: boolean): void => {
 
+    // Beat-dash AOE fires only if on-beat AND the retrigger cooldown is clear — so two dashes in one
+    // beat's on-beat window (an early + a late press) can't stack two blasts. The dash itself still
+    // happens; the second just doesn't detonate. First on-beat press in the window wins.
+    const doBeatDash = onBeatDash && player.beatDashCdTimer <= 0
+
     // Slipstream chain boost — read BEFORE we overwrite dashTimer below. A new dash
     // initiated while the previous one is still active "drafts" off it for +100% distance.
     const isChainingDash = player.dashTimer >= 0
@@ -781,8 +798,8 @@ export function updatePlayer(player: Player, dt: number): void {
       player.drawLastY = player.y
     }
 
-    // Quiet Storm — only consumed on BEAT DASH.
-    if (player.chargeReady && onBeatDash) {
+    // Quiet Storm — only consumed on a BEAT DASH that actually detonates.
+    if (player.chargeReady && doBeatDash) {
       player.dashChainBoost *= 2.0
       player.chargedDashActive = true
       player.chargeReady = false
@@ -794,6 +811,15 @@ export function updatePlayer(player: Player, dt: number): void {
 
     player.dashDirX = Math.cos(player.facingAngle)
     player.dashDirY = Math.sin(player.facingAngle)
+    // If a ring peak is still PENDING (ring expanding, not yet peaked) AND the outgoing trail is FRESH
+    // (the interrupted dash is active or ended within ~150ms — dashTimer > -0.15), preserve it so the
+    // peak's smear fires behind you instead of collapsing to a tiny front smear when the reset below
+    // wipes the path. The freshness gate is critical: without it a LONE dash on a later beat would
+    // snapshot the STALE trail still sitting in dashPath from a past chain, making the next smear fire
+    // at an old location. A stale dash sits at dashTimer ≈ -1. Reference-freeze (reset gives a new array).
+    if (player.dashTimer > -0.15 && player.attackTimer >= 0 && player.attackTimer < ATTACK_EXPAND_TIME && player.dashPath.length > 1) {
+      player.pendingSmearPath = player.dashPath
+    }
     player.dashPath = [{ x: player.x, y: player.y }]
     player.dashStartX = player.x
     player.dashStartY = player.y
@@ -801,7 +827,10 @@ export function updatePlayer(player: Player, dt: number): void {
     player.dashSlots[readySlot] = player.dashChargeTime * player.modifiers.dashChargeMult
     playDash()
 
-    if (onBeatDash) emit('player:beatDash', player)
+    if (doBeatDash) {
+      player.beatDashCdTimer = BEAT_DASH_RETRIGGER_CD   // start the retrigger lock so no 2nd blast this beat
+      emit('player:beatDash', player)
+    }
   }
 
   // Recall (Echo Step) clears any pending buffered dash — the warp is locked input and we

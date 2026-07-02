@@ -36,6 +36,9 @@ export const HP_DRAIN_SPEED = 8
 // Beat-dash AOE radius = ring.radius × this × beatBlastMult × (Quiet Storm 2×). Shared by the sim
 // (GameManager) and the Quiet Storm charge telegraph (Renderer) so they can't drift apart.
 export const BEAT_DASH_RADIUS_MULT = 0.77
+// Minimum time between beat-dash AOE triggers. Blocks stacking two blasts from two dashes in one
+// beat's on-beat window (an early + a late press). Longer than the ~0.28s window, shorter than a beat.
+export const BEAT_DASH_RETRIGGER_CD = BEAT_SEC * 0.55
 export const PARTICLE_CAP = 1800
 // Adaptive particle LOD — burst sizes scale DOWN as the live particle count climbs, so combat
 // pile-ups (many deaths/detonations at once) stop flooding the pool and dropping frames. Full

@@ -229,10 +229,10 @@ const NODE_PARTIALS_BREAK = [1, 2.76, 5.18, 8.93]
  *  index, so breaking a formation walks an ascending run / spreads into an arpeggio when a sweep hits
  *  several at once. Break rings longer/brighter + an octave sparkle. Scale-locked, voice-capped,
  *  per-pitch deduped (a swarm stays a chord, not mud). */
-export function playNodeNote(degree: number, broke: boolean, whenArg?: number): void {
+export function playNodeNote(degree: number, broke: boolean, delaySec = 0): void {
   if (!ctx || !dest || !music) return
   const c = ctx
-  const when = whenArg ?? c.currentTime   // schedule ahead (used by the boss-death scale run)
+  const when = c.currentTime + delaySec   // delay/stagger — e.g. explosion hits ring out ON the boom's decay instead of buried under its transient
   const f0 = degreeToFreq(music, degree, REGISTER_OCT.high)
 
   // Per-pitch dedupe — many simultaneous same-degree hits collapse to one strike.
@@ -287,18 +287,6 @@ export function playNodeNote(degree: number, broke: boolean, whenArg?: number): 
     sg.gain.exponentialRampToValueAtTime(0.0005, when + 0.5)
     s.connect(sg); sg.connect(dest!)
     s.start(when + 0.012); s.stop(when + 0.54)
-  }
-}
-
-/** Boss death — a quick, satisfying RUN DOWN the scale (metallic bells), the composed death flourish
- *  played once on the killing blow (vs each node blipping its own note). ~0.4s falling collapse that
- *  resolves bright on the low root. */
-export function playBossDeathRun(): void {
-  if (!ctx || !music) return
-  const t0 = ctx.currentTime
-  const n = 9   // ~1.7 octaves of the pentatonic, DESCENDING (high → low)
-  for (let i = 0; i < n; i++) {
-    playNodeNote(n - 1 - i, i === n - 1, t0 + i * 0.045)   // final note = low root, rings brighter (resolve)
   }
 }
 

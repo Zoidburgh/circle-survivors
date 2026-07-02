@@ -22,8 +22,8 @@ import type { Player } from './Player.ts'
 import type { EnemyType, MovePattern, SummonPhase, ShrinePhase, RangedPattern, RangedRotationMode, TetherTopology, ClusterLayer, WeakNodePattern, WeakNodeMetal } from './EnemyTypes.ts'
 import { getEnemyType } from './EnemyTypes.ts'
 import { getAbsoluteBeats } from '../audio/PatternClock.ts'   // music-anchored beat clock (same one every rhythmic system uses)
-import { playNodeNote, playBossDeathRun } from '../audio/MusicalSFX.ts'   // nodes-are-notes + boss-death scale run
-import { playBossDeathBoom } from '../audio/AudioEngine.ts'  // dramatic boss-death boom on the killing blow
+import { playNodeNote } from '../audio/MusicalSFX.ts'   // nodes-are-notes SFX (scale-locked, voice-capped)
+import { playBossDeathBoom, playNodeBreak } from '../audio/AudioEngine.ts'  // boss-death boom + per-node destruction boom
 import { SpatialGrid } from '../core/SpatialGrid.ts'
 import { getChillRank } from '../game/UpgradeManager.ts'
 
@@ -1540,7 +1540,7 @@ export function nodeRadius(enemy: Enemy): number {
 
 /** Damage weak-node `i`. Breaks it at 0 HP; when ALL nodes break the enemy dies via the normal path
  * (drops/score/audio fire). The body itself is invulnerable (see damageEnemy guard below). */
-export function damageNode(enemy: Enemy, i: number, amount: number): void {
+export function damageNode(enemy: Enemy, i: number, amount: number, soundDelay = 0): void {
   const hp = enemy.nodeHp[i]
   if (enemy.dying || hp === undefined || hp <= 0) return
   if (!isRunTimerActive() && !isRunComplete() && getPhase() === 'playing') startRunTimer()
@@ -1548,19 +1548,21 @@ export function damageNode(enemy: Enemy, i: number, amount: number): void {
   enemy.nodeHp[i] = Math.max(0, next)
   enemy.nodeFlash[i] = HIT_FLASH_DURATION
   enemy.hitFlash = HIT_FLASH_DURATION   // body flicker so the hit still reads on the silhouette
-  playNodeNote(i, next <= 0)            // nodes are notes — degree = index → ascending run; break rings brighter
+  // soundDelay lets AOE hits (explosions) stagger + delay their notes onto the boom's decay so they
+  // aren't all fired at once and masked by the detonation. Ring hits pass 0 (immediate).
+  playNodeNote(i, next <= 0, soundDelay)   // nodes are notes — degree = index; break rings brighter
   if (next > 0) enemy.nodeJustHit[i] = true   // surviving hit → blood burst (break has the shatter instead)
   if (next <= 0) {
     enemy.nodesAlive--
     enemy.nodeFlash[i] = 0.35           // stronger break pop
     enemy.nodeJustBroke[i] = true       // Renderer spawns the shatter burst next frame
+    if (enemy.nodesAlive > 0) playNodeBreak(soundDelay)   // destruction boom under the break note (final break gets the big death boom below)
     if (enemy.nodesAlive <= 0) {
       // All nodes broken — mirror damageEnemy's death so loot/economy behave identically.
       // Staggered death cascade: the hit node already burst this frame; the rest blow outward in a
       // quick ripple spreading from it by ring distance (Renderer fires each as deathTimer passes it).
       enemy.killerNode = i   // this node's break triggered death → Renderer gives it the special burst
-      playBossDeathBoom()    // big dramatic detonation on the killing blow
-      playBossDeathRun()     // + a quick scale run up the scale as the death flourish
+      playBossDeathBoom()    // big punchy cinematic explosion on the killing blow
       const cn = enemy.nodeJustBroke.length
       for (let k = 0; k < cn; k++) {
         if (k === i) continue

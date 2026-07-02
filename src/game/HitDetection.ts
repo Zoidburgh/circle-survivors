@@ -41,19 +41,33 @@ export function initHitDetection(): void {
     // (progress 0.5 ⇒ dashTimer ≤ dashDuration/2). A tap-dash that catches the beat at its start
     // is too short to earn the big sound. Visual sweep is left ungated.
     if (isDashing && player.dashTimer <= player.dashDuration * 0.5) playDashSweep()
-    // During dash, use full ring radius to match visual sweep band
-    const ringRadius = isDashing
+    // A preserved back-trail (a beat-dash reset the live path mid-expansion) takes priority so the
+    // peak smears BEHIND you — full ring radius, and it's a complete trail, so no dashing gate.
+    const snap = player.pendingSmearPath
+    const useSnap = !!snap && snap.length > 1
+    // During dash (or when consuming a preserved trail), use full ring radius to match visual sweep band
+    const ringRadius = (isDashing || useSnap)
       ? getEffectiveRadius(player)
       : getEffectiveRadius(player) * getRingExpansion(activeTimer)
-    const grace = isDashing ? HIT_GRACE + 6 : HIT_GRACE
+    const grace = (isDashing || useSnap) ? HIT_GRACE + 6 : HIT_GRACE
     const hitEnemies = new Set<Enemy>()
     const killedEnemies: Enemy[] = []
 
-    // Build sweep positions — curved dash path or straight line
+    // Build sweep positions — preserved back-trail, curved dash path, or straight line
     const sweepPositions: { x: number; y: number }[] = []
-    if (isDashing && player.dashPath.length > 1) {
+    const DASH_SWEEP_CAP = 0.3
+    if (useSnap) {
+      // Chain smear: last 30% of the preserved back-trail (dash #1's spread) THEN all of the live path
+      // (dash #2's trail) THEN the current pos — one continuous streak from behind you FLUSH to the ring.
+      // 30% cap on dash #1 only; dash #2 kept whole so a long second dash can't push the back spread out.
+      // Not cleared here — the Renderer (runs after the sim) reads it the same frame for the matching
+      // visual; the safety-clear on ring reset owns it (Player.ts).
+      const startIdx = Math.floor(snap!.length * (1 - DASH_SWEEP_CAP))
+      for (let s = startIdx; s < snap!.length; s++) sweepPositions.push(snap![s]!)
+      for (let s = 0; s < player.dashPath.length; s++) sweepPositions.push(player.dashPath[s]!)
+      sweepPositions.push({ x: player.x, y: player.y })
+    } else if (isDashing && player.dashPath.length > 1) {
       // Use last 30% of recorded dash path — ALL points, no sampling gaps
-      const DASH_SWEEP_CAP = 0.3
       const startIdx = Math.floor(player.dashPath.length * (1 - DASH_SWEEP_CAP))
       for (let s = startIdx; s < player.dashPath.length; s++) {
         sweepPositions.push(player.dashPath[s]!)

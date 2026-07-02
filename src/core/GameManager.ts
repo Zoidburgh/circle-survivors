@@ -226,6 +226,7 @@ function processVolatileExplosions(player: ReturnType<typeof getPlayer>, enemies
         if (enemy.weakNodes) {
           const tn = Renderer.getGameTimeMs() / 1000
           const nodeR = nodeRadius(enemy)
+          let noteStagger = 0   // fan the hit nodes' notes out onto the boom's decay so they're heard
           for (let i = 0; i < enemy.nodeHp.length; i++) {
             const np = nodeWorldPos(enemy, i, tn)
             const ndx = np.x - exp.x, ndy = np.y - exp.y
@@ -236,7 +237,8 @@ function processVolatileExplosions(player: ReturnType<typeof getPlayer>, enemies
               healNode(enemy, i, 1)
             } else {
               const wasDying = enemy.dying
-              damageNode(enemy, i, 1)
+              damageNode(enemy, i, 1, 0.1 + noteStagger * 0.05)   // delayed + staggered → audible over the boom
+              noteStagger++
               if (enemy.dying && !wasDying) { spawnDrops(enemy, 1, spawnOrb); explosionKillTimes.push(challengeElapsed) }
             }
           }

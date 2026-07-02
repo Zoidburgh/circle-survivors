@@ -3,6 +3,12 @@
 
 import type { BeatPreset } from './BeatPresets.ts'
 import { getAttackActivity } from './MusicalSFX.ts'
+import { ELECTRONIC, type Palette, type Sustain } from './Palettes.ts'
+
+// The active KIT (voices + pad/bass + swing). Rhythm/patterns/scale are unchanged by this — only
+// timbre + groove. Swapped live via setPalette().
+let activePalette: Palette = ELECTRONIC
+let sustain: Sustain | null = null
 
 let ctx: AudioContext
 let dest: AudioNode
@@ -15,7 +21,10 @@ let scheduleAheadTime = 0.1
 let timerID: number | null = null
 let currentPresetName = ''
 
-const STEPS = 16
+// Master loop length in steps (default 16 = 1 phrase). A preset can set `loopSteps` longer (e.g. 32 =
+// a 4-bar evolving phrase) so melody/bass don't loop every bar. Only affects the MUSIC — gameplay
+// rhythm sync uses PatternClock/getLoopPosition, not this.
+let loopSteps = 16
 
 type Pattern = (0 | 1)[]
 
@@ -44,101 +53,7 @@ function noteFreq(degree: number, octave = 0): number {
 export function setBeatLoopScale(freqs: number[]): void {
   if (freqs.length < 5) return
   scaleFreqs = freqs.slice(0, 5).map(f => f * 0.5)
-  if (padOsc1 && padOsc2 && ctx) {
-    const root = noteFreq(0, 1)
-    padOsc1.frequency.setValueAtTime(root, ctx.currentTime)
-    padOsc2.frequency.setValueAtTime(root * 1.003, ctx.currentTime)
-  }
-}
-
-// ── Pad state — continuous, not per-step ──
-let padOsc1: OscillatorNode | null = null
-let padOsc2: OscillatorNode | null = null
-let padGain: GainNode | null = null
-let padFilter: BiquadFilterNode | null = null
-
-function startPad(): void {
-  if (padOsc1) return
-
-  padGain = ctx.createGain()
-  padGain.gain.value = 0.08
-
-  padFilter = ctx.createBiquadFilter()
-  padFilter.type = 'lowpass'
-  padFilter.frequency.value = 600
-  padFilter.Q.value = 1
-
-  // Two detuned saws for width
-  padOsc1 = ctx.createOscillator()
-  padOsc2 = ctx.createOscillator()
-  padOsc1.type = 'sawtooth'
-  padOsc2.type = 'sawtooth'
-  padOsc1.frequency.value = noteFreq(0, 1)
-  padOsc2.frequency.value = noteFreq(0, 1) * 1.003
-
-  // LFO on filter for movement
-  const lfo = ctx.createOscillator()
-  const lfoGain = ctx.createGain()
-  lfo.type = 'sine'
-  lfo.frequency.value = 0.15
-  lfoGain.gain.value = 300
-  lfo.connect(lfoGain)
-  lfoGain.connect(padFilter.frequency)
-  lfo.start()
-
-  padOsc1.connect(padFilter)
-  padOsc2.connect(padFilter)
-  padFilter.connect(padGain)
-  padGain.connect(dest)
-  padOsc1.start()
-  padOsc2.start()
-}
-
-function stopPad(): void {
-  if (padOsc1) { padOsc1.stop(); padOsc1 = null }
-  if (padOsc2) { padOsc2.stop(); padOsc2 = null }
-  if (padGain) { padGain.disconnect(); padGain = null }
-  padFilter = null
-}
-
-// ── Sidechain — duck pad on kick ──
-function duckPad(time: number): void {
-  if (!padGain) return
-  padGain.gain.setValueAtTime(0.08, time)
-  padGain.gain.linearRampToValueAtTime(0.005, time + 0.01)
-  padGain.gain.linearRampToValueAtTime(0.08, time + 0.35)
-}
-
-// ── Bass portamento state ──
-let bassOsc: OscillatorNode | null = null
-let bassGain: GainNode | null = null
-let bassFilter: BiquadFilterNode | null = null
-
-function startBassEngine(): void {
-  if (bassOsc) return
-
-  bassGain = ctx.createGain()
-  bassGain.gain.value = 0
-
-  bassFilter = ctx.createBiquadFilter()
-  bassFilter.type = 'lowpass'
-  bassFilter.frequency.value = 400
-  bassFilter.Q.value = 3
-
-  bassOsc = ctx.createOscillator()
-  bassOsc.type = 'sawtooth'
-  bassOsc.frequency.value = noteFreq(0, 0)
-
-  bassOsc.connect(bassFilter)
-  bassFilter.connect(bassGain)
-  bassGain.connect(dest)
-  bassOsc.start()
-}
-
-function stopBassEngine(): void {
-  if (bassOsc) { bassOsc.stop(); bassOsc = null }
-  if (bassGain) { bassGain.disconnect(); bassGain = null }
-  bassFilter = null
+  sustain?.retune(noteFreq(0, 1))   // retune the live pad/drone so a key change is heard immediately
 }
 
 export function initBeatLoop(audioCtx: AudioContext, destination: AudioNode, masterBpm: number): void {
@@ -161,8 +76,7 @@ export function startBeatLoop(): void {
   currentStep = 0
   beatZeroTime = ctx.currentTime
   nextBeatTime = beatZeroTime
-  startPad()
-  startBassEngine()
+  sustain = activePalette.startSustain(ctx, dest, noteFreq(0, 1))
   scheduler()
 }
 
@@ -172,9 +86,21 @@ export function stopBeatLoop(): void {
     clearTimeout(timerID)
     timerID = null
   }
-  stopPad()
-  stopBassEngine()
+  sustain?.stop()
+  sustain = null
 }
+
+/** Swap the active KIT live. Rhythm/patterns/scale/beat-phase all continue uninterrupted — only the
+ *  voices + pad/bass + swing change. */
+export function setPalette(p: Palette): void {
+  activePalette = p
+  if (playing && ctx) {
+    sustain?.stop()
+    sustain = p.startSustain(ctx, dest, noteFreq(0, 1))
+  }
+}
+
+export function getActivePaletteName(): string { return activePalette.name }
 
 export function loadPreset(preset: BeatPreset): void {
   const wasPlaying = playing
@@ -189,6 +115,7 @@ export function loadPreset(preset: BeatPreset): void {
   melodyNotes = preset.melodyNotes
   bpm = preset.bpm
   beatDuration = 60 / bpm
+  loopSteps = preset.loopSteps ?? 16
   currentPresetName = preset.name
 
   if (wasPlaying) startBeatLoop()
@@ -210,7 +137,7 @@ export function getLoopBeatPosition(): number {
   const stepDuration = beatDuration / 2
   const timeSinceLastStep = ctx.currentTime - (nextBeatTime - stepDuration)
   const fractionalStep = Math.max(0, timeSinceLastStep / stepDuration)
-  return ((currentStep + fractionalStep) % STEPS) / 2 // convert steps to beats
+  return ((currentStep + fractionalStep) % loopSteps) / 2 // convert steps to beats
 }
 
 export function setBeatLoopBpm(newBpm: number): void {
@@ -275,12 +202,15 @@ function scheduler(): void {
   if (!playing) return
   while (nextBeatTime < ctx.currentTime + scheduleAheadTime) {
     // Regenerate patterns at the start of each bar
-    if (isGenerative && currentStep % STEPS === 0) {
+    if (isGenerative && currentStep % loopSteps === 0) {
       randomizePatterns()
     }
-    scheduleStep(currentStep % STEPS, nextBeatTime + 0.37)
+    // Swing — the active kit can delay the off-16ths (odd steps) for a human lilt.
+    const stepDur = beatDuration / 2
+    const swingOffset = (currentStep % 2 === 1) ? activePalette.swing * stepDur : 0
+    scheduleStep(currentStep % loopSteps, nextBeatTime + 0.37 + swingOffset)
     nextBeatTime += beatDuration / 2
-    currentStep = (currentStep + 1) % STEPS
+    currentStep = (currentStep + 1) % loopSteps
   }
   timerID = window.setTimeout(scheduler, 25)
 }
@@ -293,125 +223,19 @@ function scheduleStep(step: number, time: number): void {
   const bStep = step % bassPattern.length
   const mStep = step % melodyPattern.length
 
-  if (kickPattern[kStep]) { scheduleKick(time); duckPad(time) }
-  if (snarePattern[sStep]) scheduleSnare(time)
-  if (hihatPattern[hStep]) scheduleHihat(time)
-  if (bassPattern[bStep]) scheduleBass(time, bassNotes[bStep % bassNotes.length]!)
-  if (melodyPattern[mStep]) scheduleMelody(time, melodyNotes[mStep % melodyNotes.length]!)
-}
-
-function scheduleKick(time: number): void {
-  // Sub body
-  const osc = ctx.createOscillator()
-  const gain = ctx.createGain()
-  osc.type = 'sine'
-  osc.frequency.setValueAtTime(160, time)
-  osc.frequency.exponentialRampToValueAtTime(35, time + 0.12)
-  gain.gain.setValueAtTime(0.8, time)
-  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.25)
-  osc.connect(gain); gain.connect(dest)
-  osc.start(time); osc.stop(time + 0.25)
-
-  // Punch
-  const punch = ctx.createOscillator()
-  const pGain = ctx.createGain()
-  punch.type = 'triangle'
-  punch.frequency.setValueAtTime(100, time)
-  punch.frequency.exponentialRampToValueAtTime(30, time + 0.08)
-  pGain.gain.setValueAtTime(0.5, time)
-  pGain.gain.exponentialRampToValueAtTime(0.001, time + 0.1)
-  punch.connect(pGain); pGain.connect(dest)
-  punch.start(time); punch.stop(time + 0.1)
-
-  // Click transient
-  const click = ctx.createOscillator()
-  const cGain = ctx.createGain()
-  click.type = 'square'
-  click.frequency.value = 350
-  cGain.gain.setValueAtTime(0.3, time)
-  cGain.gain.exponentialRampToValueAtTime(0.001, time + 0.01)
-  click.connect(cGain); cGain.connect(dest)
-  click.start(time); click.stop(time + 0.01)
-}
-
-function scheduleSnare(time: number): void {
-  const osc = ctx.createOscillator()
-  const gain = ctx.createGain()
-  osc.type = 'triangle'
-  osc.frequency.setValueAtTime(200, time)
-  osc.frequency.exponentialRampToValueAtTime(80, time + 0.05)
-  gain.gain.setValueAtTime(0.45, time)
-  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.12)
-  osc.connect(gain); gain.connect(dest)
-  osc.start(time); osc.stop(time + 0.12)
-
-  // Noise layer — louder
-  for (let i = 0; i < 3; i++) {
-    const n = ctx.createOscillator()
-    const nGain = ctx.createGain()
-    n.type = 'square'
-    n.frequency.value = 2500 + Math.random() * 5000
-    nGain.gain.setValueAtTime(0.1, time)
-    nGain.gain.exponentialRampToValueAtTime(0.001, time + 0.08)
-    n.connect(nGain); nGain.connect(dest)
-    n.start(time); n.stop(time + 0.08)
+  if (kickPattern[kStep]) { activePalette.kick(ctx, dest, time); sustain?.duck(time) }
+  if (snarePattern[sStep]) activePalette.snare(ctx, dest, time)
+  if (hihatPattern[hStep]) activePalette.hihat(ctx, dest, time)
+  if (bassPattern[bStep]) sustain?.bassHit(time, noteFreq(bassNotes[bStep % bassNotes.length]!, 0), beatDuration)
+  if (melodyPattern[mStep]) {
+    const duck = 1 - getAttackActivity() * 0.85   // combat owns the lead; the music melody recedes
+    const g = Math.max(0.0005, 0.045 * melodyDuck * duck)
+    activePalette.melody(ctx, dest, time, noteFreq(melodyNotes[mStep % melodyNotes.length]!, 1), g)
   }
 }
 
-function scheduleHihat(time: number): void {
-  const osc = ctx.createOscillator()
-  const osc2 = ctx.createOscillator()
-  const gain = ctx.createGain()
-  osc.type = 'square'
-  osc2.type = 'square'
-  osc.frequency.value = 5000 + Math.random() * 3000
-  osc2.frequency.value = 7000 + Math.random() * 3000
-  gain.gain.setValueAtTime(0.08, time)
-  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.05)
-  osc.connect(gain); osc2.connect(gain); gain.connect(dest)
-  osc.start(time); osc2.start(time)
-  osc.stop(time + 0.05); osc2.stop(time + 0.05)
-}
-
-function scheduleBass(time: number, noteIndex: number): void {
-  if (!bassOsc || !bassGain || !bassFilter) return
-  const freq = noteFreq(noteIndex, 0)
-  // Portamento — slide to new note
-  bassOsc.frequency.setValueAtTime(bassOsc.frequency.value, time)
-  bassOsc.frequency.exponentialRampToValueAtTime(freq, time + 0.06)
-  bassGain.gain.setValueAtTime(0.22, time)
-  bassGain.gain.linearRampToValueAtTime(0.1, time + beatDuration / 4)
-  // Filter accent
-  bassFilter.frequency.setValueAtTime(800, time)
-  bassFilter.frequency.exponentialRampToValueAtTime(300, time + 0.15)
-}
-
 // Melody duck (0..1) — the enemy attacks are the LEAD now, so the music's melody is demoted to a
-// supporting voice. Phase B will drive this down dynamically when combat is busy; for now it's 1.
+// supporting voice. Read in scheduleStep to size the palette's melody gain. Phase B will drive this
+// down dynamically when combat is busy; for now it's 1.
 let melodyDuck = 1
 export function setMelodyDuck(level: number): void { melodyDuck = Math.max(0, Math.min(1, level)) }
-
-function scheduleMelody(time: number, noteIndex: number): void {
-  const osc = ctx.createOscillator()
-  const gain = ctx.createGain()
-  const filter = ctx.createBiquadFilter()
-  osc.type = 'triangle'                    // warm + round, not a bright square lead that competes
-  const freq = noteFreq(noteIndex, 1)
-  osc.frequency.value = freq
-
-  filter.type = 'lowpass'
-  filter.frequency.setValueAtTime(1200, time)   // darker = background color, not a hook
-  filter.frequency.exponentialRampToValueAtTime(450, time + 0.3)
-  filter.Q.value = 1
-
-  // Demoted level, ducked further by live combat activity: when the enemy attacks are firing they
-  // OWN the melody and the music's recedes; when combat is calm it returns so the track isn't empty.
-  const duck = 1 - getAttackActivity() * 0.85
-  const g = Math.max(0.0005, 0.045 * melodyDuck * duck)
-  gain.gain.setValueAtTime(g, time)
-  gain.gain.setValueAtTime(g, time + 0.08)
-  gain.gain.exponentialRampToValueAtTime(0.001, time + 0.2)
-
-  osc.connect(filter); filter.connect(gain); gain.connect(dest)
-  osc.start(time); osc.stop(time + 0.2)
-}
