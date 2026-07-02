@@ -36,15 +36,15 @@ export function initHitDetection(): void {
       }
     }
     const isDashing = player.dashTimer >= 0
-    // Dramatic sweep SFX only on a COMMITTED dash — require the trail to be ≥ half the dash's length.
-    // The dash uses a sine speed ramp, so half the distance is covered exactly at the midpoint
-    // (progress 0.5 ⇒ dashTimer ≤ dashDuration/2). A tap-dash that catches the beat at its start
-    // is too short to earn the big sound. Visual sweep is left ungated.
-    if (isDashing && player.dashTimer <= player.dashDuration * 0.5) playDashSweep()
     // A preserved back-trail (a beat-dash reset the live path mid-expansion) takes priority so the
     // peak smears BEHIND you — full ring radius, and it's a complete trail, so no dashing gate.
     const snap = player.pendingSmearPath
     const useSnap = !!snap && snap.length > 1
+    // The smear SOUND is fired below (after sweepPositions is built) so its volume/tier can scale
+    // with the ACTUAL rendered smear length — decoupled from any half-length gate, so what you SEE
+    // (the visual smear) always matches what you HEAR. `hasSmear` also owns the playHit/playKill
+    // suppression: when the smear plays, IT is the hit sound (a raw sine on top would just muddle).
+    const hasSmear = isDashing || useSnap
     // During dash (or when consuming a preserved trail), use full ring radius to match visual sweep band
     const ringRadius = (isDashing || useSnap)
       ? getEffectiveRadius(player)
@@ -82,6 +82,19 @@ export function initHitDetection(): void {
           y: player.prevY + (player.y - player.prevY) * t,
         })
       }
+    }
+
+    // Smear SOUND — scaled to the real arc length of what's about to be drawn. Three tiers fall out
+    // of the geometry: a short flick reads quiet, a well-timed ~30% dash lands the solid sweep, and
+    // the long connected double-dash smear earns a bonus shimmer. REF ≈ a 30% dash smear (30% of
+    // DASH_DISTANCE 413 ≈ 124px), so strength ~1 is "normal", <1 small, >1 the long chain.
+    if (hasSmear && sweepPositions.length > 1) {
+      let smearLen = 0
+      for (let s = 1; s < sweepPositions.length; s++) {
+        const a = sweepPositions[s - 1]!, b = sweepPositions[s]!
+        smearLen += Math.hypot(b.x - a.x, b.y - a.y)
+      }
+      playDashSweep(smearLen / 124)
     }
 
     for (const { x: sx, y: sy } of sweepPositions) {
@@ -285,7 +298,9 @@ export function initHitDetection(): void {
     // only fire it when a NON-weak-node enemy was hit, else the notes carry the frame cleanly.
     let anyNormalHit = false
     for (const e of hitEnemies) { if (!e.weakNodes) { anyNormalHit = true; break } }
-    if (anyNormalHit) {
+    // During a smear the sweep BELL (playDashSweep) is the hit sound — firing playHit on top
+    // stacks a non-scale-locked sine against the scale-locked bell → muddled. Skip it during the smear.
+    if (anyNormalHit && !hasSmear) {
       playHit()
     }
   })
@@ -359,7 +374,11 @@ export function initHitDetection(): void {
   // Revenge damage handled in GameManager at ring peak timing
 
   on('enemy:killed', () => {
-    playKill()
+    // During a committed smear the sweep BELL is the hit sound; the loud kill would mask/duck it (it
+    // slams the master compressor). Skip the kill while the smear is playing — the bell covers it.
+    const p = getPlayer()
+    const smearActive = p.dashTimer >= 0 || (p.pendingSmearPath != null && p.pendingSmearPath.length > 1)
+    if (!smearActive) playKill()
     // Orbs now spawned in player:beat handler for multi-kill tracking
   })
 }

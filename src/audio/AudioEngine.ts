@@ -291,36 +291,35 @@ export function playHit(): void {
   ensureContext()
   const c = ctx!
   const t = c.currentTime
-  // Priority 1: Short rising tone (low-mid lane 300-500hz)
+  // Clean rising sine (the sound we like), consonant pitch variation so overlaps chord.
+  const v = [1.0, 1.26, 1.5][Math.floor(Math.random() * 3)]!
   const osc = c.createOscillator()
   const gain = c.createGain()
   osc.type = 'sine'
-  osc.frequency.setValueAtTime(rPitch(330), t)
-  osc.frequency.exponentialRampToValueAtTime(rPitch(500), t + 0.1)
-  gain.gain.setValueAtTime(1.0, t)
+  osc.frequency.setValueAtTime(rPitch(330 * v), t)
+  osc.frequency.exponentialRampToValueAtTime(rPitch(500 * v), t + 0.1)
+  gain.gain.setValueAtTime(2.2, t)
   gain.gain.exponentialRampToValueAtTime(0.001, t + 0.15)
-  osc.connect(gain)
-  gain.connect(master)
-  osc.start(t)
-  osc.stop(t + 0.15)
+  osc.connect(gain); gain.connect(master)
+  osc.start(t); osc.stop(t + 0.15)
 }
 
 export function playKill(): void {
   ensureContext()
   const c = ctx!
   const t = c.currentTime
-  // Priority 1: Rising sine (mid lane 440-880hz)
+  // Clean rising sine. Fuller pentatonic pitch set (root/M2/M3/5th/M6) so deaths vary more and still
+  // chord when they overlap.
+  const v = [1.0, 1.122, 1.26, 1.498, 1.682][Math.floor(Math.random() * 5)]!
   const osc = c.createOscillator()
   const gain = c.createGain()
   osc.type = 'sine'
-  osc.frequency.setValueAtTime(rPitch(440), t)
-  osc.frequency.exponentialRampToValueAtTime(rPitch(880), t + 0.25)
-  gain.gain.setValueAtTime(rVol(0.8), t)
+  osc.frequency.setValueAtTime(rPitch(440 * v), t)
+  osc.frequency.exponentialRampToValueAtTime(rPitch(880 * v), t + 0.25)
+  gain.gain.setValueAtTime(rVol(1.7), t)
   gain.gain.exponentialRampToValueAtTime(0.001, t + 0.3)
-  osc.connect(gain)
-  gain.connect(reverbInput)
-  osc.start(t)
-  osc.stop(t + 0.3)
+  osc.connect(gain); gain.connect(reverbInput)
+  osc.start(t); osc.stop(t + 0.3)
 }
 
 // Dramatic BOSS DEATH — a loud, punchy, cinematic explosion (NOT a musical scale). A big detonation
@@ -1810,25 +1809,36 @@ export function playDashShotFire(): void {
 // tonal bell, so it doesn't mask the hit the way a noise swish did), plus a low thump so the sweep
 // still feels DAMAGING. Tuned to the wave's root + fifth. Throttled so a beat's ring peaks don't stack.
 let lastDashSweepTime = 0
-export function playDashSweep(): void {
+// `strength` scales the smear's loudness + tier to the actual rendered length (see HitDetection):
+//   ~0.3 short flick → quiet body only · ~1.0 well-timed 30% dash → the solid sweep ·
+//   >1.3 long connected double-dash → full body + an ascending BONUS shimmer that rings out.
+export function playDashSweep(strength = 1): void {
   ensureContext()
   const c = ctx!
   const t = c.currentTime
   if (t - lastDashSweepTime < 0.08) return
   lastDashSweepTime = t
+  // Clamp into a controlled band so a huge chain can't slam the compressor, and a tiny flick still
+  // reads. vm: overall loudness follows length; small/long pick which layers play.
+  const s = Math.max(0.3, Math.min(1.8, strength))
+  const vm = 0.3 + 0.7 * Math.min(1.2, s)   // 0.51 at s=0.3 · 1.0 at s=1.0 · 1.14 at s≥1.2
+  const small = s < 0.6
+  const long = s > 1.3
   const m = currentMusic
-  const root = (m ? m.melodyNotes[0]! : 262) * 2    // octave-up root (~C5)
-  const fifth = (m ? m.melodyNotes[3]! : 392) * 2   // pentatonic fifth, octave up (~G5)
-  // Bell ding — root + fifth + a faint octave shimmer, through reverb. Louder + longer ring-out than
-  // before so the strike feels DRAMATIC, not just a tick.
-  const bell: [number, number, number][] = [[root, 0.3, 0.55], [fifth, 0.18, 0.48], [root * 2, 0.1, 0.32]]
-  for (const [freq, vol, dur] of bell) {
+  // Vary the bell across the scale each dash → a different open chord every time (not the same ding).
+  const base = m ? Math.floor(Math.random() * m.melodyNotes.length) : 0
+  const root = (m ? m.melodyNotes[base]! : 262) * 2
+  const fifth = (m ? m.melodyNotes[(base + 2) % m.melodyNotes.length]! : 392) * 2   // a consonant pentatonic interval up
+  // Bell ding — root + interval + a faint octave shimmer, through reverb. A bit louder now. The LONG
+  // (combined double-dash) smear skips this bright bell — it gets its own fat power-chord voice below.
+  const bell: [number, number, number][] = [[root, 0.44, 0.55], [fifth, 0.27, 0.48], [root * 2, 0.15, 0.32]]
+  if (!long) for (const [freq, vol, dur] of bell) {
     const o = c.createOscillator()
     const g = c.createGain()
     o.type = 'sine'
     o.frequency.value = freq
     g.gain.setValueAtTime(0.0005, t)
-    g.gain.linearRampToValueAtTime(rVol(vol), t + 0.004)   // quick attack = a clean "ting"
+    g.gain.linearRampToValueAtTime(rVol(vol * vm), t + 0.004)   // quick attack = a clean "ting"
     g.gain.exponentialRampToValueAtTime(0.0005, t + dur)   // bell ring-out
     o.connect(g); g.connect(reverbInput)
     o.start(t); o.stop(t + dur + 0.02)
@@ -1839,47 +1849,52 @@ export function playDashSweep(): void {
   th.type = 'sine'
   th.frequency.setValueAtTime(220, t)
   th.frequency.exponentialRampToValueAtTime(55, t + 0.14)
-  thg.gain.setValueAtTime(rVol(0.72), t)
+  thg.gain.setValueAtTime(rVol(0.9 * vm), t)
   thg.gain.exponentialRampToValueAtTime(0.001, t + 0.16)
   th.connect(thg); thg.connect(master)
   th.start(t); th.stop(t + 0.17)
-  // Cinematic SUB — a sustained low boom under the thump for dramatic, chest-felt weight.
-  const sub = c.createOscillator()
-  const subg = c.createGain()
-  sub.type = 'sine'
-  sub.frequency.setValueAtTime(62, t)
-  sub.frequency.exponentialRampToValueAtTime(38, t + 0.4)
-  subg.gain.setValueAtTime(0.0008, t)
-  subg.gain.linearRampToValueAtTime(rVol(0.55), t + 0.02)
-  subg.gain.exponentialRampToValueAtTime(0.001, t + 0.42)
-  sub.connect(subg); subg.connect(master)
-  sub.start(t); sub.stop(t + 0.44)
-  // Downward "vwoom" sweep — a sawtooth gliding down through a closing lowpass = dramatic impact tail.
-  const sw = c.createOscillator()
-  const swf = c.createBiquadFilter()
-  const swg = c.createGain()
-  sw.type = 'sawtooth'
-  sw.frequency.setValueAtTime(480, t)
-  sw.frequency.exponentialRampToValueAtTime(65, t + 0.26)
-  swf.type = 'lowpass'
-  swf.frequency.setValueAtTime(1400, t)
-  swf.frequency.exponentialRampToValueAtTime(320, t + 0.26)
-  swg.gain.setValueAtTime(0.0008, t)
-  swg.gain.linearRampToValueAtTime(rVol(0.32), t + 0.01)
-  swg.gain.exponentialRampToValueAtTime(0.001, t + 0.28)
-  sw.connect(swf); swf.connect(swg); swg.connect(master)
-  sw.start(t); sw.stop(t + 0.3)
+  // Cinematic SUB + downward "vwoom" — the dramatic chest-felt body. A short flick smear skips
+  // these (just the ting + thump), so tiny smears stay small and don't drag on the mix.
+  if (!small) {
+    const sub = c.createOscillator()
+    const subg = c.createGain()
+    sub.type = 'sine'
+    sub.frequency.setValueAtTime(62, t)
+    sub.frequency.exponentialRampToValueAtTime(38, t + 0.4)
+    subg.gain.setValueAtTime(0.0008, t)
+    subg.gain.linearRampToValueAtTime(rVol(0.55 * vm), t + 0.02)
+    subg.gain.exponentialRampToValueAtTime(0.001, t + 0.42)
+    sub.connect(subg); subg.connect(master)
+    sub.start(t); sub.stop(t + 0.44)
+    // Downward "vwoom" sweep — a sawtooth gliding down through a closing lowpass = dramatic impact tail.
+    const sw = c.createOscillator()
+    const swf = c.createBiquadFilter()
+    const swg = c.createGain()
+    sw.type = 'sawtooth'
+    sw.frequency.setValueAtTime(480, t)
+    sw.frequency.exponentialRampToValueAtTime(65, t + 0.26)
+    swf.type = 'lowpass'
+    swf.frequency.setValueAtTime(1400, t)
+    swf.frequency.exponentialRampToValueAtTime(320, t + 0.26)
+    swg.gain.setValueAtTime(0.0008, t)
+    swg.gain.linearRampToValueAtTime(rVol(0.32 * vm), t + 0.01)
+    swg.gain.exponentialRampToValueAtTime(0.001, t + 0.28)
+    sw.connect(swf); swf.connect(swg); swg.connect(master)
+    sw.start(t); sw.stop(t + 0.3)
+  }
   // Metallic clang — an INHARMONIC overtone (not a clean octave) gives the bell a hard, aggressive
-  // edge so the ding reads as a strike, not a soft chime.
-  const cl = c.createOscillator()
-  const clg = c.createGain()
-  cl.type = 'triangle'
-  cl.frequency.value = root * 2.76
-  clg.gain.setValueAtTime(0.0005, t)
-  clg.gain.linearRampToValueAtTime(rVol(0.13), t + 0.003)
-  clg.gain.exponentialRampToValueAtTime(0.0005, t + 0.12)
-  cl.connect(clg); clg.connect(master)
-  cl.start(t); cl.stop(t + 0.14)
+  // edge so the ding reads as a strike, not a soft chime. (Off for long — it's part of the bell voice.)
+  if (!long) {
+    const cl = c.createOscillator()
+    const clg = c.createGain()
+    cl.type = 'triangle'
+    cl.frequency.value = root * 2.76
+    clg.gain.setValueAtTime(0.0005, t)
+    clg.gain.linearRampToValueAtTime(rVol(0.13 * vm), t + 0.003)
+    clg.gain.exponentialRampToValueAtTime(0.0005, t + 0.12)
+    cl.connect(clg); clg.connect(master)
+    cl.start(t); cl.stop(t + 0.14)
+  }
   // Noise crack — short low-passed burst at the attack = the impact transient (the "hit").
   const nlen = Math.floor(c.sampleRate * 0.045)
   const nbuf = c.createBuffer(1, nlen, c.sampleRate)
@@ -1891,10 +1906,80 @@ export function playDashSweep(): void {
   nlp.type = 'lowpass'
   nlp.frequency.value = 1900
   const ng = c.createGain()
-  ng.gain.setValueAtTime(rVol(0.42), t)
+  ng.gain.setValueAtTime(rVol(0.42 * vm), t)
   ng.gain.exponentialRampToValueAtTime(0.001, t + 0.045)
   ns.connect(nlp); nlp.connect(ng); ng.connect(master)
   ns.start(t); ns.stop(t + 0.05)
+  // LONG (combined double-dash) smear — a BIG, BRIGHT power-slash, not a low muffled bwomp. A sharp
+  // metallic SHING up front, a wide in-key power chord whose filter snaps WIDE OPEN and rings out
+  // through reverb (bright + sustained = epic, the opposite of a dinky fart), and a hard punchy sub
+  // for chest weight. Loud and present on top of the shared body (thump/sub/sweep/crack).
+  if (long) {
+    // 1) Metallic SHING — a bright highpassed noise crack = the sharp leading edge of the slash.
+    const shl = Math.floor(c.sampleRate * 0.06)
+    const shb = c.createBuffer(1, shl, c.sampleRate)
+    const shd = shb.getChannelData(0)
+    for (let i = 0; i < shl; i++) shd[i] = (Math.random() * 2 - 1) * (1 - i / shl)
+    const shs = c.createBufferSource(); shs.buffer = shb
+    const shf = c.createBiquadFilter(); shf.type = 'highpass'; shf.frequency.value = 2800
+    const shg = c.createGain()
+    shg.gain.setValueAtTime(rVol(0.55 * vm), t)
+    shg.gain.exponentialRampToValueAtTime(0.001, t + 0.06)
+    shs.connect(shf); shf.connect(shg); shg.connect(master)
+    shs.start(t); shs.stop(t + 0.07)
+
+    // 2) Wide bright power chord — root/fifth/octave across a full register, detuned saws. Filter snaps
+    //    WIDE open then settles BRIGHT (not muffled). Split dry (punch → master) + wet (long ring →
+    //    reverb) so it sustains like a struck chord instead of a blip.
+    const chordF = [root * 0.5, root, fifth, root * 2]
+    const pcf = c.createBiquadFilter(); pcf.type = 'lowpass'
+    pcf.frequency.setValueAtTime(700, t)
+    pcf.frequency.exponentialRampToValueAtTime(6800, t + 0.025)   // snap WIDE open = the strike
+    pcf.frequency.exponentialRampToValueAtTime(2200, t + 0.45)    // settle BRIGHT (never muffled)
+    const pcgDry = c.createGain()
+    pcgDry.gain.setValueAtTime(0.0008, t)
+    pcgDry.gain.linearRampToValueAtTime(rVol(0.12 * vm), t + 0.01)
+    pcgDry.gain.exponentialRampToValueAtTime(0.001, t + 0.45)
+    const pcgWet = c.createGain()
+    pcgWet.gain.setValueAtTime(0.0008, t)
+    pcgWet.gain.linearRampToValueAtTime(rVol(0.1 * vm), t + 0.03)
+    pcgWet.gain.exponentialRampToValueAtTime(0.001, t + 0.7)      // long ring-out
+    pcf.connect(pcgDry); pcgDry.connect(master)
+    pcf.connect(pcgWet); pcgWet.connect(reverbInput)
+    for (const f of chordF) {
+      for (const det of [-8, 8]) {                                // super-saw detune for thickness
+        const o = c.createOscillator()
+        o.type = 'sawtooth'
+        o.frequency.value = f * (1 + det / 1000)
+        o.connect(pcf)
+        o.start(t); o.stop(t + 0.55)
+      }
+    }
+
+    // 3) Hard punchy sub — a deep kick-sub that HITS immediately and decays fast (a quick drop, NOT a
+    //    long farty glide) = chest weight without mud.
+    const bo = c.createOscillator(); const bog = c.createGain()
+    bo.type = 'sine'
+    bo.frequency.setValueAtTime(95, t)
+    bo.frequency.exponentialRampToValueAtTime(48, t + 0.09)
+    bog.gain.setValueAtTime(rVol(0.95 * vm), t)                   // hits hard on the transient
+    bog.gain.exponentialRampToValueAtTime(0.001, t + 0.24)
+    bo.connect(bog); bog.connect(master)
+    bo.start(t); bo.stop(t + 0.26)
+
+    // 4) Crunch — a short decaying low-passed noise body = the impact damage under the SHING.
+    const dl = Math.floor(c.sampleRate * 0.12)
+    const dbf = c.createBuffer(1, dl, c.sampleRate)
+    const dd = dbf.getChannelData(0)
+    for (let i = 0; i < dl; i++) dd[i] = (Math.random() * 2 - 1) * (1 - i / dl)
+    const dsn = c.createBufferSource(); dsn.buffer = dbf
+    const dlp = c.createBiquadFilter(); dlp.type = 'lowpass'; dlp.frequency.value = 1400
+    const dgn = c.createGain()
+    dgn.gain.setValueAtTime(rVol(0.28 * vm), t)
+    dgn.gain.exponentialRampToValueAtTime(0.001, t + 0.12)
+    dsn.connect(dlp); dlp.connect(dgn); dgn.connect(master)
+    dsn.start(t); dsn.stop(t + 0.13)
+  }
 }
 
 // Quick "boingngng" — cartoony spring sound for when an entity gets launched by a wall
@@ -2475,18 +2560,24 @@ export function playBeatDash(): void {
   const c = ctx!
   const t = c.currentTime
 
+  // The low body (sub thump + whomp) is offset a hair so its sharp attack doesn't land on the exact
+  // same sample as a coincident smear's thump — two separate transients duck the shared compressor
+  // far less than one doubled one, so the AOE and the smear LAYER instead of eating each other. The
+  // noise snap (Layer 5) stays at t as the on-beat detonation crack, so nothing reads as late.
+  const lowT = t + 0.022
+
   // Layer 1: Sub thump — gut punch, fast attack
   const thump = c.createOscillator()
   const thumpGain = c.createGain()
   thump.type = 'sine'
-  thump.frequency.setValueAtTime(rPitch(90), t)
-  thump.frequency.exponentialRampToValueAtTime(rPitch(30), t + 0.2)
-  thumpGain.gain.setValueAtTime(rVol(0.7), t)
-  thumpGain.gain.exponentialRampToValueAtTime(0.001, t + 0.2)
+  thump.frequency.setValueAtTime(rPitch(90), lowT)
+  thump.frequency.exponentialRampToValueAtTime(rPitch(30), lowT + 0.2)
+  thumpGain.gain.setValueAtTime(rVol(0.7), lowT)
+  thumpGain.gain.exponentialRampToValueAtTime(0.001, lowT + 0.2)
   thump.connect(thumpGain)
   thumpGain.connect(master)
-  thump.start(t)
-  thump.stop(t + 0.2)
+  thump.start(lowT)
+  thump.stop(lowT + 0.2)
 
   // Layer 2: Chunky "whomp" — the satisfying part
   // Descending chord hit — two notes a fifth apart for richness
@@ -2495,19 +2586,19 @@ export function playBeatDash(): void {
   const whompGain = c.createGain()
   whomp1.type = 'triangle'
   whomp2.type = 'triangle'
-  whomp1.frequency.setValueAtTime(rPitch(220), t)
-  whomp1.frequency.exponentialRampToValueAtTime(rPitch(110), t + 0.18)
-  whomp2.frequency.setValueAtTime(rPitch(330), t)  // perfect fifth
-  whomp2.frequency.exponentialRampToValueAtTime(rPitch(165), t + 0.18)
-  whompGain.gain.setValueAtTime(rVol(0.4), t)
-  whompGain.gain.exponentialRampToValueAtTime(0.001, t + 0.22)
+  whomp1.frequency.setValueAtTime(rPitch(220), lowT)
+  whomp1.frequency.exponentialRampToValueAtTime(rPitch(110), lowT + 0.18)
+  whomp2.frequency.setValueAtTime(rPitch(330), lowT)  // perfect fifth
+  whomp2.frequency.exponentialRampToValueAtTime(rPitch(165), lowT + 0.18)
+  whompGain.gain.setValueAtTime(rVol(0.4), lowT)
+  whompGain.gain.exponentialRampToValueAtTime(0.001, lowT + 0.22)
   whomp1.connect(whompGain)
   whomp2.connect(whompGain)
   whompGain.connect(master)
-  whomp1.start(t)
-  whomp2.start(t)
-  whomp1.stop(t + 0.22)
-  whomp2.stop(t + 0.22)
+  whomp1.start(lowT)
+  whomp2.start(lowT)
+  whomp1.stop(lowT + 0.22)
+  whomp2.stop(lowT + 0.22)
 
   // Layer 3: Bright accent — short, warm, through reverb for shimmer
   const accent = c.createOscillator()

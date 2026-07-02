@@ -6020,10 +6020,8 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     // smear too, so it draws BEHIND you and matches the hit — even if that dash has already ended.
     const smearSnap = player.pendingSmearPath
     const useSmearSnap = !!smearSnap && smearSnap.length > 1
+    let captured = false
     if ((player.dashTimer >= 0 || useSmearSnap) && anyPeak) {
-      dashSweepIntensity = 1
-      dashSweepFlash = 1   // pop a hot-white flash at the impact frame
-      dashSweepRadius = getEffectiveRadius(player) * 1.0  // full radius at peak
       const raw: { x: number; y: number }[] = []
       if (useSmearSnap) {
         // Chain: last 30% of the back-trail (dash #1) + all of the live path (dash #2) + current pos,
@@ -6036,16 +6034,30 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
         for (let i = capStart; i < player.dashPath.length; i++) raw.push({ x: player.dashPath[i]!.x, y: player.dashPath[i]!.y })
       }
       raw.push({ x: player.x, y: player.y })
-      // Drop near-duplicate consecutive points (the dash1/dash2 join seam + a front dup) so the fade
-      // gradient stays smooth; snap the final kept point to the exact front (the ring position).
-      dashSweepPath = []
-      for (let i = 0; i < raw.length; i++) {
-        const p = raw[i]!
-        const last = dashSweepPath[dashSweepPath.length - 1]
-        if (!last || (p.x - last.x) ** 2 + (p.y - last.y) ** 2 > 9) dashSweepPath.push(p)
-        else if (i === raw.length - 1) { last.x = p.x; last.y = p.y }
+      // Candidate smear length. A beat-dash fired JUST AFTER the peak (a slightly-late one) is still
+      // inside the anyPeak window and its brand-new dash path is near-zero, so re-capturing here would
+      // OVERWRITE the smear already playing and yank it short — the "hurried"/rushed look. Only
+      // (re)capture for a real smear (the snap chain, or a meaningful length), or when nothing is on
+      // screen yet; otherwise fall through and let the existing smear finish its fade undisturbed.
+      let rawLen = 0
+      for (let i = 1; i < raw.length; i++) rawLen += Math.hypot(raw[i]!.x - raw[i - 1]!.x, raw[i]!.y - raw[i - 1]!.y)
+      if (useSmearSnap || rawLen > 30 || dashSweepIntensity < 0.25) {
+        dashSweepIntensity = 1
+        dashSweepFlash = 1   // pop a hot-white flash at the impact frame
+        dashSweepRadius = getEffectiveRadius(player) * 1.0  // full radius at peak
+        // Drop near-duplicate consecutive points (the dash1/dash2 join seam + a front dup) so the fade
+        // gradient stays smooth; snap the final kept point to the exact front (the ring position).
+        dashSweepPath = []
+        for (let i = 0; i < raw.length; i++) {
+          const p = raw[i]!
+          const last = dashSweepPath[dashSweepPath.length - 1]
+          if (!last || (p.x - last.x) ** 2 + (p.y - last.y) ** 2 > 9) dashSweepPath.push(p)
+          else if (i === raw.length - 1) { last.x = p.x; last.y = p.y }
+        }
+        captured = true
       }
-    } else {
+    }
+    if (!captured) {
       // Frame-rate-INDEPENDENT fade: 0.88 per 1/60s of real time, not per rendered frame. A raw
       // per-frame `*= 0.88` decays half as fast at 30fps as at 60fps, so the smear lingers much
       // longer on any framerate dip. Anchoring to lastDt keeps the real-time fade identical at any fps.
@@ -6078,80 +6090,67 @@ export function render(player: Player, enemies: Enemy[], _alpha: number, fps = 0
     // NOTE: the smear is FROZEN at the peak (its front = player pos at the peak = where the ring freezes,
     // ringPeakX/Y below). Do NOT push the live player onto it post-peak — that runs the smear ahead of
     // the frozen ring. Both stay put at the peak position → flush.
+    // Per-point ring STAMPS (the original look) — but the path is first RESAMPLED to ~uniform arc-length
+    // spacing, capped at MAXPTS. That's the perf fix: a fast/long chain dash used to add a point per
+    // frame (~30px apart → visible "chain of rings" AND many expensive thick-circle strokes). Uniform
+    // ~12px spacing keeps the stamps overlapping into a continuous band, and the cap bounds the stroke
+    // count regardless of dash length. Look is unchanged — only the spacing/count is normalized.
     if (dashSweepIntensity > 0.01 && dashSweepPath.length > 1) {
       const fade = dashSweepIntensity
       const grace = 8
-      // Distance-based fade gradient (not index-based) so brightness is spatially even regardless of how
-      // densely each segment is sampled — otherwise the chain smear's uneven point density reads as lumpy.
+      const raw = dashSweepPath
       const cum: number[] = [0]
-      for (let s = 1; s < dashSweepPath.length; s++) {
-        const a = dashSweepPath[s - 1]!, b = dashSweepPath[s]!
-        cum[s] = cum[s - 1]! + Math.hypot(b.x - a.x, b.y - a.y)
-      }
+      for (let i = 1; i < raw.length; i++) cum[i] = cum[i - 1]! + Math.hypot(raw[i]!.x - raw[i - 1]!.x, raw[i]!.y - raw[i - 1]!.y)
       const totalLen = cum[cum.length - 1]! || 1
-      // Draw along curved path — filled zone with bright edges
-      for (let s = 0; s < dashSweepPath.length; s++) {
-        const pt = dashSweepPath[s]!
-        const sx = pt.x - camX
-        const sy = pt.y - camY
-        const posT = cum[s]! / totalLen  // 0 = oldest (back), 1 = newest (front), by distance
-        // Bright gold-white fill that fades along the trail
-        ctx.beginPath()
-        ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 210, 80, ${0.62 * fade * (0.3 + posT * 0.7)})`
-        ctx.lineWidth = grace * 2
-        ctx.stroke()
-        // Inner bright core
-        ctx.beginPath()
-        ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 255, 210, ${0.36 * fade * (0.3 + posT * 0.7)})`
-        ctx.lineWidth = grace
-        ctx.stroke()
-      }
-      // Crisp OUTLINE rings (gold edges, red edges, white center) taper HARD toward the back (posT^3)
-      // so only the FRONT reads as a ring and the interior is just the soft filled trail. Otherwise
-      // every sampled point drew an equally-bright ring, and a fast/long (Slipstream / double-dash)
-      // smear looked like a CHAIN of separate rings. The wide RED danger BAND keeps the soft gradient
-      // (it's a fill, not a ring). Crisp outlines are skipped once they've faded out (saves strokes).
-      for (let s = 0; s < dashSweepPath.length; s++) {
-        const pt = dashSweepPath[s]!
-        const sx = pt.x - camX
-        const sy = pt.y - camY
-        const posT = cum[s]! / totalLen
-        // Red danger band — wide soft fill along the whole trail (fades toward the back like the gold)
-        ctx.beginPath()
-        ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
-        ctx.strokeStyle = `rgba(255, 28, 28, ${0.5 * fade * (0.3 + posT * 0.7)})`
-        ctx.lineWidth = grace * 1.6
-        ctx.stroke()
-        const crisp = fade * posT * posT * posT   // front-weighted → interior ring outlines vanish
+      const MAXPTS = 30
+      const step = Math.max(8, totalLen / (MAXPTS - 1))   // denser = more solid band
+      const pts: { x: number; y: number }[] = [raw[0]!]
+      { let target = step, seg = 1
+        while (target < totalLen && pts.length < MAXPTS - 1) {
+          while (seg < raw.length - 1 && cum[seg]! < target) seg++
+          const segLen = (cum[seg]! - cum[seg - 1]!) || 1
+          const t = (target - cum[seg - 1]!) / segLen
+          const a = raw[seg - 1]!, b = raw[seg]!
+          pts.push({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t })
+          target += step
+        } }
+      pts.push(raw[raw.length - 1]!)   // exact front (where the ring is)
+      const N = pts.length
+      // Layered bands, fading back->front. Higher floor (0.45) = a more solid trail, and a wide outer
+      // glow + a bright hot core make it fuller and pop more.
+      for (let s = 0; s < N; s++) {
+        const sx = pts[s]!.x - camX, sy = pts[s]!.y - camY
+        const soft = 0.45 + (s / (N - 1)) * 0.55
+        ctx.beginPath(); ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)   // hot red-orange danger halo
+        ctx.strokeStyle = `rgba(255, 70, 25, ${0.44 * fade * soft})`; ctx.lineWidth = grace * 2.9; ctx.stroke()
+        ctx.beginPath(); ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)   // hot orange body
+        ctx.strokeStyle = `rgba(255, 120, 35, ${0.92 * fade * soft})`; ctx.lineWidth = grace * 2; ctx.stroke()
+        ctx.beginPath(); ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)   // vivid red DANGER band (prominent)
+        ctx.strokeStyle = `rgba(255, 38, 38, ${0.9 * fade * soft})`; ctx.lineWidth = grace * 1.6; ctx.stroke()
+        ctx.beginPath(); ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)   // white-hot core (the pop)
+        ctx.strokeStyle = `rgba(255, 235, 200, ${0.62 * fade * soft})`; ctx.lineWidth = grace * 0.7; ctx.stroke()
+        // Crisp outline rings taper to the FRONT only (so it reads as one leading ring, not a chain)
+        const crisp = fade * (s / (N - 1)) ** 3
         if (crisp > 0.02) {
           for (const edgeR of [dashSweepRadius + grace, Math.max(0, dashSweepRadius - grace)]) {
-            ctx.beginPath(); ctx.arc(sx, sy, edgeR, 0, Math.PI * 2)
-            ctx.strokeStyle = `rgba(255, 225, 90, ${crisp})`; ctx.lineWidth = 2; ctx.stroke()          // gold edge
-            ctx.beginPath(); ctx.arc(sx, sy, edgeR, 0, Math.PI * 2)
-            ctx.strokeStyle = `rgba(255, 50, 50, ${0.85 * crisp})`; ctx.lineWidth = 2; ctx.stroke()    // red edge
+            ctx.beginPath(); ctx.arc(sx, sy, edgeR, 0, Math.PI * 2); ctx.strokeStyle = `rgba(255,150,45,${crisp})`; ctx.lineWidth = 2; ctx.stroke()          // hot orange edge
+            ctx.beginPath(); ctx.arc(sx, sy, edgeR, 0, Math.PI * 2); ctx.strokeStyle = `rgba(255,45,45,${0.9 * crisp})`; ctx.lineWidth = 2; ctx.stroke()      // bright red edge
           }
-          ctx.beginPath(); ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
-          ctx.strokeStyle = `rgba(255, 255, 255, ${0.72 * crisp})`; ctx.lineWidth = 2; ctx.stroke()    // white center
+          ctx.beginPath(); ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2); ctx.strokeStyle = `rgba(255,255,255,${0.78 * crisp})`; ctx.lineWidth = 2; ctx.stroke()   // white-hot center
         }
       }
-
-      // Impact flash — front-weighted (posT^2) so it flashes at the leading ring, not as a chain along
-      // the whole smear. Short-lived (~2-3 frames).
+      // White-hot IMPACT FLASH — on spawn, blow EVERY ring out to hot white for a couple frames
+      // (additive), then fade. Sells the moment of impact. Every ring flashes (not just the front).
       if (dashSweepFlash > 0.02) {
-        for (let s = 0; s < dashSweepPath.length; s++) {
-          const pt = dashSweepPath[s]!
-          const sx = pt.x - camX, sy = pt.y - camY
-          const posT = cum[s]! / totalLen
-          const fl = 0.95 * dashSweepFlash * posT * posT
-          if (fl < 0.02) continue
-          ctx.beginPath()
-          ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
-          ctx.strokeStyle = `rgba(255, 190, 175, ${fl})`   // hot white tinted red
-          ctx.lineWidth = grace * 1.6
-          ctx.stroke()
+        const prevComp = ctx.globalCompositeOperation
+        ctx.globalCompositeOperation = 'lighter'
+        for (let s = 0; s < N; s++) {
+          const fl = dashSweepFlash * (0.55 + (s / (N - 1)) * 0.45)   // all rings flash; front a touch hotter
+          const sx = pts[s]!.x - camX, sy = pts[s]!.y - camY
+          ctx.beginPath(); ctx.arc(sx, sy, dashSweepRadius, 0, Math.PI * 2)
+          ctx.strokeStyle = `rgba(255, 248, 240, ${0.62 * fl})`; ctx.lineWidth = grace * 2.2; ctx.stroke()
         }
+        ctx.globalCompositeOperation = prevComp
       }
     }
   }
@@ -10383,9 +10382,14 @@ function drawEnemy(enemy: Enemy, player: Player): void {
 
     const hr = enemy.cr, hg = enemy.cg, hb = enemy.cb
 
-    // Death ripples + red hit particles on first frame
+    // Death ripples + a glowing flash + red hit particles on first frame
     if (dt < 0.02) {
       spawnDeathRipples(ex, ey, r, enemy.color)
+      // Glowing flash — a big bright additive glow pop (white-hot → enemy color) that sells the kill
+      spawnParticle(ex, ey, 0, 0, 255, 250, 235, 0.15, 26 + r * 0.6,
+        Math.min(255, hr + 120), Math.min(255, hg + 120), Math.min(255, hb + 120))
+      spawnParticle(ex, ey, 0, 0, 255, 238, 205, 0.2, 16 + r * 0.4,
+        Math.min(255, hr + 90), Math.min(255, hg + 90), Math.min(255, hb + 90))
     }
     if (dt < 0.02) {
       const redCount = Math.max(4, Math.floor(10 * sizeScale))
@@ -10395,7 +10399,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         const px = ex + Math.cos(angle) * dist
         const py = ey + Math.sin(angle) * dist
         const speed = (300 + Math.random() * 350) * sizeScale
-        const pSize = (5 + Math.random() * 4) * sizeScale
+        const pSize = (7 + Math.random() * 5) * sizeScale   // bigger death drops
         spawnParticle(px, py, Math.cos(angle) * speed, Math.sin(angle) * speed,
           255, 60 + Math.floor(Math.random() * 45), 55, 0.21 + Math.random() * 0.14, pSize)
       }
@@ -10413,7 +10417,7 @@ function drawEnemy(enemy: Enemy, player: Player): void {
         const vx = Math.cos(angle) * speed + (Math.random() - 0.5) * 80
         const vy = Math.sin(angle) * speed + (Math.random() - 0.5) * 80 - 20
         const isWhite = Math.random() < 0.3
-        const pSize = (3 + Math.random() * 3) * sizeScale
+        const pSize = (4.5 + Math.random() * 4) * sizeScale   // bigger death burst
         spawnParticle(px, py, vx, vy,
           isWhite ? 255 : hr, isWhite ? 255 : hg, isWhite ? 255 : hb,
           0.21 + Math.random() * 0.21, pSize)
@@ -10706,11 +10710,40 @@ function drawEnemy(enemy: Enemy, player: Player): void {
       const vx = Math.cos(angle) * speed + (Math.random() - 0.5) * speed * 0.2
       const vy = Math.sin(angle) * speed + (Math.random() - 0.5) * speed * 0.2
       const sizeScale = Math.min(r / 44, 1)
-      const size = (3.2 + Math.random() * 3.2) * (0.8 + intensity * 0.2) * sizeScale * sizeScale
+      // Bigger base drops, and a GENTLE small-enemy shrink (was sizeScale², which crushed blood on
+      // normal-sized enemies) so every hit sprays visible chunks.
+      const size = (4.5 + Math.random() * 4.0) * (0.8 + intensity * 0.2) * (0.55 + 0.45 * sizeScale)
       spawnParticleAttached(px, py, vx, vy,
         255, 60 + Math.floor(Math.random() * 45), 55,
         0.31 + Math.random() * 0.22, size,
         -1, 0, 0,
+        enemy)
+    }
+    // A few chunky "gib" gobs — bigger, slower, longer-lived meat in every burst (fixed tiny count)
+    const gScale = Math.min(r / 44, 1)
+    const gibCount = 2 + Math.floor(Math.random() * 2)
+    for (let i = 0; i < gibCount; i++) {
+      const angle = damageArcStart + Math.random() * arcSpan
+      const dist = Math.random() * r * 0.6
+      const gspeed = (150 + Math.random() * 210) * (0.8 + intensity * 0.2)
+      spawnParticleAttached(enemy.x + Math.cos(angle) * dist, enemy.y + Math.sin(angle) * dist,
+        Math.cos(angle) * gspeed + (Math.random() - 0.5) * gspeed * 0.2,
+        Math.sin(angle) * gspeed + (Math.random() - 0.5) * gspeed * 0.2,
+        205 + Math.floor(Math.random() * 40), 25 + Math.floor(Math.random() * 25), 30,
+        0.42 + Math.random() * 0.3, (9 + Math.random() * 6) * (0.65 + 0.35 * gScale),
+        -1, 0, 0,
+        enemy)
+    }
+    // Hot impact SPARK — a bright hot orange-white core pop (additive glow) at the wound; sells the hit
+    const sparkCount = 1 + Math.floor(Math.random() * 2)
+    for (let i = 0; i < sparkCount; i++) {
+      const angle = damageArcStart + Math.random() * arcSpan
+      const sspeed = 50 + Math.random() * 120
+      spawnParticleAttached(enemy.x + Math.cos(angle) * r * 0.5, enemy.y + Math.sin(angle) * r * 0.5,
+        Math.cos(angle) * sspeed, Math.sin(angle) * sspeed,
+        255, 230, 185,
+        0.13 + Math.random() * 0.08, (6 + Math.random() * 4) * (0.6 + 0.4 * gScale),
+        255, 130, 45,   // tintR >= 0 → additive glow, ages to warm orange
         enemy)
     }
     // Blood spray from center — enemy colored

@@ -5,7 +5,7 @@ import { shouldFire } from '../audio/PatternClock.ts'
 import { probe } from '../audio/TimingProbe.ts'
 import * as Input from '../game/InputManager.ts'
 import { emit } from '../core/EventBus.ts'
-import { playDash, playWindup, playChargeReady } from '../audio/AudioEngine.ts'
+import { playDash, playWindup, playChargeReady, playDashSweep } from '../audio/AudioEngine.ts'
 import { showToast, triggerDashFailFlash } from '../render/Renderer.ts'
 
 let dashCDToastFired = false
@@ -819,6 +819,23 @@ export function updatePlayer(player: Player, dt: number): void {
     // at an old location. A stale dash sits at dashTimer ≈ -1. Reference-freeze (reset gives a new array).
     if (player.dashTimer > -0.15 && player.attackTimer >= 0 && player.attackTimer < ATTACK_EXPAND_TIME && player.dashPath.length > 1) {
       player.pendingSmearPath = player.dashPath
+    }
+    // Beat-dash SLICE sound — fire it HERE (at the dash), not only at the ring peak, for the cases
+    // the peak-fired smear MISSES entirely: a beat-dash pressed ON or AFTER the peak (same-frame
+    // input runs after the peak emit; or the late-grace window fires beats after it). In those cases
+    // pendingSmearPath/isDashing aren't set when player:beat emits, so the smear would render but stay
+    // SILENT. We only fire here when the peak is NOT still upcoming (else the peak handles it — firing
+    // both would double). Reads the outgoing trail BEFORE the reset below, so the tier still scales
+    // with the smear length. Freshness gate (dashTimer > -0.15) = a real chain, not a stale path.
+    const peakUpcoming = player.attackTimer >= 0 && player.attackTimer < ATTACK_EXPAND_TIME
+    if (doBeatDash && !peakUpcoming && player.dashTimer > -0.15 && player.dashPath.length > 1) {
+      const path = player.dashPath
+      const startIdx = Math.floor(path.length * 0.7)   // last 30% — matches the smear's DASH_SWEEP_CAP
+      let smearLen = 0
+      for (let i = startIdx + 1; i < path.length; i++) {
+        smearLen += Math.hypot(path[i]!.x - path[i - 1]!.x, path[i]!.y - path[i - 1]!.y)
+      }
+      if (smearLen > 1) playDashSweep(smearLen / 124)
     }
     player.dashPath = [{ x: player.x, y: player.y }]
     player.dashStartX = player.x
