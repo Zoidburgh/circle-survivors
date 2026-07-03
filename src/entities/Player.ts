@@ -761,14 +761,14 @@ export function updatePlayer(player: Player, dt: number): void {
   // later fire moment when the window may have just closed.
   const computeOnBeat = (): boolean => {
     const earlyGrace = player.attackTimer >= 0
-      && player.attackTimer >= ATTACK_EXPAND_TIME - 0.15
+      && player.attackTimer >= ATTACK_EXPAND_TIME - 0.12
       && player.attackTimer < ATTACK_EXPAND_TIME
-    const lateGrace = player.mainRingPeakAge < 0.13
+    const lateGrace = player.mainRingPeakAge < 0.10
     if (earlyGrace || lateGrace) return true
     for (let i = 0; i < player.extraRingCount; i++) {
       const t = player.extraRingTimers[i]!
-      const eEarly = t >= 0 && t >= ATTACK_EXPAND_TIME - 0.15 && t < ATTACK_EXPAND_TIME
-      const eLate = player.extraRingPeakAges[i]! < 0.13
+      const eEarly = t >= 0 && t >= ATTACK_EXPAND_TIME - 0.12 && t < ATTACK_EXPAND_TIME
+      const eLate = player.extraRingPeakAges[i]! < 0.10
       if (eEarly || eLate) return true
     }
     return false
@@ -811,13 +811,13 @@ export function updatePlayer(player: Player, dt: number): void {
 
     player.dashDirX = Math.cos(player.facingAngle)
     player.dashDirY = Math.sin(player.facingAngle)
-    // If a ring peak is still PENDING (ring expanding, not yet peaked) AND the outgoing trail is FRESH
-    // (the interrupted dash is active or ended within ~150ms — dashTimer > -0.15), preserve it so the
-    // peak's smear fires behind you instead of collapsing to a tiny front smear when the reset below
-    // wipes the path. The freshness gate is critical: without it a LONE dash on a later beat would
-    // snapshot the STALE trail still sitting in dashPath from a past chain, making the next smear fire
-    // at an old location. A stale dash sits at dashTimer ≈ -1. Reference-freeze (reset gives a new array).
-    if (player.dashTimer > -0.15 && player.attackTimer >= 0 && player.attackTimer < ATTACK_EXPAND_TIME && player.dashPath.length > 1) {
+    // If a ring peak is still PENDING (ring expanding, not yet peaked) AND the interrupted dash is
+    // STILL ACTIVE (dashTimer >= 0 — the two dashes actually overlap; no post-dash grace tail),
+    // preserve it so the peak's smear fires behind you instead of collapsing to a tiny front smear
+    // when the reset below wipes the path. The active gate is critical: it rejects the STALE trail
+    // still sitting in dashPath from a past chain (a stale/ended dash sits at dashTimer < 0), so a
+    // LONE dash on a later beat can't snapshot an old location. Reference-freeze (reset gives a new array).
+    if (player.dashTimer >= 0 && player.attackTimer >= 0 && player.attackTimer < ATTACK_EXPAND_TIME && player.dashPath.length > 1) {
       player.pendingSmearPath = player.dashPath
     }
     // Beat-dash SLICE sound — fire it HERE (at the dash), not only at the ring peak, for the cases
