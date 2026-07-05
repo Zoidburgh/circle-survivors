@@ -12,7 +12,7 @@ import { getPlayer, getEnemies, getPhase, setPhase, isRunComplete, resetGameStat
 import { update, render, clearDesignerEphemerals } from './core/GameManager.ts'
 import { initHitDetection } from './game/HitDetection.ts'
 import { initDesigner, challengeCanvasClick, challengeCanvasMouseMove, challengeCanvasMouseDown, challengeCanvasMouseUp, onStartChallenge, onTestPlay } from './game/EnemyDesigner.ts'
-import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, startZoomDrag, updateZoomDrag, stopZoomDrag, setCameraZoom, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd, startIrisTransition, startIrisOpen, isIrisActive, cycleProTip, getCsSelectedIndex, setCsSelectedIndex, navigateChallenge, showToast, isPortalClick, resetVictoryScroll } from './render/Renderer.ts'
+import { handleChallengeSelectClick, handleChallengeSelectHover, getNameEntryText, setNameEntryText, resetNameEntry, scrollVictoryLeaderboard, handleVictoryScrollDragStart, handleVictoryScrollDrag, handleVictoryScrollDragEnd, setLastSubmittedName, setLastSubmittedTime, startVolumeDrag, updateVolumeDrag, stopVolumeDrag, startZoomDrag, updateZoomDrag, stopZoomDrag, setCameraZoom, showControlsHint, updatePauseMouse, screenToCanvas, dismissAddToHomeMessage, touchScrollStart, touchScrollMove, touchScrollEnd, startIrisTransition, startIrisOpen, isIrisActive, cycleProTip, getCsSelectedIndex, setCsSelectedIndex, navigateChallenge, showToast, resetVictoryScroll } from './render/Renderer.ts'
 import { setVolume } from './audio/AudioEngine.ts'
 import { submitScore, isNameClean, fetchOnlineScores } from './game/HighScores.ts'
 import type { Challenge } from './game/ChallengeBuilder.ts'
@@ -640,11 +640,6 @@ canvas.addEventListener('pointercancel', e => {
 
 canvas.addEventListener('click', e => {
   const c = screenToCanvas(e.clientX, e.clientY)
-  // Portal button — works on all screens
-  if (isPortalClick(c.x, c.y)) {
-    goToPortal()
-    return
-  }
   // Name entry submit button — handles both compact and full layout
   if (getPhase() === 'entering_name') {
     const ncx = canvas.width / 2
@@ -930,29 +925,6 @@ function checkNameInput(): void {
   requestAnimationFrame(checkNameInput)
 }
 requestAnimationFrame(checkNameInput)
-
-// ── Portal — passive exit button always available ──
-const urlParams = new URLSearchParams(window.location.search)
-const isPortalEntry = urlParams.get('portal') === 'true'
-const portalRef = urlParams.get('ref') || ''
-
-export function goToPortal(): void {
-  const name = encodeURIComponent(getNameEntryText() || 'Player')
-  window.location.href = `https://vibejam.cc/portal/2026?username=${name}&ref=beatbackgame.com`
-}
-
-// ── Portal entry — drop straight into Beginner Challenge ──
-if (isPortalEntry) {
-  const challenges = getChallenges()
-  const beginner = challenges.find(c => c.name === 'Beginner Challenge')
-  if (beginner) {
-    setTimeout(() => {
-      ensureAudio()
-      Audio.switchBeat(0)
-      launchChallenge(beginner)
-    }, 100)
-  }
-}
 
 // ── Start game loop ──
 // advanceGameTime runs at frame-start (before the sim) so node hit-detection and rendering sample the

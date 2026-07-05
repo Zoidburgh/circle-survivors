@@ -7447,7 +7447,6 @@ function drawRing(worldX: number, worldY: number, ring: Ring, attackTimer: numbe
       if (__DEV__ && particleCount >= MAX_PARTICLES) { ringDropped++; dbgRingDrop++ }
       spawnParticle(px, py, vx, vy, pr, pg, pb, lt, sz, 0, tR, tG, tB, worldX, worldY, orbitStartR, true)   // priority — use the reserved slice
     }
-    if (__DEV__) console.log(`[ring] owner=${ring.owner} r=${Math.round(currentRadius)} req=${totalCount} dropped=${ringDropped} pool=${poolBefore}/${MAX_PARTICLES}`)
   }
 
   // Resolve blocked arcs once — reuse for all draw passes
@@ -13539,7 +13538,6 @@ export function drawTitleScreen(dt: number): void {
 
   ctx.textAlign = 'left'
 
-  drawPortalButton()
   finalizeHoverCheck()
 }
 
@@ -14007,40 +14005,6 @@ function updateAndDrawToasts(dt: number): void {
   }
 }
 
-// ── Passive Vibe Jam Portal button — bottom right, all screens ──
-const PORTAL_W = 220
-const PORTAL_H = 38
-const PORTAL_PAD = 37
-
-export function drawPortalButton(): void {
-  const px = width - PORTAL_W - 4
-  const py = height - PORTAL_H - PORTAL_PAD
-  const hov = checkHover('portal_btn', pauseMouseX >= px && pauseMouseX <= px + PORTAL_W && pauseMouseY >= py && pauseMouseY <= py + PORTAL_H)
-  const beat = globalBeatPulse || (titleBeatPulse ?? 0)
-
-  ctx.globalAlpha = hov ? 1 : 0.7 + beat * 0.25
-  ctx.beginPath()
-  ctx.roundRect(px, py, PORTAL_W, PORTAL_H, 6)
-  ctx.strokeStyle = `rgba(180, 80, 255, ${hov ? 0.9 : 0.5 + beat * 0.2})`
-  ctx.lineWidth = hov ? 2 : 1.5
-  ctx.stroke()
-  ctx.fillStyle = `rgba(180, 80, 255, ${hov ? 0.2 : 0.06 + beat * 0.04})`
-  ctx.fill()
-
-  ctx.font = 'bold 18px monospace'
-  ctx.textAlign = 'center'
-  ctx.fillStyle = `rgba(180, 80, 255, ${hov ? 1 : 0.85 + beat * 0.15})`
-  ctx.fillText('VIBE JAM PORTAL', px + PORTAL_W / 2, py + PORTAL_H / 2 + 6)
-  ctx.globalAlpha = 1
-  ctx.textAlign = 'left'
-}
-
-export function isPortalClick(mx: number, my: number): boolean {
-  const px = width - PORTAL_W - 4
-  const py = height - PORTAL_H - PORTAL_PAD
-  return mx >= px && mx <= px + PORTAL_W && my >= py && my <= py + PORTAL_H
-}
-
 // Controls hint — shows at challenge start, fades out
 let controlsHintTimer = 0
 const CONTROLS_HINT_DURATION = 5.25  // seconds visible
@@ -14488,7 +14452,6 @@ export function drawChallengeSelect(dt: number): void {
 
   ctx.restore()
   ctx.globalAlpha = 1
-  drawPortalButton()
   ctx.textAlign = 'left'
   finalizeHoverCheck()
 }
@@ -14848,8 +14811,6 @@ function drawHUD(player: Player, enemies: Enemy[], fps: number): void {
       ctx.stroke()
     }
   }
-
-  drawPortalButton()
 
   // Toast messages
   updateAndDrawToasts(frameDt)
