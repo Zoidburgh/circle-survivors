@@ -4,11 +4,17 @@
 import type { BeatPreset } from './BeatPresets.ts'
 import { getAttackActivity } from './MusicalSFX.ts'
 import { ELECTRONIC, type Palette, type Sustain } from './Palettes.ts'
+import { FEELS, type Feel } from './Feels.ts'
 
 // The active KIT (voices + pad/bass + swing). Rhythm/patterns/scale are unchanged by this — only
 // timbre + groove. Swapped live via setPalette().
 let activePalette: Palette = ELECTRONIC
 let sustain: Sustain | null = null
+
+// The active TIME-FEEL (step-tempo scale + optional swing override). A pure clock transform applied
+// live in the scheduler — no patterns/voices change and the loop is NOT restarted, so the shared
+// origin (beatZeroTime) that gameplay sync reads never moves. Swapped live via setFeel().
+let activeFeel: Feel = FEELS[0]!
 
 let ctx: AudioContext
 let dest: AudioNode
@@ -101,6 +107,53 @@ export function setPalette(p: Palette): void {
 }
 
 export function getActivePaletteName(): string { return activePalette.name }
+
+/** Swap the active TIME-FEEL live. Applied on the NEXT scheduled step — no loop restart, so the
+ *  shared origin (beatZeroTime) that PatternClock reads is never touched and gameplay stays in sync.
+ *  Only the music's step tempo + swing change; patterns/scale/voices are untouched.
+ *
+ *  RE-ANCHOR: `nextBeatTime` is a free-running accumulator, so changing the step size mid-loop would
+ *  otherwise leave the music grid at whatever arbitrary phase it happened to be at — a permanent,
+ *  cumulative offset from the beat grid that never recovers (measured: a Double→Half→Straight round
+ *  trip left the pulse ~125ms off baseline). To keep every feel phase-locked to the shared origin, we
+ *  re-quantize `nextBeatTime`/`currentStep` to the NEW step grid measured from beatZeroTime — the same
+ *  grid a fresh start would produce — so switching feels is lossless and downbeats stay on the beat. */
+export function setFeel(f: Feel): void {
+  activeFeel = f
+  if (!playing || !ctx) return
+  const newStepDur = (beatDuration / f.speed) / 2
+  // First step boundary at/after now, counted from the origin under the new step size.
+  const k = Math.ceil((ctx.currentTime - beatZeroTime) / newStepDur)
+  nextBeatTime = beatZeroTime + k * newStepDur
+  currentStep = ((k % loopSteps) + loopSteps) % loopSteps
+}
+
+export function getActiveFeelName(): string { return activeFeel.name }
+
+// ── Music-beat telemetry (dev probe) ─────────────────────────────────────────
+// Ring buffer of the AUDIBLE time of each music quarter-note pulse (every even step = the felt
+// "beat"). Populated as the scheduler runs, so it reflects the LIVE feel: Half-Time spaces the
+// entries out, Double-Time packs them in, and a live feel switch shows up as the phase where the
+// spacing changes. getMusicBeatDeltaMs() compares an event time to the nearest stored pulse — that's
+// how far the player's on-beat pulse lands from the music beat (+ = player late, − = early).
+const musicBeatTimes: number[] = []
+function recordMusicBeat(audibleTime: number): void {
+  musicBeatTimes.push(audibleTime)
+  if (musicBeatTimes.length > 64) musicBeatTimes.shift()
+}
+
+/** Signed ms between `atTime` (default: now) and the nearest scheduled music quarter-note pulse.
+ *  + = atTime is AFTER the music beat (late), − = before (early). null if the loop isn't running. */
+export function getMusicBeatDeltaMs(atTime?: number): number | null {
+  if (!playing || !ctx || musicBeatTimes.length === 0) return null
+  const t = atTime ?? ctx.currentTime
+  let best = Infinity
+  for (const bt of musicBeatTimes) {
+    const d = t - bt
+    if (Math.abs(d) < Math.abs(best)) best = d
+  }
+  return best === Infinity ? null : best * 1000
+}
 
 export function loadPreset(preset: BeatPreset): void {
   const wasPlaying = playing
@@ -205,17 +258,25 @@ function scheduler(): void {
     if (isGenerative && currentStep % loopSteps === 0) {
       randomizePatterns()
     }
-    // Swing — the active kit can delay the off-16ths (odd steps) for a human lilt.
-    const stepDur = beatDuration / 2
-    const swingOffset = (currentStep % 2 === 1) ? activePalette.swing * stepDur : 0
-    scheduleStep(currentStep % loopSteps, nextBeatTime + 0.37 + swingOffset)
-    nextBeatTime += beatDuration / 2
+    // TIME-FEEL — scale the beat by the active feel's speed (0.5 = half-time, 2 = double-time). Read
+    // live each step so a feel change applies smoothly without restarting the loop. feelBeatDur also
+    // feeds scheduleStep so per-hit bass envelopes stretch/compress with the tempo.
+    const feelBeatDur = beatDuration / activeFeel.speed
+    const stepDur = feelBeatDur / 2
+    // Swing — a feel can OVERRIDE the kit's swing (Shuffle); otherwise inherit the palette's lilt.
+    const swing = activeFeel.swing ?? activePalette.swing
+    const swingOffset = (currentStep % 2 === 1) ? swing * stepDur : 0
+    const audibleTime = nextBeatTime + 0.37 + swingOffset
+    scheduleStep(currentStep % loopSteps, audibleTime, feelBeatDur)
+    // Telemetry: even steps are the quarter-note pulse (the felt beat) — record their audible time.
+    if (currentStep % 2 === 0) recordMusicBeat(audibleTime)
+    nextBeatTime += stepDur
     currentStep = (currentStep + 1) % loopSteps
   }
   timerID = window.setTimeout(scheduler, 25)
 }
 
-function scheduleStep(step: number, time: number): void {
+function scheduleStep(step: number, time: number, feelBeatDur: number = beatDuration): void {
   // Each instrument uses step % its own pattern length — allows polyrhythmic patterns
   const kStep = step % kickPattern.length
   const sStep = step % snarePattern.length
@@ -226,7 +287,7 @@ function scheduleStep(step: number, time: number): void {
   if (kickPattern[kStep]) { activePalette.kick(ctx, dest, time); sustain?.duck(time) }
   if (snarePattern[sStep]) activePalette.snare(ctx, dest, time)
   if (hihatPattern[hStep]) activePalette.hihat(ctx, dest, time)
-  if (bassPattern[bStep]) sustain?.bassHit(time, noteFreq(bassNotes[bStep % bassNotes.length]!, 0), beatDuration)
+  if (bassPattern[bStep]) sustain?.bassHit(time, noteFreq(bassNotes[bStep % bassNotes.length]!, 0), feelBeatDur)
   if (melodyPattern[mStep]) {
     const duck = 1 - getAttackActivity() * 0.85   // combat owns the lead; the music melody recedes
     const g = Math.max(0.0005, 0.045 * melodyDuck * duck)

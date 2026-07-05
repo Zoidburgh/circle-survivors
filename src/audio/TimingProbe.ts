@@ -8,9 +8,14 @@
 // Zero cost in normal play: probe() no-ops until the overlay is opened.
 
 import { getAbsoluteBeats } from './PatternClock.ts'
+import { getActiveFeelName } from './BeatLoop.ts'
 import { BEAT_SEC } from '../utils/constants.ts'
 
 let enabled = false
+// CSV time-series logging (toggled from the overlay) — console.logs each probed sample as
+// `elapsedMs,feel,label,offsetMs` so a run across feel switches can be captured and charted.
+let logging = false
+let logStart = 0
 // Grid the offset is measured against: 1 = whole beat, 2 = half-beat, 4 = quarter.
 // Default 2 because staccato/tether events commonly land on half-beats — measuring
 // against whole beats makes those read as ±500ms noise.
@@ -34,6 +39,19 @@ export function probe(label: string): void {
   if (ms > s.max) s.max = ms
 }
 
+/** Record a PRE-COMPUTED offset (ms) into the same stats/overlay machinery. Used for measurements
+ *  that aren't relative to the gameplay grid — e.g. the player pulse vs the live MUSIC beat, which
+ *  is what reveals feel-switch drift. + = late, − = early, by the caller's convention. */
+export function probeValue(label: string, ms: number | null): void {
+  if (!enabled || ms == null) return
+  let s = stats.get(label)
+  if (!s) { s = { last: 0, sum: 0, n: 0, min: Infinity, max: -Infinity }; stats.set(label, s); order.push(label) }
+  s.last = ms; s.sum += ms; s.n++
+  if (ms < s.min) s.min = ms
+  if (ms > s.max) s.max = ms
+  if (logging) console.log(`${(performance.now() - logStart).toFixed(0)},${getActiveFeelName()},${label},${ms.toFixed(1)}`)
+}
+
 function resetStats(): void { stats.clear(); order.length = 0 }
 
 /** Plain-text snapshot of the current stats — for copy-to-clipboard. */
@@ -43,7 +61,7 @@ function reportText(): string {
     const avg = s.sum / s.n
     return `${label}: avg ${avg >= 0 ? '+' : ''}${avg.toFixed(1)}ms  (last ${s.last.toFixed(0)}, min ${s.min.toFixed(0)}, max ${s.max.toFixed(0)}, n=${s.n})`
   })
-  return `TIMING PROBE (ms from 1/${gridDivision}-beat grid, + late / - early)\n` + lines.join('\n')
+  return `TIMING PROBE (ms from 1/${gridDivision}-beat grid, + late / - early) — feel: ${getActiveFeelName()}\n` + lines.join('\n')
 }
 
 // ── overlay ──
@@ -72,12 +90,12 @@ function refresh(): void {
     </tr>`
   }).join('')
   body.innerHTML =
-    `<div style="color:#FF9CFC;font-weight:bold;margin-bottom:4px;">TIMING PROBE — ms from 1/${gridDivision}-beat grid (+late / −early)</div>` +
+    `<div style="color:#FF9CFC;font-weight:bold;margin-bottom:4px;">TIMING PROBE — ms from 1/${gridDivision}-beat grid (+late / −early) · feel: <span style="color:#7DFFB0;">${getActiveFeelName()}</span></div>` +
     `<table style="border-collapse:collapse;font:11px monospace;"><tr style="color:#888;">
        <td style="padding-right:8px;">event</td><td style="padding:0 8px;text-align:right;">last</td>
        <td style="padding:0 8px;text-align:right;">avg</td><td style="padding:0 8px;text-align:right;">min/max</td>
        <td style="padding-left:8px;text-align:right;">n</td></tr>${rows}</table>` +
-    `<div style="color:#666;margin-top:6px;">'player' is the reference (your on-beat pulse). press 'J' to close.</div>`
+    `<div style="color:#666;margin-top:6px;">'player' = on-beat pulse vs gameplay grid (reference). 'vs music' = pulse vs the live music beat — watch it JUMP when you switch FEEL. press 'J' to close.</div>`
 }
 
 function build(): void {
@@ -114,6 +132,17 @@ function build(): void {
       .catch(() => { console.log(text); copy.textContent = 'see console'; setTimeout(() => { copy.textContent = 'copy' }, 1200) })
   })
   panel.appendChild(copy)
+
+  const log = document.createElement('button')
+  const logLabel = () => logging ? 'log: ON' : 'log: off'
+  log.textContent = logLabel()
+  log.style.cssText = 'margin:8px 0 0 6px;padding:3px 10px;background:#1c1830;color:#cde;border:1px solid #FFD86E;border-radius:4px;font:11px monospace;cursor:pointer;'
+  log.addEventListener('click', () => {
+    logging = !logging
+    if (logging) { logStart = performance.now(); console.log('# elapsedMs,feel,label,offsetMs') }
+    log.textContent = logLabel()
+  })
+  panel.appendChild(log)
   document.body.appendChild(panel)
 }
 

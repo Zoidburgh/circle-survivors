@@ -1,7 +1,8 @@
 import { initSynth, playKick, playBass, playChord, playPluck } from './MusicSynth.ts'
-import { initBeatLoop, startBeatLoop, loadPreset, getCurrentPresetName, setGenerative, setBeatLoopScale, setPalette } from './BeatLoop.ts'
+import { initBeatLoop, startBeatLoop, loadPreset, getCurrentPresetName, setGenerative, setBeatLoopScale, setPalette, setFeel } from './BeatLoop.ts'
 import { BEAT_PRESETS } from './BeatPresets.ts'
 import { PALETTES } from './Palettes.ts'
+import { FEELS } from './Feels.ts'
 import { initDrone, startDrone } from './MusicDrone.ts'
 import { generateWaveMusic, pickMelodyNote, pickChordNotes, degreeToFreq } from './MusicScale.ts'
 import type { WaveMusic } from './MusicScale.ts'
@@ -239,6 +240,16 @@ export function switchPalette(index: number): void {
 }
 export function getPaletteIndex(): number { return currentPaletteIndex }
 export function getPaletteNames(): string[] { return PALETTES.map(p => p.name) }
+
+// ── TIME-FEEL (step-tempo scale + swing override), orthogonal to both KIT and TRACK ──
+let currentFeelIndex = 0
+export function switchFeel(index: number): void {
+  ensureContext()
+  const f = FEELS[index]
+  if (f) { currentFeelIndex = index; setFeel(f) }
+}
+export function getFeelIndex(): number { return currentFeelIndex }
+export function getFeelNames(): string[] { return FEELS.map(f => f.name) }
 
 /** Get audio context time — single source of truth for all timing */
 export function getAudioTime(): number {

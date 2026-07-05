@@ -1,10 +1,12 @@
-// Music menu — a DOM panel anchored under the top-left ♫ HUD button. Two sections: KIT (the palette /
-// voice set) and TRACK (the rhythm preset). They're independent axes, so you pick a kit AND a track
-// and hear the combination — e.g. Organic + Groove. Opened/closed by the canvas ♫ button (main.ts).
+// Music menu — a DOM panel anchored under the top-left ♫ HUD button. Three sections: KIT (the palette /
+// voice set), TRACK (the rhythm preset), and FEEL (the time-feel / step-tempo). They're independent
+// axes, so you pick a kit AND a track AND a feel and hear the combination — e.g. Organic + Groove +
+// Half-Time. Opened/closed by the canvas ♫ button (main.ts).
 
 import {
   switchBeat, getBeatNames, getBeatIndex,
   switchPalette, getPaletteNames, getPaletteIndex,
+  switchFeel, getFeelNames, getFeelIndex,
 } from './AudioEngine.ts'
 
 let panel: HTMLDivElement | null = null
@@ -46,6 +48,12 @@ function rebuild(): void {
   panel.appendChild(makeHeader('♫ KIT'))
   getPaletteNames().forEach((name, i) => {
     panel!.appendChild(makeRow(name, i === getPaletteIndex(), () => { switchPalette(i); rebuild() }))
+  })
+  // FEEL — the time-feel (step tempo + swing); swap live and keep the menu open so you can A/B it
+  // against the current kit + track.
+  panel.appendChild(makeHeader('♫ FEEL'))
+  getFeelNames().forEach((name, i) => {
+    panel!.appendChild(makeRow(name, i === getFeelIndex(), () => { switchFeel(i); rebuild() }))
   })
   // TRACK — the rhythm preset; picking one closes the menu.
   panel.appendChild(makeHeader('♫ TRACK'))

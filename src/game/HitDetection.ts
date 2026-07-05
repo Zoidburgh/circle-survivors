@@ -1,5 +1,6 @@
 import { on, emit } from '../core/EventBus.ts'
-import { probe } from '../audio/TimingProbe.ts'
+import { probe, probeValue } from '../audio/TimingProbe.ts'
+import { getMusicBeatDeltaMs } from '../audio/BeatLoop.ts'
 import { getPlayer, getGrid, getEnemies } from '../core/GameState.ts'
 import { getEffectiveRadius, hurtPlayer, healPlayer } from '../entities/Player.ts'
 import { damageEnemy, healEnemy, getRingOrigins, spawnDrops, nodeWorldPos, nodeRadius, nodeDepth, damageNode } from '../entities/Enemy.ts'
@@ -22,6 +23,7 @@ let sweepMasterCooldown = 0
 export function initHitDetection(): void {
   on('player:beat', () => {
     probe('player')   // reference: the player ring PEAK = the felt on-beat moment
+    probeValue('vs music', getMusicBeatDeltaMs())   // how far that pulse lands from the LIVE music beat (reveals feel-switch drift)
     sweepMasterCooldown = Math.max(0, sweepMasterCooldown - 1)  // tick down per beat (~1/sec at 60bpm)
     incrementRunBeat()
     const player = getPlayer()
