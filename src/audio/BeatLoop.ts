@@ -25,6 +25,10 @@ let nextBeatTime = 0
 let currentStep = 0
 let scheduleAheadTime = 0.1
 let timerID: number | null = null
+// Audible-time lead added to every scheduled step. Sets the phase of the music grid against the
+// player pulse: the timing probe measured the pulse landing ~5ms BEFORE the music beat at 0.37, so
+// 0.365 pulls the beat back onto the pulse. Nudge down = music earlier, up = music later.
+const SCHEDULE_LEAD = 0.365
 let currentPresetName = ''
 
 // Master loop length in steps (default 16 = 1 phrase). A preset can set `loopSteps` longer (e.g. 32 =
@@ -108,24 +112,32 @@ export function setPalette(p: Palette): void {
 
 export function getActivePaletteName(): string { return activePalette.name }
 
-/** Swap the active TIME-FEEL live. Applied on the NEXT scheduled step — no loop restart, so the
- *  shared origin (beatZeroTime) that PatternClock reads is never touched and gameplay stays in sync.
- *  Only the music's step tempo + swing change; patterns/scale/voices are untouched.
+/** Re-quantize the scheduler phase to the shared origin (beatZeroTime) under the CURRENT step size.
+ *  Called after any LIVE change to tempo/feel/track so the music grid stays locked to the beat grid
+ *  instead of drifting to an arbitrary phase.
  *
- *  RE-ANCHOR: `nextBeatTime` is a free-running accumulator, so changing the step size mid-loop would
- *  otherwise leave the music grid at whatever arbitrary phase it happened to be at — a permanent,
- *  cumulative offset from the beat grid that never recovers (measured: a Double→Half→Straight round
- *  trip left the pulse ~125ms off baseline). To keep every feel phase-locked to the shared origin, we
- *  re-quantize `nextBeatTime`/`currentStep` to the NEW step grid measured from beatZeroTime — the same
- *  grid a fresh start would produce — so switching feels is lossless and downbeats stay on the beat. */
+ *  Why it's needed: `nextBeatTime` is a free-running accumulator. Changing the step size mid-loop (a
+ *  feel switch) or swapping patterns (a track switch) without re-anchoring leaves the grid at whatever
+ *  phase it happened to be at — a permanent, cumulative offset that never recovers (measured: a
+ *  Double→Half→Straight feel round trip left the pulse ~125ms off baseline). We snap the next step to
+ *  the grid a fresh start from beatZeroTime would produce. Anchoring from the current scheduling
+ *  frontier (not just `now`) means we never re-schedule an already-committed step, so no doubled hits.
+ *  No-op when stopped — startBeatLoop owns setting the origin. */
+function reanchorClock(): void {
+  if (!playing || !ctx) return
+  const stepDur = (beatDuration / activeFeel.speed) / 2
+  const from = Math.max(ctx.currentTime, nextBeatTime)
+  const k = Math.ceil((from - beatZeroTime) / stepDur)
+  nextBeatTime = beatZeroTime + k * stepDur
+  currentStep = ((k % loopSteps) + loopSteps) % loopSteps
+}
+
+/** Swap the active TIME-FEEL live — no loop restart, so the shared origin (beatZeroTime) that
+ *  PatternClock reads is never touched and gameplay stays in sync. Only the step tempo + swing
+ *  change; patterns/scale/voices are untouched. Re-anchors so the switch is phase-lossless. */
 export function setFeel(f: Feel): void {
   activeFeel = f
-  if (!playing || !ctx) return
-  const newStepDur = (beatDuration / f.speed) / 2
-  // First step boundary at/after now, counted from the origin under the new step size.
-  const k = Math.ceil((ctx.currentTime - beatZeroTime) / newStepDur)
-  nextBeatTime = beatZeroTime + k * newStepDur
-  currentStep = ((k % loopSteps) + loopSteps) % loopSteps
+  reanchorClock()
 }
 
 export function getActiveFeelName(): string { return activeFeel.name }
@@ -155,10 +167,13 @@ export function getMusicBeatDeltaMs(atTime?: number): number | null {
   return best === Infinity ? null : best * 1000
 }
 
+/** Swap the active TRACK live. Reassigns the patterns/notes/tempo/loop-length while the scheduler
+ *  keeps running — NO stop/restart, so beatZeroTime (the shared gameplay+music origin) is never reset.
+ *  A restart would yank the gameplay beat grid to "now", re-phasing the player's attack cadence and
+ *  snapping enemies mid-pattern back to loop-start — a hitch on every track change. Live-swapping +
+ *  re-anchoring keeps the origin fixed for the whole session; the new track picks up seamlessly at the
+ *  current loop position (like the KIT swap already does). The origin is set once, by startBeatLoop. */
 export function loadPreset(preset: BeatPreset): void {
-  const wasPlaying = playing
-  if (wasPlaying) stopBeatLoop()
-
   kickPattern = preset.kick
   snarePattern = preset.snare
   hihatPattern = preset.hihat
@@ -171,7 +186,7 @@ export function loadPreset(preset: BeatPreset): void {
   loopSteps = preset.loopSteps ?? 16
   currentPresetName = preset.name
 
-  if (wasPlaying) startBeatLoop()
+  reanchorClock()   // re-lock the phase to beatZeroTime under the (possibly new) tempo/loop length
 }
 
 export function getCurrentPresetName(): string {
@@ -266,10 +281,11 @@ function scheduler(): void {
     // Swing — a feel can OVERRIDE the kit's swing (Shuffle); otherwise inherit the palette's lilt.
     const swing = activeFeel.swing ?? activePalette.swing
     const swingOffset = (currentStep % 2 === 1) ? swing * stepDur : 0
-    const audibleTime = nextBeatTime + 0.37 + swingOffset
+    const audibleTime = nextBeatTime + SCHEDULE_LEAD + swingOffset
     scheduleStep(currentStep % loopSteps, audibleTime, feelBeatDur)
-    // Telemetry: even steps are the quarter-note pulse (the felt beat) — record their audible time.
-    if (currentStep % 2 === 0) recordMusicBeat(audibleTime)
+    // Telemetry (dev only): even steps are the quarter-note pulse (the felt beat) — record their
+    // audible time so the TimingProbe can measure the player pulse against the live music beat.
+    if (__DEV__ && currentStep % 2 === 0) recordMusicBeat(audibleTime)
     nextBeatTime += stepDur
     currentStep = (currentStep + 1) % loopSteps
   }
