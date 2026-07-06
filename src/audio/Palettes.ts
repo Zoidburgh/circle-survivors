@@ -759,4 +759,113 @@ export const JAZZ: Palette = {
   },
 }
 
-export const PALETTES: Palette[] = [ELECTRONIC, ORGANIC, GAMELAN, CHIPTUNE, LOFI, CARTOON, JAZZ]
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+// KITCHEN — a one-man cookware band. Every voice is a struck/resonant kitchen object: a stockpot
+// kick, a frying-pan snare, fork-on-glass hats, a singing wine-glass lead, and a dull Tupperware
+// bass, over a faint fridge hum (a kitchen is never truly silent). Built from the SAME strikeBronze
+// inharmonic-resonator engine as Gamelan — just different partial ratios + decays per object.
+// ══════════════════════════════════════════════════════════════════════════════════════════════
+export const KITCHEN: Palette = {
+  name: 'Kitchen',
+  swing: 0.08,   // a loose, human clatter
+  kick(ctx, dest, time) {
+    // Stockpot bonk — deep sine body that drops, plus a short inharmonic aluminium-pot ring
+    const o = ctx.createOscillator(); const g = ctx.createGain()
+    o.type = 'sine'
+    o.frequency.setValueAtTime(150, time)
+    o.frequency.exponentialRampToValueAtTime(58, time + 0.09)
+    g.gain.setValueAtTime(0.8, time)
+    g.gain.exponentialRampToValueAtTime(0.001, time + 0.22)
+    o.connect(g); g.connect(dest); o.start(time); o.stop(time + 0.24)
+    // Metallic pot "bonng" — inharmonic partials, short decay
+    strikeBronze(ctx, dest, time, 190, 0.16, 0.18, [1, 2.4, 4.1], 0.004)
+    // Soft hand/mallet transient (not a bright click)
+    const n = ctx.createBufferSource(); n.buffer = getNoise(ctx)
+    const lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1200
+    const ng = ctx.createGain(); ng.gain.setValueAtTime(0.12, time); ng.gain.exponentialRampToValueAtTime(0.001, time + 0.03)
+    n.connect(lp); lp.connect(ng); ng.connect(dest); n.start(time); n.stop(time + 0.04)
+  },
+  snare(ctx, dest, time) {
+    // Frying-pan slap — a bright ringing metallic clang + the noisy smack on the pan
+    strikeBronze(ctx, dest, time, 520, 0.2, 0.2, [1, 3.2, 5.8, 8.1], 0.005)
+    const n = ctx.createBufferSource(); n.buffer = getNoise(ctx)
+    const bp = ctx.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 3000; bp.Q.value = 0.8
+    const ng = ctx.createGain()
+    ng.gain.setValueAtTime(0.0001, time)
+    ng.gain.linearRampToValueAtTime(0.22, time + 0.002)
+    ng.gain.exponentialRampToValueAtTime(0.001, time + 0.09)
+    n.connect(bp); bp.connect(ng); ng.connect(dest); n.start(time); n.stop(time + 0.1)
+  },
+  hihat(ctx, dest, time) {
+    // Fork ting on a glass — a very short, bright metallic tick (two high partials + a metal click)
+    const o = ctx.createOscillator(); const g = ctx.createGain()
+    o.type = 'sine'; o.frequency.value = 7200
+    g.gain.setValueAtTime(0.05, time); g.gain.exponentialRampToValueAtTime(0.001, time + 0.03)
+    o.connect(g); g.connect(dest); o.start(time); o.stop(time + 0.035)
+    const o2 = ctx.createOscillator(); const g2 = ctx.createGain()
+    o2.type = 'sine'; o2.frequency.value = 9600
+    g2.gain.setValueAtTime(0.03, time); g2.gain.exponentialRampToValueAtTime(0.001, time + 0.02)
+    o2.connect(g2); g2.connect(dest); o2.start(time); o2.stop(time + 0.025)
+    const n = ctx.createBufferSource(); n.buffer = getNoise(ctx)
+    const hp = ctx.createBiquadFilter(); hp.type = 'highpass'; hp.frequency.value = 7000
+    const ng = ctx.createGain(); ng.gain.setValueAtTime(0.04, time); ng.gain.exponentialRampToValueAtTime(0.001, time + 0.012)
+    n.connect(hp); hp.connect(ng); ng.connect(dest); n.start(time); n.stop(time + 0.015)
+  },
+  melody(ctx, dest, time, freq, gain) {
+    // Singing wine-glass rim — a nearly pure tone that swells in, a high shimmer partial, and a
+    // faintly detuned twin for the slow beating you hear from a rubbed glass. Long ring.
+    const v = gain * 1.7
+    const o = ctx.createOscillator(); const g = ctx.createGain()
+    o.type = 'sine'; o.frequency.value = freq
+    g.gain.setValueAtTime(0.0001, time)
+    g.gain.linearRampToValueAtTime(v, time + 0.02)
+    g.gain.exponentialRampToValueAtTime(0.001, time + 0.7)
+    o.connect(g); g.connect(dest); o.start(time); o.stop(time + 0.72)
+    const o2 = ctx.createOscillator(); const g2 = ctx.createGain()
+    o2.type = 'sine'; o2.frequency.value = freq * 4.2
+    g2.gain.setValueAtTime(0.0001, time)
+    g2.gain.linearRampToValueAtTime(v * 0.22, time + 0.01)
+    g2.gain.exponentialRampToValueAtTime(0.001, time + 0.4)
+    o2.connect(g2); g2.connect(dest); o2.start(time); o2.stop(time + 0.42)
+    const o3 = ctx.createOscillator(); const g3 = ctx.createGain()
+    o3.type = 'sine'; o3.frequency.value = freq * 1.006
+    g3.gain.setValueAtTime(0.0001, time)
+    g3.gain.linearRampToValueAtTime(v * 0.5, time + 0.02)
+    g3.gain.exponentialRampToValueAtTime(0.001, time + 0.6)
+    o3.connect(g3); g3.connect(dest); o3.start(time); o3.stop(time + 0.62)
+  },
+  startSustain(ctx, dest, root) {
+    // Faint fridge hum bed (low sine + a sub rumble) + the per-hit Tupperware bass.
+    const humG = ctx.createGain(); humG.gain.value = 0.022
+    const humLp = ctx.createBiquadFilter(); humLp.type = 'lowpass'; humLp.frequency.value = 200
+    const hum = ctx.createOscillator(); hum.type = 'sine'; hum.frequency.value = root * 0.5
+    const rumble = ctx.createOscillator(); rumble.type = 'triangle'; rumble.frequency.value = root * 0.25
+    hum.connect(humLp); rumble.connect(humLp); humLp.connect(humG); humG.connect(dest); hum.start(); rumble.start()
+    // Tupperware bass — dull, damped, plasticky low resonance (short, lowpassed, no ring)
+    const bassGain = ctx.createGain(); bassGain.gain.value = 0
+    const bassLp = ctx.createBiquadFilter(); bassLp.type = 'lowpass'; bassLp.frequency.value = 380; bassLp.Q.value = 2
+    const bassOsc = ctx.createOscillator(); bassOsc.type = 'triangle'; bassOsc.frequency.value = root * 0.5
+    bassOsc.connect(bassLp); bassLp.connect(bassGain); bassGain.connect(dest); bassOsc.start()
+    return {
+      stop() { try { hum.stop(); rumble.stop(); bassOsc.stop() } catch { /* already stopped */ } humG.disconnect(); bassGain.disconnect() },
+      retune(r) { hum.frequency.setValueAtTime(r * 0.5, ctx.currentTime); rumble.frequency.setValueAtTime(r * 0.25, ctx.currentTime) },
+      bassHit(time, freq, beatDuration) {
+        bassOsc.frequency.setValueAtTime(freq, time)   // plastic "bomp" — jump to the note, no portamento
+        bassGain.gain.cancelScheduledValues(time)
+        bassGain.gain.setValueAtTime(0.0001, time)
+        bassGain.gain.linearRampToValueAtTime(0.3, time + 0.008)
+        bassGain.gain.exponentialRampToValueAtTime(0.001, time + Math.min(0.28, beatDuration))
+        bassLp.frequency.setValueAtTime(600, time)
+        bassLp.frequency.exponentialRampToValueAtTime(300, time + 0.12)
+      },
+      duck(time) {
+        // dip the fridge hum on the kick so the pot bonk cuts through
+        humG.gain.setValueAtTime(0.022, time)
+        humG.gain.linearRampToValueAtTime(0.006, time + 0.02)
+        humG.gain.linearRampToValueAtTime(0.022, time + 0.3)
+      },
+    }
+  },
+}
+
+export const PALETTES: Palette[] = [ELECTRONIC, ORGANIC, GAMELAN, CHIPTUNE, LOFI, CARTOON, JAZZ, KITCHEN]
