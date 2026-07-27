@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "exportedAt": 1785159026895,
   "enemies": [
     {
       "name": "Enemy3",
@@ -1339,7 +1340,7 @@
       "blinkBeats": 4,
       "volatile": true,
       "volatileRange": 370,
-      "volatileHeal": true,
+      "volatileHeal": false,
       "revenge": false,
       "revengeRings": 4,
       "revengeRadius": 120,
@@ -1363,6 +1364,18 @@
       "summon": false,
       "summonNodes": 3,
       "summonPhases": [],
+      "weakNodes": false,
+      "weakNodeCount": 3,
+      "weakNodeHp": 3,
+      "weakNodePattern": "orbit",
+      "weakNodeMetal": "chrome",
+      "weakNodeAura": 0.8,
+      "weakNodeSpeed": 1,
+      "weakNodeWorldSpin": 0,
+      "weakNodeBeatDiv": 1,
+      "weakNodeAmp": 0.3,
+      "weakNodeOrbitFrac": 0.55,
+      "weakNodeSizeFrac": 0.3,
       "isShrine": false,
       "shrineSpawnEnemy": "",
       "shrineXpCount": 0,
@@ -2201,6 +2214,18 @@
       "summon": false,
       "summonNodes": 3,
       "summonPhases": [],
+      "weakNodes": false,
+      "weakNodeCount": 3,
+      "weakNodeHp": 3,
+      "weakNodePattern": "orbit",
+      "weakNodeMetal": "chrome",
+      "weakNodeAura": 0.8,
+      "weakNodeSpeed": 1,
+      "weakNodeWorldSpin": 0,
+      "weakNodeBeatDiv": 1,
+      "weakNodeAmp": 0.3,
+      "weakNodeOrbitFrac": 0.55,
+      "weakNodeSizeFrac": 0.3,
       "isShrine": false,
       "shrineSpawnEnemy": "",
       "shrineXpCount": 0,
@@ -2819,79 +2844,112 @@
     {
       "name": "new_challenge",
       "arenaShape": "circle",
-      "enemies": [],
+      "polygonSides": 8,
+      "arenaScale": 1,
+      "enemies": [
+        {
+          "typeName": "Heavy_Mob",
+          "x": 872.4998456955072,
+          "y": 791.4215998806262
+        },
+        {
+          "typeName": "Heavy_Mob",
+          "x": 769.9998535156362,
+          "y": 126.33139124772782
+        },
+        {
+          "typeName": "Heavy_Mob",
+          "x": 522.4998723983862,
+          "y": 1156.4711128896604
+        },
+        {
+          "typeName": "Heavy_Mob",
+          "x": 687.4998598098862,
+          "y": -223.71608698011335
+        },
+        {
+          "typeName": "Heavy_Mob",
+          "x": 1512.4997968673865,
+          "y": 138.83308689872212
+        }
+      ],
       "walls": [
         {
-          "ax": -1283.75,
-          "ay": 1362.5,
-          "bx": 183.75,
-          "by": 714.9999999999998,
-          "radius": 24,
-          "motion": {
-            "type": "rotate",
-            "beatsPerCycle": 20,
-            "direction": -1,
-            "phaseBeats": 0
-          },
-          "spring": {
-            "beatsPerCycle": 1,
-            "phase": 0,
-            "strength": 2000
-          }
+          "ax": 435.000001144409,
+          "ay": 279.9633739385225,
+          "bx": 406.6666598002121,
+          "by": 742.8039217016196,
+          "radius": 16
         },
         {
-          "ax": -672.5197793427652,
-          "ay": 1034.552772125067,
-          "bx": -77.05277212506792,
-          "by": 407.4802206572358,
-          "radius": 24,
-          "motion": {
-            "type": "rotate",
-            "beatsPerCycle": 20,
-            "direction": 1,
-            "phaseBeats": 0
-          },
-          "spring": {
-            "beatsPerCycle": 1,
-            "phase": 0.5,
-            "strength": 3000
-          }
+          "ax": 523.8888798607727,
+          "ay": 337.1933499959305,
+          "bx": 1062.2222128126364,
+          "by": 219.95522718332018,
+          "radius": 16
         },
         {
-          "ax": -56.25,
-          "ay": 1112.5,
-          "bx": -56.25,
-          "by": 1112.5,
-          "radius": 120,
-          "spring": {
-            "beatsPerCycle": 1,
-            "phase": 0.5,
-            "strength": 3000
-          }
+          "ax": 619.9999565124544,
+          "ay": 488.8805956482813,
+          "bx": 289.44443973965144,
+          "by": 910.6045131446865,
+          "radius": 16
         },
         {
-          "ax": 615,
-          "ay": -65,
-          "bx": 631.25,
-          "by": 1096.25,
-          "radius": 36,
-          "spring": {
-            "beatsPerCycle": 1,
-            "phase": 0,
-            "strength": 1500
-          }
+          "ax": 688.8888672722728,
+          "ay": 883.3786524322418,
+          "bx": 988.8888443840906,
+          "by": 1094.5182825090208,
+          "radius": 16
         },
         {
-          "ax": 954.375,
-          "ay": -41.875,
-          "bx": 970.625,
-          "by": 1119.375,
-          "radius": 36,
-          "spring": {
-            "beatsPerCycle": 1,
-            "phase": 0.5,
-            "strength": 1500
-          }
+          "ax": 405.5554538303028,
+          "ay": 913.9382172603706,
+          "bx": 1197.222110960227,
+          "by": 269.4063695433951,
+          "radius": 16
+        },
+        {
+          "ax": 979.1665550867801,
+          "ay": -15.35446736210963,
+          "bx": 1590.277806070114,
+          "by": 305.52241311484306,
+          "radius": 16
+        },
+        {
+          "ax": 1215.277682092462,
+          "ay": 780.5868478526276,
+          "bx": 1590.277806070114,
+          "by": 305.52241311484306,
+          "radius": 16
+        },
+        {
+          "ax": 1052.7776944902275,
+          "ay": 815.3138480425403,
+          "bx": 1427.777818467879,
+          "by": 1051.4568694213083,
+          "radius": 16
+        },
+        {
+          "ax": 1608.3332246144698,
+          "ay": 579.1706740551833,
+          "bx": 1365.2776706483712,
+          "by": 1002.8392828074552,
+          "radius": 16
+        },
+        {
+          "ax": 966.6665560404545,
+          "ay": -38.9687771304159,
+          "bx": 248.61103831397713,
+          "by": 149.9457391681815,
+          "radius": 16
+        },
+        {
+          "ax": 141.66661898295445,
+          "ay": 869.4877607911229,
+          "bx": 215.2777583864014,
+          "by": 151.33482070186392,
+          "radius": 16
         }
       ]
     },
@@ -3053,6 +3111,153 @@
           "bx": 410,
           "by": 987.5,
           "radius": 150,
+          "spring": {
+            "beatsPerCycle": 1,
+            "phase": 0,
+            "strength": 1500
+          }
+        }
+      ]
+    }
+  ],
+  "wallPrefabs": [
+    {
+      "name": "horus",
+      "walls": [
+        {
+          "ax": 302.1933947829458,
+          "ay": 161.27114138733327,
+          "bx": 247.31917830395275,
+          "by": -161.27114138733327,
+          "radius": 16
+        },
+        {
+          "ax": -302.1933947829458,
+          "ay": -64.78168808080295,
+          "bx": 247.31917830395275,
+          "by": -161.27114138733327,
+          "radius": 16
+        },
+        {
+          "ax": -119.41534754875977,
+          "ay": 57.82644547571272,
+          "bx": 302.1933947829458,
+          "by": 161.27114138733327,
+          "radius": 16,
+          "bend": 240.07190744821725
+        }
+      ]
+    },
+    {
+      "name": "rotate_circle",
+      "walls": [
+        {
+          "ax": 144.3183358588758,
+          "ay": -10.75,
+          "bx": -144.3183358588758,
+          "by": 10.75,
+          "radius": 16,
+          "bend": -180.35592515751594
+        }
+      ]
+    },
+    {
+      "name": "long_bounce",
+      "walls": [
+        {
+          "ax": -8.125,
+          "ay": -580.625,
+          "bx": 8.125,
+          "by": 580.625,
+          "radius": 36,
+          "spring": {
+            "beatsPerCycle": 0.5,
+            "phase": 0.5,
+            "strength": 3000
+          }
+        }
+      ]
+    },
+    {
+      "name": "SWEEP-TURN",
+      "walls": [
+        {
+          "ax": -356.17584058943305,
+          "ay": -426.8008405894331,
+          "bx": 356.17584058943305,
+          "by": 426.80084058943316,
+          "radius": 42,
+          "motion": {
+            "type": "tick",
+            "beatsPerTick": 2,
+            "direction": 1,
+            "phaseBeats": 0,
+            "degreesPerTick": 90,
+            "pauseFraction": 0.2,
+            "ticksBeforeReverse": 0
+          },
+          "translation": {
+            "type": "horizontal",
+            "beatsPerCycle": 4,
+            "amplitude": 300,
+            "direction": 1,
+            "phaseBeats": 0,
+            "ticked": true,
+            "pauseFraction": 0.2
+          }
+        }
+      ]
+    },
+    {
+      "name": "FADER",
+      "walls": [
+        {
+          "ax": -103.25,
+          "ay": -122.75,
+          "bx": 103.25,
+          "by": 122.75,
+          "radius": 86,
+          "fade": {
+            "visibleBeats": 1,
+            "shrinkBeats": 0.8,
+            "hiddenBeats": 1,
+            "growBeats": 0.8,
+            "phase": 0,
+            "shrinkMode": "length"
+          }
+        }
+      ]
+    },
+    {
+      "name": "HAND",
+      "walls": [
+        {
+          "ax": 47.5,
+          "ay": -800,
+          "bx": -47.5,
+          "by": 800,
+          "radius": 38,
+          "motion": {
+            "type": "tick",
+            "beatsPerTick": 1.5,
+            "direction": 1,
+            "phaseBeats": 0,
+            "degreesPerTick": 30,
+            "pauseFraction": 0.5,
+            "ticksBeforeReverse": 0
+          }
+        }
+      ]
+    },
+    {
+      "name": "PINBALL",
+      "walls": [
+        {
+          "ax": 0,
+          "ay": 0,
+          "bx": 0,
+          "by": 0,
+          "radius": 204,
           "spring": {
             "beatsPerCycle": 1,
             "phase": 0,

@@ -120,18 +120,26 @@ const SAVE_VERSION = 1
 interface SaveData {
   version: number
   enemies: DesignedEnemy[]
+  exportedAt?: number // stamp of the bundled data/enemies.json this save last synced with
 }
 
+// Bundle stamp the localStorage save is synced with. Must survive every saveToStorage() —
+// if a designer edit dropped it, the next load would see the bundle as "newer" and clobber
+// the very edit that was just saved.
+let bundleStamp = 0
+
 function saveToStorage(): void {
-  const data: SaveData = { version: SAVE_VERSION, enemies: designedEnemies }
+  const data: SaveData = { version: SAVE_VERSION, enemies: designedEnemies, exportedAt: bundleStamp }
   localStorage.setItem(SAVE_KEY, JSON.stringify(data))
 }
 
 function loadFromStorage(): DesignedEnemy[] {
+  const bundledStamp = (defaultEnemies as SaveData).exportedAt ?? 0
   try {
     const raw = localStorage.getItem(SAVE_KEY)
     if (!raw) {
       // First time — use bundled default enemies
+      bundleStamp = bundledStamp
       const def = (defaultEnemies as SaveData).enemies ?? []
       if (def.length > 0) {
         localStorage.setItem(SAVE_KEY, JSON.stringify(defaultEnemies))
@@ -142,16 +150,29 @@ function loadFromStorage(): DesignedEnemy[] {
     const data = JSON.parse(raw) as SaveData
     if (data.version !== SAVE_VERSION) return [] // future: migrate
     const stored = data.enemies ?? []
-    // Merge missing bundled enemies (don't overwrite user edits — add-if-missing only)
     const bundled = (defaultEnemies as SaveData).enemies ?? []
-    let added = false
-    for (const be of bundled) {
-      if (!stored.find(e => e.name === be.name)) {
-        stored.push(be)
-        added = true
+    const seenStamp = data.exportedAt ?? 0
+    bundleStamp = Math.max(seenStamp, bundledStamp)
+    let changed = false
+    if (bundledStamp > seenStamp) {
+      // Newer bundle shipped — refresh every bundled enemy (overwrite by name).
+      // Player-created enemies with names not in the bundle are kept.
+      for (const be of bundled) {
+        const i = stored.findIndex(e => e.name === be.name)
+        if (i >= 0) stored[i] = be
+        else stored.push(be)
+        changed = true
+      }
+    } else {
+      // Same bundle as last sync — add-if-missing only (don't overwrite local edits)
+      for (const be of bundled) {
+        if (!stored.find(e => e.name === be.name)) {
+          stored.push(be)
+          changed = true
+        }
       }
     }
-    if (added) localStorage.setItem(SAVE_KEY, JSON.stringify({ version: SAVE_VERSION, enemies: stored }))
+    if (changed) localStorage.setItem(SAVE_KEY, JSON.stringify({ version: SAVE_VERSION, enemies: stored, exportedAt: bundleStamp }))
     return stored
   } catch {
     return []
@@ -169,6 +190,9 @@ function resolveNameConflict(name: string): string {
 function exportEnemies(): void {
   const data = {
     version: SAVE_VERSION,
+    // Stamp every export — when this file ships as data/enemies.json, returning players'
+    // saves see a newer stamp and refresh their bundled enemies/challenges/prefabs.
+    exportedAt: Date.now(),
     enemies: designedEnemies,
     challenges: ChallengeBuilder.getChallenges(),
     wallPrefabs: ChallengeBuilder.getWallPrefabs(),

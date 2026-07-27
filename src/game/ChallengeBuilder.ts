@@ -1166,20 +1166,41 @@ function saveToStorage(): void {
   localStorage.setItem(SAVE_KEY, JSON.stringify(challenges))
 }
 
+// Last bundled exportedAt applied to challenges + wall prefabs. Separate key because their
+// localStorage saves are bare arrays (no wrapper object to carry a stamp in).
+const STAMP_KEY = 'beatback_bundle_stamp'
+
 export function loadFromStorage(): void {
+  const bundledStamp = ((defaultData as any).exportedAt as number | undefined) ?? 0
+  let seenStamp = 0
+  try { seenStamp = parseFloat(localStorage.getItem(STAMP_KEY) ?? '0') || 0 } catch { /* ignore */ }
+  // Newer bundle shipped — bundled entries overwrite same-name local copies below
+  const refresh = bundledStamp > seenStamp
+
   loadPrefabsFromStorage()
+  // Seed prefabs on first run, refresh on newer bundle (overwrite-by-name, keeps local extras)
+  const bundledPrefabs = (defaultData as any).wallPrefabs as WallPrefab[] | undefined
+  if (Array.isArray(bundledPrefabs) && bundledPrefabs.length > 0 && (refresh || wallPrefabs.length === 0)) {
+    importWallPrefabs(bundledPrefabs)
+  }
+
   try {
     const raw = localStorage.getItem(SAVE_KEY)
     if (raw) {
       challenges = JSON.parse(raw)
-      // Merge from bundled data: add missing challenges and refresh order fields
+      // Merge from bundled data: add missing challenges; on a newer bundle overwrite
+      // same-name challenges too; otherwise just refresh order fields
       const bundled = (defaultData as any).challenges as Challenge[] | undefined
       if (Array.isArray(bundled)) {
         let merged = false
         for (const bc of bundled) {
-          const existing = challenges.find(c => c.name === bc.name)
+          const idx = challenges.findIndex(c => c.name === bc.name)
+          const existing = idx >= 0 ? challenges[idx] : undefined
           if (!existing) {
             challenges.push(bc)
+            merged = true
+          } else if (refresh) {
+            challenges[idx] = bc
             merged = true
           } else if (bc.order != null && existing.order !== bc.order) {
             existing.order = bc.order
@@ -1197,6 +1218,7 @@ export function loadFromStorage(): void {
       }
     }
   } catch { /* ignore */ }
+  if (bundledStamp > seenStamp) localStorage.setItem(STAMP_KEY, String(bundledStamp))
 }
 
 export function exportChallenges(): string {
